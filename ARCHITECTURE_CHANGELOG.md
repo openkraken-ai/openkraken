@@ -1,5 +1,102 @@
 ## Changelog
 
+
+### v0.10.0 — 2026-02-03
+
+Major architectural enhancement integrating production-tested security infrastructure, comprehensive observability, and formalized integration protocols. This version replaces custom sandboxing with Anthropic's proven runtime, defines complete egress proxy behavior, and adds systematic observability and lifecycle management. The architecture shifts from "build everything ourselves" to "integrate battle-tested foundations where available, implement custom logic where necessary."
+
+**Anthropic Sandbox Runtime Integration:**
+*   Replaced custom bubblewrap/sandbox-exec implementation with `@anthropic-ai/sandbox-runtime` for cross-platform consistent isolation.
+*   Runtime uses `bubblewrap` on Linux and `sandbox-exec` (Seatbelt) on macOS, presenting unified configuration interface.
+*   Added violation detection mechanisms: macOS taps into system sandbox violation log store; Linux detects via process exit codes.
+*   Added Unix socket restrictions via seccomp filters (Linux) and Seatbelt profiles (macOS).
+*   Updated Security Constraint #20: "Never bypass the Anthropic Sandbox Runtime for command execution."
+
+**Comprehensive Egress Proxy Architecture:**
+*   Complete specification of dual-proxy system: HTTP CONNECT on port 8080 for web traffic, SOCKS5 on port 1080 for non-HTTP protocols.
+*   Defined connection flow with host-side DNS resolution preventing sandbox control over target IPs.
+*   Implemented structured JSON error responses with request IDs, timestamps, policy versions, and complete context for debugging.
+*   Specified comprehensive logging: 12 fields per request including timestamp, UUID, source process, destination domain/port, method, disposition, rule applied, bytes transferred, duration, and TLS SNI.
+*   Defined three-tier allowlist management: system domains (core functionality), skill domains (temporary during execution), owner domains (personal integrations).
+*   Added security measures: localhost-only binding, TLS hostname validation, IP address blocking by default.
+
+**Observability Layer Implementation:**
+*   Added OpenTelemetry Middleware to middleware stack for distributed tracing and metrics collection.
+*   Exposes Prometheus-compatible metrics at `/metrics` endpoint with comprehensive instrumentation.
+*   Defined health endpoints: `/health` (liveness), `/ready` (dependency checks), `/metrics` (Prometheus), `/version` (debugging).
+*   Specified structured logging with SQLite storage, 100MB rotation, 30-day retention.
+*   Added security auditing with append-only logs and cryptographic signing for tamper prevention.
+*   Integrated observability into data flow as explicit "Observability Path" section.
+
+**Credential Management Enhancement:**
+*   Replaced environment variable approach with OS-level credential vaults: macOS Keychain, Linux secret-service API (GNOME Keyring, KWallet, pass).
+*   Credentials read at startup, stored only in runtime memory, never written to filesystem or logs.
+*   Added credential rotation support without requiring full Gateway restart.
+*   Added Security Constraint #18: "Never log credentials or sensitive configuration data."
+
+**Telegram Integration Lifecycle:**
+*   Added complete webhook mode specification with cryptographic signature verification preventing spoofing attacks.
+*   Defined long-polling mode for development environments.
+*   Implemented graceful shutdown handlers for SIGINT/SIGTERM with configurable timeout for in-flight requests.
+*   Added update deduplication via unique identifiers and rate limiting.
+*   Added Security Constraint #15: "Never skip webhook verification for Telegram integration."
+
+**MCP Integration Formalization:**
+*   Added MCP Adapter Middleware to middleware stack using `@langchain/mcp-adapters`.
+*   Documented connection management with persistent connections, automatic reconnection, and exponential backoff.
+*   Defined capability negotiation during connection establishment for tool/resource discovery.
+*   Specified tool allowlist policy enforcement ensuring Agents access only Owner-approved MCP tools.
+*   Added Security Constraint #16: "Never connect MCP servers without capability negotiation."
+*   Added Security Constraint #17: "Never expose proxy management API to unauthenticated requests."
+*   Documented security considerations: MCP servers run outside sandbox, communication logged via observability middleware, schema validation prevents protocol confusion attacks.
+
+**Middleware Stack Expansion:**
+*   Expanded from 10 to 12 middleware: added OpenTelemetry Middleware (position 2) and MCP Adapter Middleware (position 8).
+*   Enhanced Logger Middleware with complete specification of log entry fields and correlation identifiers.
+*   Updated middleware responsibilities to reflect new components and integration patterns.
+
+**State Persistence and Backup:**
+*   Enhanced SqliteCheckpointer documentation with Write-Ahead Logging (WAL) mode for concurrent access.
+*   Specified two-table schema: checkpoints and writes for efficient retrieval and rollback.
+*   Implemented automated daily backups using SQLite online backup API ensuring consistency during operation.
+*   Defined 7-day retention with compression and automatic integrity checks for corruption detection.
+
+**Core Philosophy Additions (#11, #15, #16, #17):**
+*   Added "Build on Proven Foundations" — integrate battle-tested solutions for security-critical infrastructure, implement custom only for gateway-specific concerns.
+*   Added "Observable by Default" — complete visibility into Agent behavior for debugging, audit, and optimization.
+*   Added "Credential Isolation" — OS-level vaults, never exposed to Agent or written to persistent storage.
+*   Expanded "Everything is Middleware" to include MCP integration and observability.
+
+**Security Constraints Expansion:**
+*   Added constraints #15-20: webhook verification, MCP capability negotiation, proxy API authentication, credential logging prevention, Unix socket access control, Anthropic Sandbox Runtime mandate.
+*   Refined constraint #8 from "Never expose Nix internals" to "Never expose sandbox internals" reflecting runtime abstraction.
+
+**Directory Structure Updates:**
+*   Added `observability/` directory for OpenTelemetry configuration and logging schemas.
+*   Added `mcp/` directory for MCP server configurations and connection definitions.
+*   Updated `system/` to include egress proxy configuration.
+*   Updated `runtime/` to reference Anthropic Sandbox Runtime settings.
+
+**Platform Abstraction Enhancement:**
+*   Documented how Anthropic Sandbox Runtime achieves consistent security semantics across Linux and macOS.
+*   Eliminated previous "accepted limitation" for macOS resource limits — runtime handles platform differences transparently.
+*   Added observability layer compatibility statement for cross-platform consistency.
+
+**Data Flow Expansion:**
+*   Added "Telegram Integration Lifecycle" section documenting webhook verification, graceful shutdown, and session mapping.
+*   Added "MCP Integration Path" section with adapter routing and capability negotiation.
+*   Added "Observability Path" section with logging, tracing, and metrics flow.
+*   Enhanced "Skill Execution Path" to include sandbox runtime configuration management.
+
+**Scope Definition Updates:**
+*   Added observability as primary capability: comprehensive logging, distributed tracing, and metrics.
+*   Updated integration boundaries to include OpenTelemetry-compatible observability backends.
+*   Enhanced technology stack listing: Bun + LangChain.js v1 + grammY + @langchain/mcp-adapters + OpenTelemetry.
+
+**Response to OpenClaw Failures:**
+*   Added new failure category: "Custom Security Infrastructure" — building custom sandboxing leads to gaps; leverage production-tested solutions.
+*   Enhanced existing failures with specific implementation details: cryptographic verification for Telegram, OS-level vaults for credentials, structured proxy errors and logging.
+
 ### v0.9.0 — 2026-02-03
 
 Architectural iteration addressing three key concerns: cross-distribution Nix support, identity injection security, and explicit scope definition. Removes NixOS dependency, eliminates filesystem-based identity, and defines bounded project scope.
