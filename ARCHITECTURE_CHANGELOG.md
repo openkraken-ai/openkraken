@@ -1,5 +1,49 @@
 ## Changelog
 
+### v0.9.0 — 2026-02-03
+
+Architectural iteration addressing three key concerns: cross-distribution Nix support, identity injection security, and explicit scope definition. Removes NixOS dependency, eliminates filesystem-based identity, and defines bounded project scope.
+
+**Nix Distribution Support:**
+*   Changed from "Nix Flakes with NixOS (Linux) or nix-darwin (macOS)" to "Nix Flakes (Universal)."
+*   System now runs on any modern Linux distribution with Nix installed, not just NixOS.
+*   Removed systemd/launchd dependency for process supervision — Gateway manages processes directly as user-space application.
+*   Works across Ubuntu, Debian, Fedora, Arch, CentOS, and other distributions.
+
+**Identity Injection Security:**
+*   Removed `/sandbox/identity/` zone from filesystem taxonomy. Identity files are no longer materialized in the sandbox.
+*   Added Core Philosophy #13: "Identity Injection" — `SOUL.md` and `SAFETY.md` are injected directly into the Agent's system prompt by the Gateway at runtime.
+*   Prevents exfiltration of the "Constitution" via file copy operations.
+*   Updated Security Constraint #3: "Never mount `identity/` files into the sandbox. Identity is injected via prompt only."
+
+**Explicit Scope Definition:**
+*   Added new section "Scope Definition: What This Project Does" with bounded capabilities.
+*   Primary Capabilities: Conversational Interaction (Telegram + MCP), Terminal Execution, File Operations, Web Automation (Vercel Agent Browser), Skill System, Scheduled Tasks, Persistent Memory.
+*   Integration Boundaries: In Scope (Telegram, MCP servers), Out of Scope (direct WhatsApp, native mobile, voice).
+*   Security Boundaries: Deterministic enforcement, Zero Trust, Isolated Execution.
+
+**Browser Automation:**
+*   Added Vercel Agent Browser as new tool capability for web automation.
+*   Browser sessions isolated per conversation thread with unique browser profiles.
+*   Browser network traffic routes through egress proxy with domain allowlist enforcement.
+*   Added Browser Middleware to handle session isolation.
+*   Added Security Constraints #13, #14: never allow browser automation without proxy enforcement, never share browser profiles between conversations.
+
+**Memory Architecture Formalization:**
+*   Explicitly defined three-tier recall system: Checkpointer (LangGraph SqliteCheckpointer), Message Log (SQLite messages table), Memory Bank (SQLite memories table).
+*   All memory backends consolidated to SQLite for consistency and durability.
+
+**Core Philosophy Additions (#13, #14):**
+*   Added "Identity Injection" — identity files never materialized in sandbox, injected via prompt only.
+*   Added "Durable State Persistence" — LangGraph SqliteCheckpointer ensures session continuity across Gateway restarts.
+
+**Process Supervision Simplification:**
+*   Removed systemd/launchd abstraction — Gateway acts as direct process supervisor.
+*   Timer Management restored: Layer 0 executes scheduled tasks via system timers or dedicated scheduler process.
+
+**Resource Limits Clarification:**
+*   Restored explanation of macOS limitations and why they are acceptable for single-tenant deployment.
+
 ### v0.8.0 — 2026-02-03
 
 Major architectural revision focused on cross-platform support, Nix-native design, and simplified isolation model. Collapses the 4-layer model to 3 layers, replaces containerization with lightweight sandboxing, and introduces the terminal tool with session management. This version makes macOS a first-class platform and ensures the Agent has no awareness of underlying implementation details.
