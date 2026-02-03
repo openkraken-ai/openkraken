@@ -121,7 +121,7 @@ This project builds a **personal AI agent runtime** with the following bounded c
 
 - **Identity Injection:** Stores the core `SOUL.md` and `SAFETY.md` files on the secure Host filesystem. These are **never** exposed to the sandbox filesystem. The Gateway reads them and injects their content directly into the Agent's system prompt at runtime.
 
-- **Credential Storage:** API keys, bot tokens, and OAuth credentials are retrieved from OS-level credential vaults at startup. On macOS, credentials are stored in the system Keychain. On Linux, credentials are accessed through the secret-service API (compatible with GNOME Keyring, KWallet, or pass). The Gateway reads credentials from these vaults at startup and stores them in memory for the process duration. Credentials are never written to filesystem, log files, or error messages. The Gateway provides credential rotation support by re-reading from vaults without requiring full restart.
+- **Credential Storage:** API keys, bot tokens, and OAuth credentials are retrieved from OS-level credential vaults at startup. The Gateway implements a **CredentialVault** abstraction that provides a unified interface across platforms. On macOS, the vault uses the Keychain Services API. On Linux, the vault uses the secret-service API (compatible with GNOME Keyring, KWallet, or pass). The Gateway reads credentials from these vaults at startup and stores them in memory for the process duration. Credentials are never written to filesystem, log files, or error messages. The Gateway provides credential rotation support by re-reading from vaults without requiring full restart. This abstraction serves the single-tenant model by making credential management explicit and auditable—the Owner provisions credentials through their platform's native tools, and the Gateway reads them into memory at startup.
 
 - **Egress Proxy:** Runs a domain-filtering HTTP CONNECT proxy bound to localhost. The proxy enforces a strict allowlist-only policy for all network egress from sandboxed processes. The proxy returns structured JSON error responses containing the error type, the denied domain, the current allowlist, and the policy that caused the denial. All access attempts are logged to SQLite with timestamps, request IDs, destination domains, and disposition (allowed or denied). The proxy supports both HTTP CONNECT for web traffic and SOCKS5 for non-HTTP protocols, ensuring comprehensive network isolation.
 
@@ -168,7 +168,18 @@ The Work and Outputs zones are cleared at session boundaries. Identity is inject
 
 ### Layer 2: The Gateway (The Brain)
 
-**Technology:** Bun + LangChain.js v1, grammY for Telegram integration, @langchain/mcp-adapters for MCP integration, OpenTelemetry for observability. Database: **SQLite**.
+**Technology Stack (Pinned Versions):** RealClaw pins all dependencies to specific versions to ensure reproducibility and prevent supply chain attacks. The following versions are verified and tested:
+
+- **Bun Runtime:** 1.3.8 (latest stable as of February 2026) — `bun --version` returns the exact version string
+- **LangChain.js:** 1.2.16 (core library) — provides agent orchestration and tool definitions
+- **LangGraph.js:** 1.1.3 (@langchain/langgraph core) / 1.0.19 (langgraph wrapper) — provides stateful workflow management
+- **@langchain/mcp-adapters:** 1.1.2 — provides Model Context Protocol integration
+- **grammY:** Supports Telegram Bot API 9.3 (December 2025 release) — provides Telegram protocol handling
+- **@anthropic-ai/sandbox-runtime:** 0.0.35 — provides cross-platform process isolation (Beta Research Preview)
+- **Vercel Agent Browser:** 0.9.0 — provides headless browser automation
+- **SQLite:** 3.x (bundled with Bun runtime) — provides durable state persistence
+
+All dependencies are declared in `package.json` with exact semver ranges. The build process pins transitive dependencies via the lockfile to prevent dependency confusion attacks.
 
 **Role:** The orchestration layer that runs the Agent loop, dispatches tools, enforces policies, and manages state. The Gateway provides the runtime environment for the Agent, coordinating interactions between the Owner, the Agent, and external services while maintaining security boundaries.
 
@@ -341,7 +352,15 @@ The architecture supports both Linux and macOS through clear abstractions that h
 
 The system delegates platform-specific sandboxing to the Anthropic Sandbox Runtime, which provides a unified configuration interface while using optimal native mechanisms for each platform. On Linux, the runtime uses `bubblewrap` for filesystem and network isolation with bind mounts for directory permissions. On macOS, the runtime uses `sandbox-exec` with dynamically generated Seatbelt profiles for filesystem restrictions and proxy-based network isolation.
 
-The runtime presents identical filesystem semantics on both platforms — read and write permissions are specified using the same configuration format regardless of underlying mechanism. Path glob patterns work consistently, with the runtime handling platform-specific path resolution internally.
+**Runtime Maturity Note:** The Anthropic Sandbox Runtime (`@anthropic-ai/sandbox-runtime`) is currently at version 0.0.35 and is labeled as a "Beta Research Preview." The project is actively maintained with regular CI/CD runs but uses `0.x.y` versioning indicating potential breaking changes before 1.0.0. RealClaw pins to a specific version and monitors the project's changelog for breaking changes. Defense-in-depth measures (egress proxy, credential isolation, content scanning) ensure that sandbox failures do not result in credential exposure or unauthorized network access.
+
+### Platform Path Semantics
+
+The architecture claims the sandbox presents "identical filesystem semantics" across Linux and macOS, but this requires clarification at the Gateway level. The underlying mechanisms differ: bubblewrap on Linux operates on literal paths without glob support, while Seatbelt profiles on macOS support glob patterns for path matching.
+
+The Gateway normalizes all paths to a canonical format before sandbox configuration, ensuring consistent behavior. The Gateway performs path validation against a whitelist of allowed zones—skills, inputs, work, outputs—and resolves all paths to their absolute, literal form. This validation occurs before any sandbox configuration, ensuring the sandbox receives consistent instructions regardless of platform.
+
+This approach means the Gateway bears responsibility for platform compatibility, keeping the sandbox configuration simple and uniform. The Owner experiences identical behavior on both platforms, with the Gateway handling platform-specific details transparently.
 
 ### Process Supervision
 
@@ -361,55 +380,150 @@ Vercel Agent Browser provides cross-platform browser automation. The Gateway wra
 
 ### Observability Layer
 
-The Gateway exposes a comprehensive observability interface that functions identically on both platforms. The OpenTelemetry integration provides distributed tracing and metrics collection regardless of underlying platform mechanisms. Health endpoints (`/health`, `/ready`, `/metrics`) use standard Bun runtime HTTP handling that works consistently across Linux and macOS.
+The Gateway exposes a comprehensive observability interface that functions identically on both platforms. The custom OpenTelemetry callback handler provides distributed tracing and metrics collection regardless of underlying platform mechanisms. Health endpoints (`/health`, `/ready`, `/metrics`) use standard Bun runtime HTTP handling that works consistently across Linux and macOS.
 
 Logs are stored in SQLite with platform-agnostic schema, enabling the same querying and analysis workflows regardless of where the system runs. The Gateway ensures log files are written to platform-appropriate data directories (systemd-compatible on Linux, standard application support directories on macOS) while maintaining consistent access patterns for the Owner.
+
+### Cross-Platform Implementation Details
+
+The Gateway implements several patterns to ensure consistent behavior across Linux and macOS despite underlying platform differences.
+
+**Filesystem Isolation Mechanisms:**
+
+| Aspect | Linux (Bubblewrap) | macOS (Sandbox-exec) |
+|--------|-------------------|---------------------|
+| **Mechanism** | Bind mounts (`--bind`, `--ro-bind`) | Seatbelt profile rules |
+| **Pattern Matching** | Literal paths only (no glob support) | Native glob/regex via regex conversion |
+| **Deny Protection** | Mount `/dev/null` or tmpfs over paths | Explicit `deny` rules in profile |
+| **Non-existent Files** | Cannot protect (bind mount creates files) | Pattern-based rules block creation |
+| **Symlink Handling** | Detects and mounts `/dev/null` at symlink paths | Uses `subpath` matching |
+
+The Gateway handles these differences by:
+1. Normalizing all paths to absolute, literal form before validation
+2. Warning when glob patterns are used (they won't work on Linux)
+3. Expanding glob patterns to literal paths where possible
+4. Using platform-specific configuration for edge cases
+
+**Network Isolation Architecture:**
+
+| Aspect | Linux (Bubblewrap) | macOS (Sandbox-exec) |
+|--------|-------------------|---------------------|
+| **Mechanism** | Network namespace + Unix socket bridges | Seatbelt profile rules |
+| **Proxy Communication** | Unix domain sockets + `socat` bridge processes | Direct localhost TCP connections |
+| **DNS Resolution** | Through SOCKS5 proxy | Same, via proxy configuration |
+| **Environment Variables** | `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` | Same set |
+
+Both platforms route all network traffic through the egress proxy (HTTP CONNECT on port 8080, SOCKS5 on port 1080) with domain allowlist enforcement.
+
+**Unix Domain Socket Restrictions:**
+
+| Aspect | Linux (Bubblewrap) | macOS (Sandbox-exec) |
+|--------|-------------------|---------------------|
+| **Mechanism** | Seccomp BPF filter (syscall-level) | Seatbelt profile rules |
+| **Path-based Filtering** | Not possible (seccomp can't inspect paths) | Supported via `subpath` rules |
+| **Architecture Support** | x64 and ARM64 only (pre-built binaries) | All architectures (native) |
+
+On Linux, the sandbox runtime blocks `socket(AF_UNIX, ...)` syscalls at the kernel level. Path-specific allowlisting is not supported on Linux; the Gateway can only allow or disallow all Unix sockets.
+
+**Violation Detection and Monitoring:**
+
+| Aspect | Linux (Bubblewrap) | macOS (Sandbox-exec) |
+|--------|-------------------|---------------------|
+| **Built-in Logging** | None (requires strace) | Native kernel log integration |
+| **Real-time Monitoring** | Not available | Native via `log stream` |
+| **Implementation** | Manual syscall tracing | Event-driven via `os_log` |
+
+The Gateway configures macOS violation monitoring where available and logs violations to the audit trail.
+
+**Recommended Configuration Patterns:**
+
+```json
+// ❌ Avoid: Glob patterns that won't work on Linux
+{
+  "filesystem": {
+    "allowWrite": ["src/**/*.ts"]
+  }
+}
+
+// ✅ Use: Literal paths that work everywhere
+{
+  "filesystem": {
+    "allowWrite": ["src/", "test/"]
+  }
+}
+
+// ✅ Use: Platform-specific fallback for advanced cases
+{
+  "filesystem": {
+    "allowWrite": ["src/"],
+    "linux": {
+      "allowWrite": ["src/utils/", "src/components/"]
+    }
+  }
+}
+```
 
 ---
 
 ## 8. Middleware Composition
 
-The Gateway composes multiple LangChain.js middleware in a defined order. The ordering matters — earlier middleware runs first for `before*` hooks and last for `after*` hooks.
+The Gateway composes multiple LangChain.js extensions in a defined order. The architecture distinguishes between **callback handlers** (passive observability instrumentation) and **middleware** (active execution modification). This distinction matters: callback handlers observe and record without modifying behavior, while middleware can transform inputs, inject context, or interrupt execution.
 
-The middleware stack, in order:
+Callback handlers provide passive instrumentation for logging, tracing, metrics collection, and content scanning. They can stack in any order since they don't interfere with each other. Middleware provides active modification of the agent's execution flow—later middleware operates on the outputs of earlier middleware, so order matters.
 
-1.  **Logger Middleware** — Instruments all hooks, writes structured records to SQLite. Must be outermost to capture everything. Logs tool invocations, model calls, and Agent turn completions with timestamps, request IDs, and durations.
+### 8.1 Callback Handlers: Observability Foundation
 
-2.  **OpenTelemetry Middleware** — Provides distributed tracing and metrics collection. Exports traces to configured backend (Jaeger, Zipkin) and exposes Prometheus-compatible metrics at `/metrics`. Correlates all operations within a session for comprehensive observability.
+The Gateway implements callback handlers that intercept all agent lifecycle events and emit telemetry. These handlers are always active and form the observability foundation.
 
-3.  **Policy Middleware** — Validates terminal package requests, gates delivery with content scanning, enforces rate limits.
+**Logger Callback Handler** instruments all hooks, writes structured records to SQLite. Captures tool invocations, model calls, and agent turn completions with timestamps, request IDs, and durations. All log entries include correlation identifiers for tracing related operations across middleware.
 
-4.  **Cron Middleware** — Detects scheduled task triggers.
+**OpenTelemetry Callback Handler** provides distributed tracing and metrics collection through custom implementation. The handler intercepts LLM calls, tool invocations, chain executions, and memory operations, transforming events into a canonical telemetry format. This format can be exported to OpenTelemetry collectors for enterprise environments, to LangSmith for development debugging, or retained in SQLite for audit purposes. The handler sanitizes sensitive data before export, ensuring credentials never flow through telemetry pipelines.
 
-5.  **Web Search Middleware** — Provides web search tools.
+**Content Scanning Callback Handler** scans all outbound content for credential leaks, PII, and policy violations before delivery to any channel. This handler runs last in the callback chain to ensure complete response scanning.
 
-6.  **Browser Middleware** — Provides browser automation tools via Agent Browser, manages browser session isolation.
+### 8.2 Middleware Stack: Agent Orchestration
 
-7.  **Memory Middleware** — Retrieves relevant memories before model calls, extracts and consolidates memories after agent completion. Manages three-tier recall: checkpointer (state), message log (conversation history), memory bank (semantic).
+Middleware provides active execution modification. The stack is organized into three tiers: foundational policy, agent capabilities, and operational concerns. The ordering matters — later middleware operates on the outputs of earlier middleware, so order matters.
 
-8.  **MCP Adapter Middleware** — Provides access to Model Context Protocol servers through the LangChain MCP adapter. Handles connection lifecycle, capability negotiation, and tool routing for MCP-connected services.
+**Tier 1: Foundational Policy**
 
-9.  **Skill Loader Middleware** — Injects skill manifests.
+1. **Policy Middleware** validates terminal package requests, gates delivery with content scanning, and enforces rate limits. This middleware enforces the security boundaries that define what the Agent can do.
 
-10. **Sub-Agent Middleware** — Provides task delegation.
+**Tier 2: Agent Capabilities**
 
-11. **Summarization Middleware** — Compresses older messages.
+2. **Cron Middleware** detects scheduled task triggers and invokes the Agent with scheduled task context.
 
-12. **Human-in-the-Loop Middleware** — Interrupts on configured operations.
+3. **Web Search Middleware** provides web search tools (web_search, code_search, web_fetch) through Gateway-mediated Exa API calls.
+
+4. **Browser Middleware** provides browser automation tools via Vercel Agent Browser, managing session isolation and proxy enforcement.
+
+5. **Memory Middleware** retrieves relevant memories before model calls, extracts and consolidates memories after agent completion. Manages three-tier recall: checkpointer (state), message log (conversation history), memory bank (semantic).
+
+6. **MCP Adapter Middleware** provides access to Model Context Protocol servers through the LangChain MCP adapter. Handles connection lifecycle, capability negotiation, and tool routing for MCP-connected services.
+
+7. **Skill Loader Middleware** injects skill manifests into the agent's context based on the current task.
+
+8. **Sub-Agent Middleware** provides task delegation capabilities for complex work distribution.
+
+**Tier 3: Operational Concerns**
+
+9. **Summarization Middleware** compresses older messages when context exceeds configured token thresholds.
+
+10. **Human-in-the-Loop Middleware** interrupts on configured operations for Owner approval via Telegram inline keyboards.
 
 ### Observability Layer
 
-The Gateway implements a comprehensive observability layer that provides operational visibility, performance monitoring, and security auditing capabilities. This layer is essential for debugging, incident response, and ensuring the system operates within expected parameters.
+The Gateway implements a comprehensive observability layer built on callback handlers that provide operational visibility, performance monitoring, and security auditing. This layer is essential for debugging, incident response, and ensuring the system operates within expected parameters.
 
 **Structured Logging:**
-The Logger Middleware captures all Agent operations with complete context. Each log entry includes the timestamp (ISO8601 format), a UUID request identifier, the operation type (tool_call, model_invoke, agent_turn), the target resource (tool name, model identifier), the arguments or prompt content (sanitized of credentials), the result or error, the execution duration in milliseconds, and correlation identifiers for tracing related operations across middleware.
+The Logger Callback Handler captures all Agent operations with complete context. Each log entry includes the timestamp (ISO8601 format), a UUID request identifier, the operation type (tool_call, model_invoke, agent_turn), the target resource (tool name, model identifier), the arguments or prompt content (sanitized of credentials), the result or error, the execution duration in milliseconds, and correlation identifiers for tracing related operations across middleware.
 
 Logs are stored in SQLite with automatic rotation at 100 megabytes and retention for 30 days. The Gateway provides query APIs for the Owner to search and analyze log data for debugging and audit purposes.
 
 **Distributed Tracing:**
-The OpenTelemetry Middleware creates distributed traces that capture the complete execution path of each Agent operation. Traces span from initial request receipt through middleware processing, model invocations, tool calls, and final response delivery. Each trace includes span data for timing, span relationships for call hierarchy, span attributes for operation context, and span events for significant occurrences.
+The OpenTelemetry Callback Handler creates distributed traces through custom implementation. Unlike native OpenTelemetry integrations, the Gateway implements a callback handler that intercepts LLM calls, tool invocations, and chain executions, transforming these events into a canonical telemetry format. This format can be exported to OpenTelemetry Protocol (OTLP) collectors for enterprise environments, to LangSmith for development debugging, or retained in SQLite for audit purposes.
 
-Traces are exported to configured backends (Jaeger, Zipkin, or compatible collectors) for visualization and analysis. The trace context is propagated through all asynchronous operations, enabling complete request tracing across the system.
+Traces capture the complete execution path of each Agent operation: from initial request receipt through callback processing, model invocations, tool calls, and final response delivery. Each trace includes span data for timing, span relationships for call hierarchy, span attributes for operation context, and span events for significant occurrences. The handler sanitizes sensitive data—including credentials and PII—before export, ensuring security boundaries are respected in telemetry pipelines.
 
 **Metrics Collection:**
 The Gateway exposes Prometheus-compatible metrics at the `/metrics` endpoint. Key metrics include HTTP request counts by status code and endpoint, tool invocation counts by tool name and success/failure, Agent turn counts by session type, egress proxy request counts by disposition, model invocation counts by provider and model, and resource utilization metrics (memory, CPU where available).
@@ -503,6 +617,209 @@ The repository is organized by layer:
 ### Sandbox (What the Agent Sees)
 
 The Agent sees a filesystem rooted at `/sandbox/` containing four zones: skills (read-only), inputs (read-only), work (read-write), and outputs (read-write). **Identity is not present.**
+
+---
+
+## 10.1 Constitutional Documents Framework
+
+RealClaw implements a three-tier constitutional hierarchy that defines the Agent's identity, boundaries, and operational context. These documents are never materialized in the sandbox filesystem — they are injected directly into the Agent's system prompt by the Gateway at runtime. This design prevents exfiltration of the "Constitution" via file copy operations and ensures the Agent cannot reason about or manipulate its own constraints.
+
+### The Constitutional Hierarchy (Priority Order)
+
+The three constitutional documents have a strict priority order that reflects their purpose and scope:
+
+1. **SOUL.md (Highest Priority)** — Defines the Agent's immutable identity, core values, and fundamental behavioral principles. This document shapes who the Agent is at the deepest level.
+
+2. **SAFETY.md (Medium Priority)** — Defines environment-specific safety constraints, sandbox boundaries, and operational limits. This document provides the Agent with context about its execution environment and the defensive measures in place.
+
+3. **AGENTS.md (Lowest Priority)** — Owner-managed configuration providing context about the specific deployment, user preferences, and operational guidance. This document tailors the Agent to the Owner's needs.
+
+### SOUL.md: Agent Identity and Values
+
+The SOUL.md document draws inspiration from Anthropic's Constitutional AI approach as documented in https://www.anthropic.com/constitution. This document should contain:
+
+**Core Identity Elements:**
+- The Agent's name, role, and primary purpose
+- The context in which the Agent operates (personal AI assistant)
+- The relationship between the Agent, the Owner, and the Project
+
+**Value Principles (Anthropic-Inspired Framework):**
+- **Helpfulness:** The Agent should be genuinely helpful to the Owner while avoiding harmful actions
+- **Honesty:** The Agent should be truthful and acknowledge uncertainty rather than fabricating information
+- **Harmlessness:** The Agent should avoid facilitating illegal, unethical, or dangerous activities
+- **Transparency:** The Agent should be clear about its capabilities and limitations
+
+**Behavioral Guidelines:**
+- How to handle requests that conflict with the Owner's best interests
+- Guidelines for escalation and seeking clarification
+- Principles for balancing competing values (e.g., helpfulness vs. safety)
+
+The SOUL.md document is written with the Agent as its primary audience, optimized for precision over accessibility. It should be written in a way that the Agent can reason about and apply to novel situations.
+
+### SAFETY.md: Environment and Harness Context
+
+The SAFETY.md document provides the Agent with explicit context about its execution environment and the defensive measures that protect both the Owner and the system. This document serves as a "Defense in Depth" layer alongside the architectural sandboxing and policy enforcement mechanisms. It should contain:
+
+**Sandbox Context:**
+- Description of the filesystem isolation zones and their purposes
+- Explanation that network access is mediated through an egress proxy
+- Clarification that terminal commands run in an isolated environment
+
+**Operational Boundaries:**
+- Specific categories of actions that require human approval (Human-in-the-Loop)
+- Guidelines for interacting with external services (Telegram, MCP servers)
+- Constraints on data handling and information disclosure
+
+**Failure Mode Awareness:**
+- How to behave when system constraints are encountered
+- Guidelines for handling errors and unexpected situations
+- Principles for communicating limitations to the Owner
+
+The SAFETY.md document helps the Agent understand why certain constraints exist, making it more likely to work within them effectively rather than attempting to circumvent them.
+
+### AGENTS.md: Owner Configuration (Following the AGENTS.md Standard)
+
+RealClaw follows the AGENTS.md standard (https://agents.md/) — an open format for guiding AI agents, stewarded by the Agentic AI Foundation under the Linux Foundation. This document provides operational context specific to the Owner's deployment. The AGENTS.md standard is widely adopted across the AI coding agent ecosystem with support from OpenAI Codex, Google Jules, Cursor, Aider, and over 60,000 open-source projects.
+
+**Expected AGENTS.md Sections:**
+- **Dev Environment Tips:** Commands and conventions specific to this deployment
+- **Testing Instructions:** How to verify the Agent is functioning correctly
+- **Operational Notes:** Common issues and their resolutions
+- **Configuration Guidelines:** How to customize the Agent's behavior
+
+**Nesting Support:** In a monorepo context, AGENTS.md files can be placed in subdirectories for specialized configurations. RealClaw follows this pattern where applicable.
+
+### Document Injection Mechanism
+
+All three constitutional documents are read by the Gateway at startup from the Host filesystem (`identity/` directory) and injected directly into the Agent's system prompt. The injection order follows the priority hierarchy:
+
+```
+System Prompt = SOUL.md + SAFETY.md + AGENTS.md + Runtime Context
+```
+
+This ensures that the Agent's immutable identity (SOUL.md) is never overridden by situational context (AGENTS.md), while still allowing the Owner to provide meaningful operational guidance.
+
+**Security Property:** Since the constitutional documents exist only in the Gateway's runtime memory and are never written to the sandbox filesystem, the Agent cannot:
+- Read the documents to identify gaps or inconsistencies
+- Copy the documents to preserve them across sessions
+- Reason about the documents as external entities that could be manipulated
+
+---
+
+## 10.2 Operational Concerns and Best Practices
+
+RealClaw is designed for single-tenant, owner-operated deployment. While the architecture document focuses on foundational design rather than operational procedures, the following best practices inform the implementation and should be documented in the operational handbook.
+
+### Health Checks and Readiness Monitoring
+
+The Gateway exposes standardized health endpoints for operational monitoring:
+
+- **`/health` (Liveness):** Returns 200 OK if the process is running. Used by process supervisors to detect hung processes.
+- **`/ready` (Readiness):** Returns 200 OK only when all dependencies are healthy. Verifies database connectivity, MCP server availability, and proxy status. Owners can configure additional health checks via middleware.
+- **`/metrics` (Prometheus):** Exposes Prometheus-compatible metrics for monitoring systems. Key metrics include HTTP request counts, tool invocation counts, proxy dispositions, and resource utilization.
+- **`/version`:** Returns version information for debugging and support.
+
+**Recommended Monitoring Thresholds:**
+- Liveness failures trigger immediate restart via process supervision
+- Readiness failures trigger alerts to the Owner and prevent new session starts
+- Proxy denial rate > 1% of total requests triggers alerts (potential misconfiguration)
+
+### Graceful Shutdown and Recovery
+
+The Gateway implements graceful shutdown handlers for SIGINT and SIGTERM signals:
+
+1. **Signal Reception:** The Gateway stops accepting new requests
+2. **Drain Timeout:** In-flight requests complete within a configurable timeout (default: 30 seconds)
+3. **Final Acknowledgment:** The final update is acknowledged before termination
+4. **State Persistence:** LangGraph checkpointer ensures durable state is flushed
+5. **Process Exit:** The Gateway terminates cleanly
+
+**Recovery Properties:**
+- LangGraph SqliteCheckpointer ensures session state survives Gateway restarts
+- SQLite Write-Ahead Logging (WAL) mode ensures crash consistency
+- Daily automated backups protect against database corruption
+
+### Data Persistence and Backup Strategy
+
+All persistent state is stored in SQLite databases:
+
+| Data Type | Database | Table(s) | Purpose |
+|-----------|----------|----------|---------|
+| Agent State | `checkpoints.db` | `checkpoints`, `writes` | LangGraph state persistence |
+| Message Log | `messages.db` | `messages` | Cross-session conversation history |
+| Semantic Memory | `memory.db` | `memories` | Long-term memory bank |
+| Audit Logs | `audit.db` | `logs` | Security-relevant events |
+| Proxy Access | `proxy.db` | `requests` | Network egress logging |
+
+**Backup Strategy:**
+- Automated daily backups using SQLite's online backup API
+- Compressed archives with 7-day retention
+- Automatic integrity checks during backup creation
+- Recovery commands available for Owners to restore from backup
+
+**Data Retention:**
+- Proxy logs: 30 days rolling with 100MB automatic rotation
+- Audit logs: 30 days rolling (appended, cryptographically signed)
+- Messages: Retained indefinitely (Owner-configurable retention)
+- Memories: Retained indefinitely (Owner-configurable retention)
+
+### Restart and Recovery Procedures
+
+**Gateway Restart (Graceful):**
+1. Owner sends SIGTERM or uses management command
+2. Gateway stops accepting new requests
+3. In-flight requests complete or timeout
+4. State is persisted to SQLite
+5. Gateway exits cleanly
+
+**Gateway Restart (Force):**
+1. Process supervisor sends SIGKILL or restarts the process
+2. LangGraph checkpointer recovers state from SQLite
+3. Session continues from the last checkpoint
+4. No data loss beyond the last checkpoint
+
+**Sandbox Runtime Recovery:**
+- Sandbox violations are detected and logged
+- Failed tool invocations return structured error responses
+- The Agent receives error context and can retry with corrected parameters
+- Persistent violations trigger Owner alerts
+
+### Logging and Audit Trail Integrity
+
+All logs are stored in SQLite with the following integrity protections:
+
+- **Append-Only Design:** Log entries are never modified after insertion
+- **Correlation Identifiers:** Each operation includes a UUID for tracing across middleware
+- **Sanitization:** Credentials and sensitive data are removed before logging
+- **Cryptographic Signing:** Security-relevant events are signed to detect tampering
+
+**Audit Events:**
+- Authentication attempts (successful and failed)
+- Authorization decisions (allowed and denied)
+- Configuration changes
+- Session lifecycle events (start, end, termination)
+- Security constraint violations
+
+### Resource Management
+
+**Resource Limits (Platform-Specific):**
+- **Linux:** cgroups enforce CPU time, memory consumption, and process count limits
+- **macOS:** Seatbelt profile restrictions combined with process timeout mechanisms
+
+**Recommended Resource Allocation:**
+- Memory limit: 2GB per Gateway instance
+- CPU limit: 80% of available cores (prevents resource contention)
+- Session timeout: 4 hours of inactivity (triggers graceful session end)
+- Tool execution timeout: 300 seconds per command
+
+### Port and Network Configuration
+
+The Gateway binds to `127.0.0.1` or a Tailscale interface only. No network-level authentication is required since network reachability equals authorization in a single-tenant deployment.
+
+**Default Ports:**
+- HTTP Gateway: 127.0.0.1:3000 (configurable)
+- Egress HTTP Proxy: 127.0.0.1:8080
+- Egress SOCKS5 Proxy: 127.0.0.1:1080
 
 ---
 

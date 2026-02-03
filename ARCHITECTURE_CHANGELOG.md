@@ -1,7 +1,91 @@
-## Changelog
+### v0.11.0 — 2026-02-03
 
+Architectural clarification and terminology precision addressing technology stack inconsistencies discovered through systematic review. This version distinguishes between LangChain.js callback handlers (passive observability) and middleware (active execution modification), clarifies the custom OpenTelemetry implementation, and formalizes platform path handling and credential vault abstractions.
 
-### v0.10.0 — 2026-02-03
+**Terminology Clarification: Callbacks versus Middleware:**
+*   Distinguished between LangChain.js callback handlers (passive observability instrumentation) and agent middleware (active execution modification).
+*   Callback handlers observe and record without modifying behavior—they can stack in any order since they don't interfere with each other. Used for logging, tracing, metrics collection, and content scanning.
+*   Middleware provides active modification of the agent's execution flow—later middleware operates on the outputs of earlier middleware, so order matters. Used for policy enforcement, capability injection, and operational concerns.
+*   Updated Section 8 (Middleware Composition) to clarify this distinction and reorganize the stack into three tiers: foundational policy, agent capabilities, and operational concerns.
+
+**OpenTelemetry Implementation Clarification:**
+*   Acknowledged that LangChain.js uses LangSmith for distributed tracing, not native OpenTelemetry integration.
+*   The architecture now specifies a **custom OpenTelemetry callback handler** that intercepts agent lifecycle events (LLM calls, tool invocations, chain executions) and transforms them into a canonical telemetry format.
+*   This format can be exported to OpenTelemetry Protocol (OTLP) collectors for enterprise environments, to LangSmith for development debugging, or retained in SQLite for audit purposes.
+*   The handler sanitizes sensitive data before export, ensuring credentials never flow through telemetry pipelines.
+*   Updated technology stack description from "OpenTelemetry for observability" to "custom OpenTelemetry implementation for observability."
+
+**Middleware Stack Reorganization:**
+*   Reorganized the middleware stack into three tiers for clarity: Tier 1 (Foundational Policy: Policy Middleware), Tier 2 (Agent Capabilities: Cron, Web Search, Browser, Memory, MCP Adapter, Skill Loader, Sub-Agent), Tier 3 (Operational Concerns: Summarization, Human-in-the-Loop).
+*   Moved Logger, OpenTelemetry, and Content Scanning from middleware list to callback handler section as foundational observability components.
+*   Clarified that callback handlers form the observability foundation while middleware provides active execution modification.
+
+**Platform Path Semantics:**
+*   Added explicit documentation that the Gateway normalizes all paths to canonical format before sandbox configuration.
+*   Acknowledged that bubblewrap on Linux operates on literal paths without glob support, while Seatbelt profiles on macOS support glob patterns.
+*   The Gateway performs path validation against allowed zones and resolves paths to absolute, literal form before sandbox configuration.
+*   This ensures consistent behavior across platforms with the Gateway handling platform-specific details transparently.
+
+**Credential Vault Abstraction:**
+*   Formalized the **CredentialVault** abstraction that provides unified interface across platforms.
+*   On macOS, the vault uses the Keychain Services API. On Linux, the vault uses the secret-service API (compatible with GNOME Keyring, KWallet, or pass).
+*   Credentials are read at startup, stored in memory only, never written to filesystem or logs.
+*   Rotation support via re-reading from vaults without full restart.
+*   Clarified the single-tenant model: Owner provisions credentials through platform-native tools; Gateway reads into memory at startup.
+
+**Observability Layer Refinement:**
+*   Updated all references from "OpenTelemetry Middleware" to "OpenTelemetry Callback Handler" to reflect the correct abstraction level.
+*   Clarified that traces are created through custom implementation, not native LangChain.js OpenTelemetry integration.
+*   Updated health endpoints description to reflect current implementation.
+
+**Security Constraint Refinement:**
+*   Updated Security Constraint #8 from "Never expose sandbox internals" to clarify the Gateway's role in platform abstraction and path normalization.
+
+### v0.12.0 — 2026-02-03
+
+Architecture update following comprehensive research phase to verify technology stack versions, document constitutional framework, and add operational best practices. This version introduces the constitutional documents hierarchy (SOUL > SAFETY > AGENTS), cross-platform implementation details, and operational concerns guidance. All changes are additive and maintain backward compatibility with v0.11.0.
+
+**Technology Stack Version Pinning:**
+*   Added explicit version pins for all dependencies to ensure reproducibility and prevent supply chain attacks.
+*   Bun Runtime: 1.3.8 (latest stable as of February 2026)
+*   LangChain.js: 1.2.16 (core library)
+*   LangGraph.js: 1.1.3 (@langchain/langgraph core) / 1.0.19 (langgraph wrapper)
+*   @langchain/mcp-adapters: 1.1.2 (Model Context Protocol integration)
+*   grammY: Supports Telegram Bot API 9.3 (December 2025 release)
+*   @anthropic-ai/sandbox-runtime: 0.0.35 (Beta Research Preview)
+*   Vercel Agent Browser: 0.9.0 (headless browser automation)
+*   All dependencies declared in `package.json` with exact semver ranges; transitive dependencies pinned via lockfile.
+
+**Constitutional Documents Framework (Section 10.1):**
+*   Added comprehensive framework for three-tier constitutional hierarchy: SOUL.md > SAFETY.md > AGENTS.md
+*   SOUL.md: Agent identity and values inspired by Anthropic's Constitutional AI approach (https://www.anthropic.com/constitution)
+*   SAFETY.md: Environment and harness-specific context providing Defense in Depth alongside architectural sandboxing
+*   AGENTS.md: Owner configuration following the open AGENTS.md standard (https://agents.md/) stewarded by Agentic AI Foundation
+*   Document injection mechanism ensures constitutional documents exist only in Gateway runtime memory, never materialized in sandbox filesystem
+
+**Cross-Platform Implementation Details (Section 7.x):**
+*   Added comprehensive comparison of Linux bubblewrap vs macOS sandbox-exec mechanisms
+*   Documented filesystem isolation differences: bind mounts vs Seatbelt profiles, glob support limitations
+*   Documented network isolation architecture: Unix socket bridges vs direct localhost TCP
+*   Documented Unix domain socket restrictions: seccomp BPF vs Seatbelt profile rules
+*   Documented violation detection: strace requirements on Linux vs native kernel log integration on macOS
+*   Added recommended configuration patterns with examples of platform-specific vs portable configurations
+
+**Operational Concerns and Best Practices (Section 10.2):**
+*   Added health check and readiness monitoring specifications for `/health`, `/ready`, `/metrics`, `/version` endpoints
+*   Added graceful shutdown and recovery procedures with SIGINT/SIGTERM handling
+*   Added data persistence and backup strategy covering all SQLite databases and retention policies
+*   Added restart and recovery procedures for Gateway and sandbox runtime
+*   Added logging and audit trail integrity protections including append-only design and cryptographic signing
+*   Added resource management recommendations: memory limits, CPU allocation, session timeouts
+*   Added port and network configuration specifications (127.0.0.1 binding, default ports)
+
+**Sandbox Runtime Maturity Note:**
+*   Added explicit documentation that Anthropic Sandbox Runtime is at version 0.0.35 (Beta Research Preview)
+*   Documented 0.x.y versioning indicates potential breaking changes before 1.0.0
+*   Clarified defense-in-depth measures ensure sandbox failures do not result in credential exposure or unauthorized network access
+
+Major architectural enhancement integrating production-tested security infrastructure, comprehensive observability, and formalized integration protocols. This version replaces custom sandboxing with Anthropic's proven runtime, defines complete egress proxy behavior, and adds systematic observability and lifecycle management. The architecture shifts from "build everything ourselves" to "integrate battle-tested foundations where available, implement custom logic where necessary."
 
 Major architectural enhancement integrating production-tested security infrastructure, comprehensive observability, and formalized integration protocols. This version replaces custom sandboxing with Anthropic's proven runtime, defines complete egress proxy behavior, and adds systematic observability and lifecycle management. The architecture shifts from "build everything ourselves" to "integrate battle-tested foundations where available, implement custom logic where necessary."
 
