@@ -12,19 +12,29 @@ We believe in **building on proven foundations** rather than reinventing securit
 
 This system is designed for **one person, one instance, one device.** There is no multi-user, no multi-tenant, no shared hosting. This assumption simplifies authentication, session management, concurrency, and resource allocation — and eliminates entire categories of complexity that do not serve the target use case.
 
+Multi-user scenarios are explicitly out of scope. The system does not implement user isolation, role-based access control, or shared instance management. Each device runs exactly one Owner with full system access.
+
 ### Cross-Platform Requirement
 
 The system targets both **Linux** and **macOS** as first-class platforms. Platform-specific implementation details are isolated behind clear abstractions. The Agent experience is identical across platforms — the Agent has no awareness of which operating system it runs on. The system achieves this uniformity through the Anthropic Sandbox Runtime, which provides consistent filesystem and network isolation semantics across both operating systems using OS-native sandboxing primitives under the hood.
 
 ### Terminology
 
-Three roles appear throughout this document:
+Four architectural entities appear throughout this document, each with distinct technology stacks, lifecycles, and trust boundaries:
 
-- **Project** — The framework itself, authored and maintained by us. The Project defines platform skills, default policies, security constraints, and the "Constitution" (`SOUL.md`, `SAFETY.md`). The Project is the authority on _how_ the system works.
-- **Owner** — The person who installs and runs an instance. The Owner provisions credentials, configures integrations, uploads personal skills, and interacts with the Agent. In a single-tenant system, the Owner is the only human in the loop.
-- **Agent** — The LLM-driven runtime operating inside the sandbox. A managed sub-system, not a peer.
+**Project** — The framework itself, authored and maintained by us. The Project defines platform skills, default policies, security constraints, and the "Constitution" (`SOUL.md`, `SAFETY.md`). The Project is the authority on _how_ the system works.
 
-The Owner trusts the Project (by choosing to install it). The Project trusts the Owner (by giving them full configuration authority). Neither trusts the Agent (which operates under deterministic constraints).
+**Owner** — The person who installs and runs an instance. The Owner provisions credentials, configures integrations, uploads personal skills, and interacts with the Agent. In a single-tenant system, the Owner is the only human in the loop.
+
+**Agent** — The LLM-driven runtime operating inside the sandbox. A managed sub-system, not a peer.
+
+**Egress Gateway** — The network boundary component implementing HTTP CONNECT proxy with domain allowlisting. Implemented as a separate Go or Rust binary with independent lifecycle, managed by Nix as a system service. Enforces strict allowlist-only network policy for all sandbox egress.
+
+**Orchestrator** — The agent orchestration component managing the LangChain/LangGraph runtime. Implemented in Bun with TypeScript. Owns session management, tool dispatching, prompt injection, and coordinates all other components. Runs as an independent Nix-managed service.
+
+**Platform Adapter** — The cross-platform abstraction layer handling OS-specific behaviors for sandbox invocation and credential retrieval. Implemented with runtime detection within the Orchestrator binary, abstracting differences between Linux (bubblewrap, secret-service) and macOS (Seatbelt, Keychain).
+
+The Owner trusts the Project (by choosing to install it). The Project trusts the Owner (by giving them full configuration authority). Neither trusts the Agent (which operates under deterministic constraints). The Orchestrator does not trust the Egress Gateway — communication follows strict RPC patterns with no implicit trust.
 
 ### What We're Responding To
 
@@ -109,27 +119,45 @@ This project builds a **personal AI agent runtime** with the following bounded c
 
 ---
 
-## 3. The 3-Layer Architecture
+## 3. The 4-Layer Architecture
 
-### Layer 0: The Host (The Bedrock)
+### Layer -1: The Platform Manager
 
-**Technology:** Nix Flakes (Universal).
+**Technology:** Nix Flakes with NixOS (Linux) and Nix Darwin (macOS) modules.
 
-**Role:** The host system that runs the Gateway, manages credentials, supervises processes, and provides the egress proxy. It runs on any modern Linux distribution or macOS, provided Nix is installed.
+**Role:** The infrastructure layer that packages, deploys, and manages the entire system as Nix-managed services. It operates below all application code, generating platform-specific service configurations from a unified declarative specification.
 
 **Responsibilities:**
 
-- **Identity Injection:** Stores the core `SOUL.md` and `SAFETY.md` files on the secure Host filesystem. These are **never** exposed to the sandbox filesystem. The Gateway reads them and injects their content directly into the Agent's system prompt at runtime.
+- **Service Generation:** Generates platform-appropriate service definitions from a single configuration source. On Linux, this produces systemd units. On macOS, this produces launchd plists. The application binary receives its configuration through environment variables and well-known paths, remaining platform-agnostic.
 
-- **Credential Storage:** API keys, bot tokens, and OAuth credentials are retrieved from OS-level credential vaults at startup. The Gateway implements a **CredentialVault** abstraction that provides a unified interface across platforms. On macOS, the vault uses the Keychain Services API. On Linux, the vault uses the secret-service API (compatible with GNOME Keyring, KWallet, or pass). The Gateway reads credentials from these vaults at startup and stores them in memory for the process duration. Credentials are never written to filesystem, log files, or error messages. The Gateway provides credential rotation support by re-reading from vaults without requiring full restart. This abstraction serves the single-tenant model by making credential management explicit and auditable—the Owner provisions credentials through their platform's native tools, and the Gateway reads them into memory at startup.
+- **Directory Convention Management:** Establishes platform-appropriate paths for state, runtime, and configuration directories. On Linux, these follow XDG conventions under `/var/lib/`. On macOS, these follow Apple guidelines under `~/Library/`. The application adapts to these paths at runtime through environment variables set by Nix.
 
-- **Egress Proxy:** Runs a domain-filtering HTTP CONNECT proxy bound to localhost. The proxy enforces a strict allowlist-only policy for all network egress from sandboxed processes. The proxy returns structured JSON error responses containing the error type, the denied domain, the current allowlist, and the policy that caused the denial. All access attempts are logged to SQLite with timestamps, request IDs, destination domains, and disposition (allowed or denied). The proxy supports both HTTP CONNECT for web traffic and SOCKS5 for non-HTTP protocols, ensuring comprehensive network isolation.
+- **Credential Boundary:** Credentials exist in two tiers. Non-sensitive configuration values (API endpoints, feature flags) are provided via Nix at build time. Sensitive credentials (API keys, tokens) are provisioned through OS-level vaults (Keychain on macOS, secret-service on Linux) at runtime. Nix never handles sensitive credential values.
 
-- **Process Supervision:** The Gateway manages the lifecycle of agent processes directly. It does not rely on system-level init systems (like systemd) for agent execution, allowing the entire stack to run as a user-space application via `nix run`.
+- **Update Orchestration:** Manages atomic service updates. When a new version is deployed, Nix performs an atomic switchover — the old generation is replaced entirely by the new generation, and services are restarted. There is no rolling restart or gradual rollout.
 
-- **Timer Management:** Hosts scheduled task execution. The Gateway registers jobs; Layer 0 executes them via system timers or a dedicated scheduler process. When a scheduled task fires, it triggers the Gateway, which then invokes the Agent through the normal execution path. Scheduled tasks receive the same isolation as interactive tasks.
+- **Process Lifecycle:** Services are managed by the platform init system. The Orchestrator and Egress Gateway run as independent long-running services with automatic restart on failure. Service startup order is declared in the Nix module, ensuring the Egress Gateway is available before the Orchestrator attempts network operations.
 
-- **Network Binding:** The Gateway binds to `127.0.0.1` or a Tailscale interface only. This is the sole access control mechanism — in a single-tenant deployment, network reachability equals authorization. The Gateway never binds to `0.0.0.0`.
+### Layer 0: The Host (The Bedrock)
+
+**Technology:** Unix/Linux/macOS user-space with Nix-managed services.
+
+**Role:** The host system that provides the runtime environment for the Orchestrator and Egress Gateway, manages credentials, and provides the egress proxy. It runs on any modern Linux distribution or macOS, provided Nix is installed.
+
+**Responsibilities:**
+
+- **Identity Injection:** Stores the core `SOUL.md` and `SAFETY.md` files on the secure Host filesystem. These are **never** exposed to the sandbox filesystem. The Orchestrator reads them and injects their content directly into the Agent's system prompt at runtime.
+
+- **Credential Storage:** API keys, bot tokens, and OAuth credentials are retrieved from OS-level credential vaults at startup. The Orchestrator implements a **CredentialVault** abstraction that provides a unified interface across platforms. On macOS, the vault uses the Keychain Services API. On Linux, the vault uses the secret-service API (compatible with GNOME Keyring, KWallet, or pass). The Orchestrator reads credentials from these vaults at startup and stores them in memory for the process duration. Credentials are never written to filesystem, log files, or error messages. The Orchestrator provides credential rotation support by re-reading from vaults without requiring full restart. This abstraction serves the single-tenant model by making credential management explicit and auditable — the Owner provisions credentials through their platform's native tools, and the Orchestrator reads them into memory at startup.
+
+- **Egress Proxy:** The Egress Gateway runs as an independent process managed by Nix. It implements a domain-filtering HTTP CONNECT proxy bound to localhost. The Orchestrator communicates with the Egress Gateway via HTTP over Unix domain socket, managing allowlists and retrieving audit logs. The proxy enforces a strict allowlist-only policy for all network egress from sandboxed processes.
+
+- **Process Supervision:** The Orchestrator and Egress Gateway run as independent Nix-managed services. Both processes can restart independently without affecting the other. The Orchestrator manages Agent processes through the Platform Adapter, not through system-level init systems.
+
+- **Timer Management:** Hosts scheduled task execution. The Orchestrator registers jobs; the host executes them via system timers. When a scheduled task fires, it triggers the Orchestrator, which then invokes the Agent through the normal execution path.
+
+- **Network Binding:** The Egress Gateway binds to `127.0.0.1` only. The Orchestrator exposes its interfaces via Unix domain socket for local communication. This is the sole access control mechanism — in a single-tenant deployment, network reachability equals authorization.
 
 - **Filesystem Zones:** Provides the directory structure that forms the sandbox filesystem. The host maintains the actual directories, which are exposed at `/sandbox/` paths through symlinks or bind-mounts.
 
@@ -166,9 +194,9 @@ The Agent's filesystem is partitioned into named zones with distinct permissions
 
 The Work and Outputs zones are cleared at session boundaries. Identity is injected via Prompt. Memory is managed by Middleware/SQLite. Browser state is isolated per session via Agent Browser profiles.
 
-### Layer 2: The Gateway (The Brain)
+### Layer 3: The Orchestrator (The Brain)
 
-**Technology Stack (Pinned Versions):** RealClaw pins all dependencies to specific versions to ensure reproducibility and prevent supply chain attacks. The following versions are verified and tested:
+**Technology Stack (Pinned Versions):** The system pins all dependencies to specific versions to ensure reproducibility and prevent supply chain attacks. The following versions are verified and tested:
 
 - **Bun Runtime:** 1.3.8 (latest stable as of February 2026) — `bun --version` returns the exact version string
 - **LangChain.js:** 1.2.16 (core library) — provides agent orchestration and tool definitions
@@ -181,23 +209,27 @@ The Work and Outputs zones are cleared at session boundaries. Identity is inject
 
 All dependencies are declared in `package.json` with exact semver ranges. The build process pins transitive dependencies via the lockfile to prevent dependency confusion attacks.
 
-**Role:** The orchestration layer that runs the Agent loop, dispatches tools, enforces policies, and manages state. The Gateway provides the runtime environment for the Agent, coordinating interactions between the Owner, the Agent, and external services while maintaining security boundaries.
+**Role:** The orchestration layer that runs the Agent loop, dispatches tools, enforces policies, and manages state. The Orchestrator provides the runtime environment for the Agent, coordinating interactions between the Owner, the Agent, and external services while maintaining security boundaries.
+
+**Entry Points:** The system exposes two interfaces for Owner interaction. The CLI provides power-user operations for configuration, debugging, and automation. The Web UI provides a browser-based interface for casual interaction and monitoring. Both interfaces communicate with the Orchestrator through internal APIs.
 
 **Responsibilities:**
 
 - **Agent Orchestration:** Uses the LangChain.js v1 `createAgent()` API as the canonical entry point. The agent loop, tool dispatch, and state management are handled by LangGraph. All agent capabilities are implemented as middleware — there are no privileged internal mechanisms.
 
-- **Primary Channel (Telegram):** Telegram is the Gateway's native conversational I/O surface. The Gateway uses grammY for Telegram protocol handling. Webhook requests are cryptographically verified before processing to prevent spoofing attacks. Responses are not streamed — complete responses are scanned for credential leaks and PII before delivery.
+- **Primary Channel (Telegram):** Telegram is the Orchestrator's native conversational I/O surface. The Orchestrator uses grammY for Telegram protocol handling. Webhook requests are cryptographically verified before processing to prevent spoofing attacks. Responses are not streamed — complete responses are scanned for credential leaks and PII before delivery.
 
 - **Secondary Channels (MCP Servers):** All other external services — Slack, Discord, email, calendars — are accessed as MCP servers via the LangChain MCP adapter. The Agent explicitly calls tools to reach them. These go through the full policy middleware stack. The MCP adapter handles connection management, capability negotiation, and protocol translation transparently.
 
-- **Session Lifecycle:** A session spans one calendar day, identified by a date-based thread ID. Same day means same session with continuous context. New day means fresh context with memory injection. Terminal sessions are bound to this lifecycle and are destroyed at session boundaries.
+- **Session Lifecycle:** Agent sessions are day-boundaries. A session spans one calendar day, identified by a date-based thread ID. Same day means same session with continuous context. New day means fresh context with memory injection. The sandbox itself is persistent while the system runs but can be restarted by the Owner at any time. Terminal sessions are bound to this lifecycle and are destroyed at session boundaries.
 
-- **Durable State:** LangGraph `SqliteCheckpointer` persists agent state across Gateway restarts. The checkpointer stores conversation state, tool call sequences, and checkpoint metadata in SQLite using Write-Ahead Logging (WAL) mode for concurrent access. The checkpointer maintains a two-table schema with checkpoints and writes, enabling efficient retrieval and rollback when needed.
+- **Sandbox Management:** The Orchestrator manages sandbox lifecycle through the Platform Adapter. Sandboxes are persistent worker processes that handle Agent commands. The Owner can request sandbox restart for updates or reset without affecting the overall system.
 
-- **Backup and Recovery:** The Gateway implements automated daily backups of the SQLite checkpoint database. Backups are performed using SQLite's online backup API to ensure consistency while the system is running. Backups are stored in compressed format with 7-day retention. The Gateway provides recovery commands for Owners to restore from backup when needed. Integrity checks run automatically during backup to detect corruption early.
+- **Durable State:** LangGraph `SqliteCheckpointer` persists agent state across Orchestrator restarts. The checkpointer stores conversation state, tool call sequences, and checkpoint metadata in SQLite using Write-Ahead Logging (WAL) mode for concurrent access. The checkpointer maintains a two-table schema with checkpoints and writes, enabling efficient retrieval and rollback when needed.
 
-- **Tool Dispatch:** The Gateway dispatches tool calls to appropriate handlers based on tool type.
+- **Backup and Recovery:** The Orchestrator implements automated daily backups of the SQLite checkpoint database. Backups are performed using SQLite's online backup API to ensure consistency while the system is running. Backups are stored in compressed format with 7-day retention. The Orchestrator provides recovery commands for Owners to restore from backup when needed. Integrity checks run automatically during backup to detect corruption early.
+
+- **Tool Dispatch:** The Orchestrator dispatches tool calls to appropriate handlers based on tool type.
 
 - **Memory Middleware:** Three-tier recall system:
   - **Checkpointer:** Within-session state persistence (LangGraph SqliteCheckpointer)
@@ -205,6 +237,20 @@ All dependencies are declared in `package.json` with exact semver ranges. The bu
   - **Memory Bank:** Semantic long-term memory with embedding-based retrieval (SQLite `memories` table)
 
 - **Content Scanning:** The `afterModel` hook scans all outbound content for credential leaks, PII, and policy violations before delivery to any channel.
+
+- **Egress Gateway Communication:** The Orchestrator manages the Egress Gateway through a well-defined RPC interface over Unix domain socket. Operations include allowlist management, statistics retrieval, and audit log streaming. The Orchestrator never assumes implicit trust — all gateway operations require explicit API calls.
+
+### Inter-Process Communication
+
+The system uses well-defined RPC patterns for component communication:
+
+**Orchestrator to Egress Gateway:** HTTP over Unix domain socket. The Orchestrator sends management commands (add/remove domains, reload configuration) and receives audit log streams. Endpoints include `POST /api/v1/allowlist/add`, `POST /api/v1/allowlist/remove`, `GET /api/v1/logs/stream`, and `POST /api/v1/reload`.
+
+**Orchestrator to MCP Servers:** stdio-based JSON-RPC following the Model Context Protocol standard. Each MCP server is spawned as a subprocess with configuration passed via environment or stdin.
+
+**Orchestrator to Sandbox:** stdio-based JSON-RPC for command execution and file operations. PTY file descriptors are passed for interactive terminal sessions.
+
+**Configuration Management:** All configuration is managed through a unified YAML file located at platform-appropriate paths. Nix generates default values at build time; Owners override through user configuration. Environment variables set by Nix provide runtime paths to the configuration file.
 
 ---
 
@@ -280,37 +326,39 @@ When a skill containing scripts is ingested, a lightweight LLM (Haiku-class) ana
 
 ---
 
-## 6. Egress Proxy Architecture
+## 6. Egress Gateway Architecture
 
-All network access from sandboxed processes routes through a local HTTP CONNECT proxy running on Layer 0. The proxy implements a strict allowlist-only security model with comprehensive logging and structured error responses.
+**Technology:** Go or Rust binary, managed by Nix as an independent system service.
 
-### Proxy Architecture
+The Egress Gateway operates as an independent process with its own lifecycle managed by the platform init system (systemd on Linux, launchd on macOS). It is not embedded within the Orchestrator but communicates via RPC over Unix domain socket.
 
-The egress proxy system consists of two complementary proxy servers that work together to enforce network isolation:
+### Service Architecture
+
+The Egress Gateway consists of two complementary proxy servers that work together to enforce network isolation. The Orchestrator manages the gateway's allowlist through a well-defined HTTP API, ensuring that network policy remains under Orchestrator control while the proxy itself runs as a separate trust boundary.
 
 **HTTP/HTTPS Proxy (Primary):**
-The primary proxy listens on port 8080 and implements the HTTP CONNECT method per RFC 7231. When a sandboxed process requests a connection to an external host, the proxy validates the destination domain against the current allowlist before establishing the tunnel. HTTPS traffic is handled transparently — the proxy establishes a tunnel to the target hostname without terminating TLS, preserving end-to-end encryption while allowing domain-based filtering.
+The primary proxy listens on a configurable port and implements the HTTP CONNECT method per RFC 7231. When a sandboxed process requests a connection to an external host, the proxy validates the destination domain against the current allowlist before establishing the tunnel. HTTPS traffic is handled transparently — the proxy establishes a tunnel to the target hostname without terminating TLS, preserving end-to-end encryption while allowing domain-based filtering.
 
 **SOCKS5 Proxy (Secondary):**
-The secondary proxy listens on port 1080 and handles non-HTTP TCP traffic such as database connections, SSH tunnels, and other protocol-specific communication. The SOCKS5 proxy enforces identical domain allowlist restrictions as the HTTP proxy, ensuring consistent security policy regardless of protocol.
+The secondary proxy handles non-HTTP TCP traffic such as database connections, SSH tunnels, and other protocol-specific communication. The SOCKS5 proxy enforces identical domain allowlist restrictions as the HTTP proxy, ensuring consistent security policy regardless of protocol.
 
 ### Connection Flow
 
 When a sandboxed process attempts network communication, the following sequence occurs:
 
-First, the sandboxed process initiates a connection through the configured proxy settings (HTTP_PROXY, HTTPS_PROXY, ALL_PROXY environment variables). The sandbox runtime ensures these environment variables are set and that the process cannot bypass them by removing network namespace access.
+First, the sandboxed process initiates a connection through the configured proxy settings. The Platform Adapter ensures these environment variables are set (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`) and that the process cannot bypass them by removing network namespace access.
 
-Second, the proxy receives the connection request and extracts the destination domain from the HTTP CONNECT request (for HTTP) or SOCKS5 handshake (for other protocols). The proxy performs DNS resolution on the host side, preventing the sandboxed process from controlling which IP addresses are contacted.
+Second, the proxy receives the connection request and extracts the destination domain from the HTTP CONNECT request (for HTTP) or SOCKS5 handshake (for other protocols). DNS resolution occurs on the host side, preventing the sandboxed process from controlling which IP addresses are contacted.
 
-Third, the proxy checks the destination domain against the current allowlist. Domains are matched using exact string comparison with wildcard support for subdomains (e.g., "*.github.com" matches "api.github.com" but not "notgithub.com"). Denied domains take precedence over allowed domains.
+Third, the proxy checks the destination domain against the current allowlist. Domains are matched using exact string comparison with wildcard support for subdomains. Denied domains take precedence over allowed domains.
 
 Fourth, if the domain is allowed, the proxy establishes the connection to the target and tunnels data bidirectionally. If the domain is denied, the proxy returns a structured JSON error response and closes the connection.
 
 ### Allowlist Management
 
-The Gateway manages the proxy allowlist through a well-defined update protocol. Before skill execution begins, the Gateway calls the proxy management API to temporarily expand the allowlist with domains required by the skill. When skill execution completes, the Gateway resets the allowlist to its baseline configuration.
+The Orchestrator manages the proxy allowlist through the RPC interface. Before skill execution begins, the Orchestrator calls the proxy management API to temporarily expand the allowlist with domains required by the skill. When skill execution completes, the Orchestrator resets the allowlist to its baseline configuration.
 
-The allowlist supports three tiers of domains: system domains (required for core functionality, cannot be modified), skill domains (temporarily added during skill execution), and owner domains (configured by the Owner for personal integrations). The Gateway maintains these tiers separately to ensure skill modifications cannot persist beyond their execution context.
+The allowlist supports three tiers of domains: system domains (required for core functionality, cannot be modified), skill domains (temporarily added during skill execution), and owner domains (configured by the Owner for personal integrations). The Orchestrator maintains these tiers separately to ensure skill modifications cannot persist beyond their execution context.
 
 ### Structured Error Responses
 
@@ -332,9 +380,11 @@ The proxy uses standard HTTP status codes to indicate error categories: 407 Prox
 
 ### Logging Specification
 
-Every request processed by the proxy is logged to SQLite with complete context for security auditing and operational debugging. Log entries include the ISO8601 timestamp, a UUID request identifier, the source process ID, the destination domain and port, the request method, the disposition (allowed or denied), the specific rule that was applied, bytes transferred in each direction, request duration in milliseconds, and the TLS SNI hostname for HTTPS requests.
+Every request processed by the Egress Gateway is logged to SQLite with complete context for security auditing and operational debugging. The Orchestrator retrieves these logs through the RPC interface for centralized analysis.
 
-Log data is retained for 30 days rolling with automatic rotation at 100 megabytes. The Gateway provides an API endpoint for Owners to query recent denied requests, enabling troubleshooting when legitimate operations are blocked.
+Log entries include the ISO8601 timestamp, a UUID request identifier, the source process ID, the destination domain and port, the request method, the disposition (allowed or denied), the specific rule that was applied, bytes transferred in each direction, request duration in milliseconds, and the TLS SNI hostname for HTTPS requests.
+
+Log data is retained for 30 days rolling with automatic rotation at 100 megabytes. The Orchestrator provides query APIs for Owners to search and analyze log data for debugging and audit purposes.
 
 ### Security Considerations
 
@@ -398,7 +448,7 @@ The Gateway implements several patterns to ensure consistent behavior across Lin
 | **Non-existent Files** | Cannot protect (bind mount creates files) | Pattern-based rules block creation |
 | **Symlink Handling** | Detects and mounts `/dev/null` at symlink paths | Uses `subpath` matching |
 
-The Gateway handles these differences by:
+The Platform Adapter handles these differences by:
 1. Normalizing all paths to absolute, literal form before validation
 2. Warning when glob patterns are used (they won't work on Linux)
 3. Expanding glob patterns to literal paths where possible
@@ -413,7 +463,7 @@ The Gateway handles these differences by:
 | **DNS Resolution** | Through SOCKS5 proxy | Same, via proxy configuration |
 | **Environment Variables** | `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` | Same set |
 
-Both platforms route all network traffic through the egress proxy (HTTP CONNECT on port 8080, SOCKS5 on port 1080) with domain allowlist enforcement.
+Both platforms route all network traffic through the Egress Gateway (HTTP CONNECT on configurable port, SOCKS5 on configurable port) with domain allowlist enforcement.
 
 **Unix Domain Socket Restrictions:**
 
@@ -433,7 +483,7 @@ On Linux, the sandbox runtime blocks `socket(AF_UNIX, ...)` syscalls at the kern
 | **Real-time Monitoring** | Not available | Native via `log stream` |
 | **Implementation** | Manual syscall tracing | Event-driven via `os_log` |
 
-The Gateway configures macOS violation monitoring where available and logs violations to the audit trail.
+The Platform Adapter configures macOS violation monitoring where available and logs violations to the audit trail.
 
 **Recommended Configuration Patterns:**
 
@@ -467,13 +517,13 @@ The Gateway configures macOS violation monitoring where available and logs viola
 
 ## 8. Middleware Composition
 
-The Gateway composes multiple LangChain.js extensions in a defined order. The architecture distinguishes between **callback handlers** (passive observability instrumentation) and **middleware** (active execution modification). This distinction matters: callback handlers observe and record without modifying behavior, while middleware can transform inputs, inject context, or interrupt execution.
+The Orchestrator composes multiple LangChain.js extensions in a defined order. The architecture distinguishes between **callback handlers** (passive observability instrumentation) and **middleware** (active execution modification). This distinction matters: callback handlers observe and record without modifying behavior, while middleware can transform inputs, inject context, or interrupt execution.
 
 Callback handlers provide passive instrumentation for logging, tracing, metrics collection, and content scanning. They can stack in any order since they don't interfere with each other. Middleware provides active modification of the agent's execution flow—later middleware operates on the outputs of earlier middleware, so order matters.
 
 ### 8.1 Callback Handlers: Observability Foundation
 
-The Gateway implements callback handlers that intercept all agent lifecycle events and emit telemetry. These handlers are always active and form the observability foundation.
+The Orchestrator implements callback handlers that intercept all agent lifecycle events and emit telemetry. These handlers are always active and form the observability foundation.
 
 **Logger Callback Handler** instruments all hooks, writes structured records to SQLite. Captures tool invocations, model calls, and agent turn completions with timestamps, request IDs, and durations. All log entries include correlation identifiers for tracing related operations across middleware.
 
@@ -540,59 +590,59 @@ All security-relevant events are logged with complete context for audit purposes
 
 ### Interactive Path
 
-When the Owner sends a message via Telegram, grammY receives the update. The Gateway computes the day-based thread ID and invokes the agent. **The `SOUL.md` identity is injected into the system prompt.** The Agent processes the request.
+When the Owner sends a message via Telegram, grammY receives the update. The Orchestrator computes the day-based thread ID and invokes the agent. **The `SOUL.md` identity is injected into the system prompt.** The Agent processes the request.
 
 ### Scheduled Path
 
-When a scheduled task fires, the Gateway invokes the Agent with the scheduled task.
+When a scheduled task fires, the Orchestrator invokes the Agent with the scheduled task.
 
 ### Telegram Integration Lifecycle
 
-The Gateway integrates with Telegram through grammY, supporting webhook mode for production deployments and long-polling mode for development environments.
+The Orchestrator integrates with Telegram through grammY, supporting webhook mode for production deployments and long-polling mode for development environments.
 
 **Webhook Mode (Production):**
-The Gateway exposes an HTTP endpoint that receives Telegram updates via POST requests. Before accepting any update, the Gateway verifies the request originated from Telegram by validating the cryptographic signature computed from the bot token and update payload. Updates are deduplicated using their unique update identifiers to prevent duplicate processing during webhook retries. The Gateway implements rate limiting to comply with Telegram's requirements and protect against abuse.
+The Orchestrator exposes an HTTP endpoint that receives Telegram updates via POST requests. Before accepting any update, the Orchestrator verifies the request originated from Telegram by validating the cryptographic signature computed from the bot token and update payload. Updates are deduplicated using their unique update identifiers to prevent duplicate processing during webhook retries. The Orchestrator implements rate limiting to comply with Telegram's requirements and protect against abuse.
 
 **Long Polling Mode (Development):**
-For development environments where exposing a webhook endpoint is impractical, the Gateway uses grammY's long-polling mechanism to receive updates. This mode provides equivalent functionality while simplifying local development workflow.
+For development environments where exposing a webhook endpoint is impractical, the Orchestrator uses grammY's long-polling mechanism to receive updates. This mode provides equivalent functionality while simplifying local development workflow.
 
 **Graceful Shutdown:**
-The Gateway registers handlers for SIGINT and SIGTERM signals to ensure clean shutdown. On shutdown, the Gateway stops accepting new updates, waits for in-flight requests to complete (up to a configurable timeout), acknowledges the final update, and then terminates. This ensures no messages are lost during Gateway restarts.
+The Orchestrator registers handlers for SIGINT and SIGTERM signals to ensure clean shutdown. On shutdown, the Orchestrator stops accepting new updates, waits for in-flight requests to complete (up to a configurable timeout), acknowledges the final update, and then terminates. This ensures no messages are lost during Orchestrator restarts.
 
 **Update Processing:**
-Updates are processed within the context of a session identified by the combination of chat identifier and date. The Gateway maps each update to its corresponding session, enabling conversation continuity within a single day while maintaining clean session boundaries across days.
+Updates are processed within the context of a session identified by the combination of chat identifier and date. The Orchestrator maps each update to its corresponding session, enabling conversation continuity within a single day while maintaining clean session boundaries across days.
 
 ### MCP Integration
 
-The Gateway integrates with Model Context Protocol servers through the LangChain MCP adapter (`@langchain/mcp-adapters`). This integration enables the Agent to access external services (Slack, Discord, email, calendars, custom services) through a standardized protocol interface.
+The Orchestrator integrates with Model Context Protocol servers through the LangChain MCP adapter (`@langchain/mcp-adapters`). This integration enables the Agent to access external services (Slack, Discord, email, calendars, custom services) through a standardized protocol interface.
 
 **Connection Management:**
-The Gateway maintains persistent connections to configured MCP servers using the MCP TypeScript SDK. Connections are established during Gateway startup and persist throughout the Gateway lifecycle. The Gateway handles connection failures with automatic reconnection and exponential backoff.
+The Orchestrator maintains persistent connections to configured MCP servers using the MCP TypeScript SDK. Connections are established during Orchestrator startup and persist throughout the Orchestrator lifecycle. The Orchestrator handles connection failures with automatic reconnection and exponential backoff.
 
 **Capability Negotiation:**
-During connection establishment, the Gateway negotiates capabilities with each MCP server, determining which tools, resources, and prompts are available. The Gateway enforces a tool allowlist policy, ensuring the Agent can only access MCP tools that have been explicitly approved by the Owner.
+During connection establishment, the Orchestrator negotiates capabilities with each MCP server, determining which tools, resources, and prompts are available. The Orchestrator enforces a tool allowlist policy, ensuring the Agent can only access MCP tools that have been explicitly approved by the Owner.
 
 **Request Routing:**
-When the Agent invokes an MCP tool, the Gateway routes the request through the MCP adapter to the appropriate server. The adapter handles protocol serialization, request routing, and response deserialization transparently. Tool results are sanitized before being returned to the Agent, removing any protocol-specific metadata.
+When the Agent invokes an MCP tool, the Orchestrator routes the request through the MCP adapter to the appropriate server. The adapter handles protocol serialization, request routing, and response deserialization transparently. Tool results are sanitized before being returned to the Agent, removing any protocol-specific metadata.
 
 **Security Considerations:**
-MCP servers run as separate processes outside the sandbox, preventing them from accessing sandboxed resources directly. All MCP communication is logged through the observability middleware, providing complete audit trails. The Gateway validates all MCP responses against expected schemas to prevent protocol confusion attacks.
+MCP servers run as separate processes outside the sandbox, preventing them from accessing sandboxed resources directly. All MCP communication is logged through the observability middleware, providing complete audit trails. The Orchestrator validates all MCP responses against expected schemas to prevent protocol confusion attacks.
 
 ### Terminal Execution Path
 
-When the Agent calls the terminal tool, the Gateway invokes the Anthropic Sandbox Runtime with the appropriate configuration for the current context. The sandbox runtime enforces filesystem and network restrictions, routing all network traffic through the egress proxy.
+When the Agent calls the terminal tool, the Orchestrator invokes the Anthropic Sandbox Runtime with the appropriate configuration for the current context. The sandbox runtime enforces filesystem and network restrictions, routing all network traffic through the Egress Gateway.
 
 ### Browser Execution Path
 
-When the Agent calls the browser tool, the Gateway invokes Agent Browser with the appropriate action. The browser is configured with proxy settings that route all network traffic through the egress proxy, enforcing domain allowlists on all web requests. Browser sessions are isolated per conversation thread with unique profiles to prevent state leakage between conversations.
+When the Agent calls the browser tool, the Orchestrator invokes Agent Browser with the appropriate action. The browser is configured with proxy settings that route all network traffic through the Egress Gateway, enforcing domain allowlists on all web requests. Browser sessions are isolated per conversation thread with unique profiles to prevent state leakage between conversations.
 
 ### Skill Execution Path
 
-When the Agent executes skill scripts, the Gateway detects the skill context and updates the egress proxy allowlist to include any domains the skill requires. The Gateway also updates the sandbox runtime configuration to match the skill's trust tier and required filesystem permissions. After skill execution completes, the Gateway resets both the proxy allowlist and sandbox configuration to baseline values.
+When the Agent executes skill scripts, the Orchestrator detects the skill context and updates the Egress Gateway allowlist to include any domains the skill requires. The Orchestrator also updates the sandbox runtime configuration to match the skill's trust tier and required filesystem permissions. After skill execution completes, the Orchestrator resets both the proxy allowlist and sandbox configuration to baseline values.
 
 ### MCP Integration Path
 
-When the Agent calls an MCP tool, the Gateway routes the request through the LangChain MCP adapter to the appropriate MCP server. The MCP adapter handles connection lifecycle, capability negotiation, and error handling transparently. MCP tool calls are subject to the same observability and logging middleware as native tools, ensuring complete audit trails regardless of the tool's origin.
+When the Agent calls an MCP tool, the Orchestrator routes the request through the LangChain MCP adapter to the appropriate MCP server. The MCP adapter handles connection lifecycle, capability negotiation, and error handling transparently. MCP tool calls are subject to the same observability and logging middleware as native tools, ensuring complete audit trails regardless of the tool's origin.
 
 ### Observability Path
 
@@ -691,7 +741,7 @@ RealClaw follows the AGENTS.md standard (https://agents.md/) — an open format 
 
 ### Document Injection Mechanism
 
-All three constitutional documents are read by the Gateway at startup from the Host filesystem (`identity/` directory) and injected directly into the Agent's system prompt. The injection order follows the priority hierarchy:
+All three constitutional documents are read by the Orchestrator at startup from the Host filesystem (`identity/` directory) and injected directly into the Agent's system prompt. The injection order follows the priority hierarchy:
 
 ```
 System Prompt = SOUL.md + SAFETY.md + AGENTS.md + Runtime Context
@@ -699,7 +749,7 @@ System Prompt = SOUL.md + SAFETY.md + AGENTS.md + Runtime Context
 
 This ensures that the Agent's immutable identity (SOUL.md) is never overridden by situational context (AGENTS.md), while still allowing the Owner to provide meaningful operational guidance.
 
-**Security Property:** Since the constitutional documents exist only in the Gateway's runtime memory and are never written to the sandbox filesystem, the Agent cannot:
+**Security Property:** Since the constitutional documents exist only in the Orchestrator's runtime memory and are never written to the sandbox filesystem, the Agent cannot:
 - Read the documents to identify gaps or inconsistencies
 - Copy the documents to preserve them across sessions
 - Reason about the documents as external entities that could be manipulated
@@ -712,30 +762,30 @@ RealClaw is designed for single-tenant, owner-operated deployment. While the arc
 
 ### Health Checks and Readiness Monitoring
 
-The Gateway exposes standardized health endpoints for operational monitoring:
+The Orchestrator exposes standardized health endpoints for operational monitoring:
 
 - **`/health` (Liveness):** Returns 200 OK if the process is running. Used by process supervisors to detect hung processes.
-- **`/ready` (Readiness):** Returns 200 OK only when all dependencies are healthy. Verifies database connectivity, MCP server availability, and proxy status. Owners can configure additional health checks via middleware.
+- **`/ready` (Readiness):** Returns 200 OK only when all dependencies are healthy. Verifies database connectivity, MCP server availability, and Egress Gateway status. Owners can configure additional health checks via middleware.
 - **`/metrics` (Prometheus):** Exposes Prometheus-compatible metrics for monitoring systems. Key metrics include HTTP request counts, tool invocation counts, proxy dispositions, and resource utilization.
 - **`/version`:** Returns version information for debugging and support.
 
 **Recommended Monitoring Thresholds:**
 - Liveness failures trigger immediate restart via process supervision
 - Readiness failures trigger alerts to the Owner and prevent new session starts
-- Proxy denial rate > 1% of total requests triggers alerts (potential misconfiguration)
+- Egress Gateway denial rate > 1% of total requests triggers alerts (potential misconfiguration)
 
 ### Graceful Shutdown and Recovery
 
-The Gateway implements graceful shutdown handlers for SIGINT and SIGTERM signals:
+The Orchestrator implements graceful shutdown handlers for SIGINT and SIGTERM signals:
 
-1. **Signal Reception:** The Gateway stops accepting new requests
+1. **Signal Reception:** The Orchestrator stops accepting new requests
 2. **Drain Timeout:** In-flight requests complete within a configurable timeout (default: 30 seconds)
 3. **Final Acknowledgment:** The final update is acknowledged before termination
 4. **State Persistence:** LangGraph checkpointer ensures durable state is flushed
-5. **Process Exit:** The Gateway terminates cleanly
+5. **Process Exit:** The Orchestrator terminates cleanly
 
 **Recovery Properties:**
-- LangGraph SqliteCheckpointer ensures session state survives Gateway restarts
+- LangGraph SqliteCheckpointer ensures session state survives Orchestrator restarts
 - SQLite Write-Ahead Logging (WAL) mode ensures crash consistency
 - Daily automated backups protect against database corruption
 
@@ -765,14 +815,14 @@ All persistent state is stored in SQLite databases:
 
 ### Restart and Recovery Procedures
 
-**Gateway Restart (Graceful):**
+**Orchestrator Restart (Graceful):**
 1. Owner sends SIGTERM or uses management command
-2. Gateway stops accepting new requests
+2. Orchestrator stops accepting new requests
 3. In-flight requests complete or timeout
 4. State is persisted to SQLite
-5. Gateway exits cleanly
+5. Orchestrator exits cleanly
 
-**Gateway Restart (Force):**
+**Orchestrator Restart (Force):**
 1. Process supervisor sends SIGKILL or restarts the process
 2. LangGraph checkpointer recovers state from SQLite
 3. Session continues from the last checkpoint
@@ -807,17 +857,17 @@ All logs are stored in SQLite with the following integrity protections:
 - **macOS:** Seatbelt profile restrictions combined with process timeout mechanisms
 
 **Recommended Resource Allocation:**
-- Memory limit: 2GB per Gateway instance
+- Memory limit: 2GB per Orchestrator instance
 - CPU limit: 80% of available cores (prevents resource contention)
 - Session timeout: 4 hours of inactivity (triggers graceful session end)
 - Tool execution timeout: 300 seconds per command
 
 ### Port and Network Configuration
 
-The Gateway binds to `127.0.0.1` or a Tailscale interface only. No network-level authentication is required since network reachability equals authorization in a single-tenant deployment.
+The Orchestrator and Egress Gateway bind to `127.0.0.1` or a Tailscale interface only. No network-level authentication is required since network reachability equals authorization in a single-tenant deployment.
 
 **Default Ports:**
-- HTTP Gateway: 127.0.0.1:3000 (configurable)
+- Orchestrator HTTP: 127.0.0.1:3000 (configurable)
 - Egress HTTP Proxy: 127.0.0.1:8080
 - Egress SOCKS5 Proxy: 127.0.0.1:1080
 
@@ -829,19 +879,19 @@ The Gateway binds to `127.0.0.1` or a Tailscale interface only. No network-level
 2.  **Never** mount credentials into the sandbox or expose them in the Agent's context.
 3.  **Never** mount `identity/` files into the sandbox. Identity is injected via prompt only.
 4.  **Never** bypass path validation for file operations.
-5.  **Never** allow direct network access from the sandbox — all egress routes through the egress proxy.
-6.  **Never** bind the Gateway to `0.0.0.0`.
-7.  **Never** persist terminal sessions across Gateway restarts.
+5.  **Never** allow direct network access from the sandbox — all egress routes through the Egress Gateway.
+6.  **Never** bind services to `0.0.0.0`.
+7.  **Never** persist terminal sessions across Orchestrator restarts.
 8.  **Never** expose sandbox internals to the Agent — packages appear available without explanation.
 9.  **Never** trust path input without resolution and validation.
 10. **Never** return silent failures.
 11. **Never** allow the Agent to directly read or write memory storage.
 12. **Never** execute skill scripts without prior LLM analysis and Owner approval.
-13. **Never** allow browser automation without egress proxy enforcement.
+13. **Never** allow browser automation without Egress Gateway enforcement.
 14. **Never** share browser profiles between conversations.
 15. **Never** skip webhook verification for Telegram integration.
 16. **Never** connect MCP servers without capability negotiation.
-17. **Never** expose proxy management API to unauthenticated requests.
+17. **Never** expose Egress Gateway management API to unauthenticated requests.
 18. **Never** log credentials or sensitive configuration data.
 19. **Never** allow Unix socket access from sandboxed processes without explicit configuration.
 20. **Never** bypass the Anthropic Sandbox Runtime for command execution.

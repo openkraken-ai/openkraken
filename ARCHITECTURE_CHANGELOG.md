@@ -1,3 +1,92 @@
+### v0.13.0 — 2026-02-03
+
+**Architectural Evolution: Nix Platform Layer, IPC/RPC Communication, and Terminology Disambiguation**
+
+This version represents a significant architectural evolution following investigation into OpenClaw's architecture, Nix's role as a platform layer, and cross-platform communication patterns. Key changes establish the system as a Nix-managed service architecture with independent components communicating via RPC.
+
+**Layer -1: The Platform Manager**
+* Added new architectural layer describing Nix's role as the infrastructure layer that packages, deploys, and manages the system as Nix-managed services.
+* Covers service generation (systemd on Linux, launchd on macOS), directory convention management, credential boundary definition, update orchestration (atomic switchover), and process lifecycle.
+* Clarifies that Nix operates below all application code, generating platform-specific service configurations from a unified declarative specification.
+
+**IPC/RPC Communication Patterns**
+* Added explicit communication patterns between system components.
+* Orchestrator to Egress Gateway: HTTP over Unix domain socket with management commands (allowlist add/remove, stats retrieval, log streaming).
+* Orchestrator to MCP Servers: stdio-based JSON-RPC following Model Context Protocol standard.
+* Orchestrator to Sandbox: stdio-based JSON-RPC for command execution and file operations with PTY file descriptor passing.
+* Configuration Management: Unified YAML configuration with Nix providing defaults, Owners providing overrides, environment variables for runtime paths.
+
+**Terminology Disambiguation**
+* Expanded terminology section to clarify four distinct architectural entities:
+  * Project — The framework itself.
+  * Owner — The person running the instance.
+  * Agent — The LLM-driven runtime.
+  * Egress Gateway — Network boundary component (Go/Rust binary).
+  * Orchestrator — Agent orchestration component (Bun/TypeScript).
+  * Platform Adapter — Cross-platform abstraction layer within Orchestrator.
+
+**Layer Renumbering**
+* Renumbered architecture layers to reflect the new understanding:
+  * Layer -1: Platform Manager (Nix infrastructure).
+  * Layer 0: Host (Unix/Linux/macOS user-space with Nix-managed services).
+  * Layer 1: Sandbox (Isolation via Anthropic Sandbox Runtime).
+  * Layer 2: Agent (LLM-driven runtime inside sandbox).
+  * Layer 3: Orchestrator (Agent orchestration and coordination).
+
+**Gateway → Orchestrator Renaming**
+* Renamed Layer 2 from "Gateway" to "Orchestrator" throughout the document to clarify architectural boundaries.
+* The Orchestrator is now explicitly the agent orchestration component implemented in Bun/TypeScript.
+* The Egress Gateway is a separate Go/Rust binary with independent lifecycle, managed by Nix.
+* All "Gateway" references were reviewed and updated to the correct entity (Orchestrator or Egress Gateway).
+
+**Egress Gateway Independence**
+* Clarified that the Egress Gateway runs as an independent process with its own lifecycle managed by the platform init system.
+* Communicates with the Orchestrator via RPC over Unix domain socket.
+* Orchestrator manages allowlists through the RPC interface but does not embed the proxy functionality.
+
+**Credential Provisioning Model**
+* Updated to reflect dual-tier credential strategy:
+  * Non-sensitive configuration (API endpoints, feature flags) via Nix at build time.
+  * Sensitive credentials (API keys, tokens) via OS-level vaults (Keychain on macOS, secret-service on Linux) at runtime.
+* Nix never handles sensitive credential values; runtime retrieval keeps credentials out of Nix store.
+
+**Session Lifecycle Model**
+* Clarified sandbox persistence model:
+  * Sandbox is persistent while the system runs (Owner-controlled restarts).
+  * Agent sessions are day-boundaries with continuous context within a day, fresh context on new days.
+  * Terminal sessions are bound to session lifecycle and destroyed at boundaries.
+
+**Configuration Format**
+* Specified YAML as the unified configuration format for the system.
+* Located at platform-appropriate paths (Linux: `/etc/realclaw/config.yaml`, macOS: `~/Library/Application Support/realclaw/config.yaml`).
+
+**Multi-User Clarification**
+* Explicitly stated that multi-user scenarios are out of scope.
+* No user isolation, role-based access control, or shared instance management.
+* Each device runs exactly one Owner with full system access.
+
+**Entry Point Interfaces**
+* Documented dual entry points:
+  * CLI provides power-user operations for configuration, debugging, and automation.
+  * Web UI provides browser-based interface for casual interaction and monitoring.
+* Both interfaces communicate with the Orchestrator through internal APIs.
+
+**Section Updates**
+* Section 1 (Mission Statement): Minor updates to reflect architectural terminology changes.
+* Section 3 (Architecture): Complete rewrite of Layer 0 and new Layer -1 sections, renamed Layer 2 to Layer 3 (Orchestrator).
+* Section 6 (Egress Gateway): Complete rewrite to reflect independent service model, RPC management interface, Nix-managed lifecycle.
+* Section 7 (Platform): Renamed to Platform Adapter, clarifying role within Orchestrator for runtime platform detection and adaptation.
+* Section 8 (Middleware): Updated terminology from Gateway to Orchestrator.
+* Section 9 (Data Flow): Updated terminology and clarified Orchestrator's role in all data paths.
+* Section 10.1 (Constitutional Documents): Updated document injection mechanism to reference Orchestrator.
+* Section 10.2 (Operational Concerns): Updated health checks, shutdown procedures, and recovery properties to reference Orchestrator.
+* Section 11 (Security Constraints): Updated constraints to reference Egress Gateway and Orchestrator correctly.
+
+**Fixes**
+* Platform Path Semantics: Clarified that Platform Adapter handles path normalization and validation.
+* Network Isolation: Corrected all references to use "Egress Gateway" for network proxy functionality, "Orchestrator" for agent orchestration.
+* Process Supervision: Clarified Nix-managed service lifecycle for both Egress Gateway and Orchestrator.
+
 ### v0.11.0 — 2026-02-03
 
 Architectural clarification and terminology precision addressing technology stack inconsistencies discovered through systematic review. This version distinguishes between LangChain.js callback handlers (passive observability) and middleware (active execution modification), clarifies the custom OpenTelemetry implementation, and formalizes platform path handling and credential vault abstractions.
