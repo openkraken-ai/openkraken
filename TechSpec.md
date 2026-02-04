@@ -46,8 +46,8 @@ This section defines the concrete technology stack for RealClaw, specifying exac
 
 | Component | Version | Justification |
 |-----------|---------|---------------|
-| **Nix** | 2.24.x (latest stable) | Reproducible builds via Nix Flakes. Cross-platform package management. |
-| **NixOS Modules** | 24.11 (channel) | Declarative system configuration. Generates systemd units (Linux) and launchd plists (macOS). |
+| **Nix** | 2.31.3 (latest stable) | Reproducible builds via Nix Flakes. Cross-platform package management. |
+| **nixpkgs** | 25.11 (stable channel) | Declarative system configuration. Generates systemd units (Linux) and launchd plists (macOS). |
 | **Egress Gateway** | Go 1.25.6 | Systems programming language for network proxy. Selected for faster implementation velocity, simpler concurrency (goroutines), and mature HTTP CONNECT proxy ecosystem. |
 
 ### 1.6 Dependency Management Strategy
@@ -143,36 +143,94 @@ This section defines the physical database schema using Mermaid ERD syntax. All 
 
 ### 3.1 Checkpoints Database (`checkpoints.db`)
 
-Stores LangGraph agent state persistence. Two-table schema per LangGraph SqliteCheckpointer specification.
+Stores LangGraph agent state persistence. Two-table schema compatible with LangGraph SqliteCheckpointer specification, using BLOB serialization and composite primary keys.
 
 ```mermaid
 erDiagram
     checkpoints {
-        text thread_id PK "Thread identifier (UUID as TEXT)"
-        text checkpoint_id PK "Checkpoint unique ID"
-        blob checkpoint "Serialized checkpoint state (MessagePack)"
-        integer created_at "Unix timestamp"
+        text thread_id PK "Thread identifier"
+        text checkpoint_ns PK "Checkpoint namespace (default: '')"
+        text checkpoint_id PK "Checkpoint unique ID (UUID6)"
+        text parent_checkpoint_id FK "Parent checkpoint reference"
+        text type "Serialization type (json, jsonplus)"
+        blob checkpoint "Serialized Checkpoint {v, id, ts, channel_values, channel_versions, versions_seen}"
+        blob metadata "Serialized CheckpointMetadata {source, step, parents}"
     }
     
     writes {
-        text thread_id PK, FK "Thread identifier (UUID as TEXT)"
+        text thread_id PK "Thread identifier"
+        text checkpoint_ns PK "Checkpoint namespace (default: '')"
         text checkpoint_id PK "Checkpoint reference"
-        text task_id PK "Task within checkpoint"
-        text channel "Write channel name"
-        blob value "Serialized write value (MessagePack)"
-        integer created_at "Unix timestamp"
+        text task_id PK "Task identifier"
+        integer idx PK "Write order index"
+        text channel "Channel name (e.g., 'messages', '__pregel_tasks')"
+        text type "Serialization type"
+        blob value "Serialized write value"
     }
     
     checkpoints ||--o{ writes : "contains"
 ```
 
 **Schema Notes:**
-- `thread_id`: UUID identifying the agent conversation/session. Maps to day-based thread IDs from Telegram.
-- `checkpoint_id`: Semantic versioning of checkpoint (e.g., "1.0.0") or UUID. LangGraph convention uses semver-style IDs.
-- `checkpoint`: MessagePack-serialized agent state including messages, memory, and tool call history.
-- `writes`: Intermediate state modifications between checkpoints. Enables efficient retrieval of recent changes.
-- **Index:** `(thread_id, created_at)` on `checkpoints` for efficient retrieval of latest checkpoint.
-- **Index:** `(thread_id, checkpoint_id)` on `writes` for state reconstruction.
+- **LangGraph Compatibility**: Schema mirrors LangGraph's SqliteCheckpointer with BLOB storage for serialized state
+- **Composite Primary Keys**: `(thread_id, checkpoint_ns, checkpoint_id)` for checkpoints, `(thread_id, checkpoint_ns, checkpoint_id, task_id, idx)` for writes
+- **Serialization**: Uses Bun's native serialization (JSON default via `JsonPlusSerializer`)
+- **Checkpoint Structure** (BLOB):
+  ```typescript
+  interface Checkpoint {
+    v: number;           // Version (currently 4)
+    id: string;          // UUID6 identifier
+    ts: string;          // ISO timestamp
+    channel_values: Record<string, unknown>;
+    channel_versions: Record<string, unknown>;
+    versions_seen: Record<string, Record<string, unknown>>;
+  }
+  ```
+- **Metadata Structure** (BLOB):
+  ```typescript
+  interface CheckpointMetadata {
+    source: "input" | "loop" | "update" | "fork";
+    step: number;
+    parents: Record<string, string>;
+    // Additional user-defined properties
+  }
+  ```
+- **WAL Mode**: Database uses Write-Ahead Logging for concurrent access: `PRAGMA journal_mode=WAL;`
+- **Index**: No additional indexes needed—composite PKs provide efficient retrieval
+- **Special Channels**:
+  - `__pregel_tasks`: Task scheduling channel
+  - `__error__`: Error handling
+  - `__scheduled__`: Scheduled tasks
+  - `__interrupt__`: Interruptions
+  - `__resume__`: Resumptions
+
+**Table DDL:**
+```sql
+CREATE TABLE checkpoints (
+  thread_id TEXT NOT NULL,
+  checkpoint_ns TEXT NOT NULL DEFAULT '',
+  checkpoint_id TEXT NOT NULL,
+  parent_checkpoint_id TEXT,
+  type TEXT,
+  checkpoint BLOB,
+  metadata BLOB,
+  PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id)
+);
+
+CREATE TABLE writes (
+  thread_id TEXT NOT NULL,
+  checkpoint_ns TEXT NOT NULL DEFAULT '',
+  checkpoint_id TEXT NOT NULL,
+  task_id TEXT NOT NULL,
+  idx INTEGER NOT NULL,
+  channel TEXT NOT NULL,
+  type TEXT,
+  value BLOB,
+  PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx)
+);
+
+PRAGMA journal_mode=WAL;
+```
 
 ### 3.2 Message Log Database (`messages.db`)
 
@@ -215,123 +273,23 @@ erDiagram
 
 ### 3.3 Semantic Memory Database (`memory.db`)
 
-Stores long-term semantic memories with embedding-based retrieval. This database implements the three-tier recall system architecture defined in [Architecture.md Section 5.3](Architecture.md#53-three-tier-recall-system).
+Stores long-term semantic memories for the RMM Memory middleware integration. The middleware handles embedding generation, retrieval, and decay. This database provides persistent storage for the middleware's state.
 
 ```mermaid
 erDiagram
     memories {
-        text id PK "Memory unique identifier (UUID as TEXT)"
-        text content "Memory text content (max 2048 chars)"
-        text vector_embedding "384-dimensional vector (binary BLOb)"
-        text category "Memory category (fact/preference/procedure)"
-        text metadata "JSON metadata as TEXT"
-        integer created_at "Creation timestamp (Unix)"
-        integer last_accessed_at "Last retrieval timestamp (Unix)"
-        integer access_count "Retrieval count"
-        float relevance_score "Computed relevance (0.0-1.0)"
+        text id PK "Memory unique identifier"
+        text content "Memory text content"
+        text metadata "Middleware-specific metadata (JSON)"
+        integer created_at "Creation timestamp"
+        integer last_accessed_at "Last retrieval timestamp"
     }
-    
-    embedding_cache {
-        text content_hash PK "SHA-256 hash of content"
-        blob vector_embedding "Cached embedding vector (binary)"
-        integer computed_at "Embedding computation timestamp"
-        text model_version "Model identifier for cache validity"
-    }
-    
-    memories ||--o{ embedding_cache : "cached_by"
 ```
 
-#### Vector Embedding Configuration
-
-The semantic memory system uses the `intfloat/multilingual-e5-small` model for generating text embeddings. This model was selected for its multilingual capabilities, compact dimension size, and strong performance on semantic similarity tasks.
-
-| Parameter | Value | Justification |
-|-----------|-------|---------------|
-| **Model** | `intfloat/multilingual-e5-small` | Multilingual support (100+ languages), compact model size (~90MB), optimized for semantic similarity |
-| **Dimensions** | 384 | Balance between semantic expressiveness and storage efficiency. Sufficient for personal memory use cases |
-| **Layers** | 12 | Transformer layers for hierarchical feature extraction |
-| **Max Tokens** | 512 | Maximum input sequence length per embedding request |
-| **Tokenizer** | `XLMRobertaTokenizer` | Multilingual tokenization with consistent subword vocabulary |
-| **Distance Metric** | Cosine | Standard metric for semantic similarity. Range [-1, 1] where 1 = identical |
-
-#### Storage Format Specifications
-
-Vector embeddings are stored in binary format using SQLite BLOB columns for optimal storage efficiency and retrieval performance.
-
-- **Binary Format:** Float32 little-endian encoding (4 bytes per dimension)
-- **Storage Size:** 384 dimensions × 4 bytes = 1,536 bytes per vector
-- **Cache TTL:** 24 hours for embedding cache entries
-- **Quantization:** No quantization applied. Full precision maintained for accuracy
-
-**Schema Notes:**
-- `vector_embedding`: Binary BLOB storage in little-endian Float32 format. Replaces previous JSON array TEXT storage for 70% storage reduction.
-- `category`: Constrained to "fact", "preference", "procedure", "personal", "project".
-- `metadata`: JSON object storing source (user statement, extracted from conversation), confidence score (0.0-1.0), decay parameters, and embedding model version.
-- `relevance_score`: Computed via recency weighting and importance decay. Used for memory retrieval ranking.
-- **Index:** `IVEC` virtual table for efficient similarity search using cosine distance.
-- **Constraint:** Content length limited to 2048 characters per memory entry.
-- **Cache Strategy:** Content hash-based caching prevents redundant embedding computations for duplicate content.
-
-### 3.3.1 Vector Embedding Configuration
-
-The semantic memory system uses the `intfloat/multilingual-e5-small` model for generating text embeddings. This section provides comprehensive configuration specifications.
-
-#### Model Specifications
-
-| Parameter | Value | Details |
-|-----------|-------|---------|
-| **Model Identifier** | `intfloat/multilingual-e5-small` | HuggingFace model hub identifier |
-| **Model Size** | ~90MB | Compact model optimized for edge deployment |
-| **Dimensions** | 384 | Output vector dimension count |
-| **Hidden Layers** | 12 | Transformer encoder layers |
-| **Attention Heads** | 12 | Multi-head attention configuration |
-| **Max Sequence Length** | 512 tokens | Input token limit per embedding request |
-| **Vocabulary Size** | 250,002 | Multilingual subword vocabulary |
-| **Normalization** | L2 | Vectors normalized for cosine similarity |
-
-#### Tokenizer Configuration
-
-| Parameter | Value | Details |
-|-----------|-------|---------|
-| **Tokenizer Type** | `XLMRobertaTokenizer` | Multilingual RoBERTa variant |
-| **Padding** | Right-side | Standard transformer padding |
-| **Truncation** | Longest-first | Preserves beginning of content |
-| **Special Tokens** | `<s>`, `</s>`, `<pad>` | Standard BERT-style special tokens |
-
-#### Inference Configuration
-
-**Local Inference (Default):**
-```typescript
-interface EmbeddingConfig {
-  model: "intfloat/multilingual-e5-small";
-  device: "cpu";  // or "cuda" for GPU acceleration
-  batchSize: 16;
-  normalize: true;
-  quantization: "none";  // Options: none, int8, float16
-}
-```
-
-**Quantization Options:**
-
-| Mode | Precision Loss | Storage Reduction | Use Case |
-|------|---------------|-------------------|----------|
-| **None (default)** | 0% | Baseline | Maximum accuracy |
-| **int8** | ~1-2% | 75% | Memory-constrained |
-| **float16** | ~0.5% | 50% | Balanced |
-
-**Performance Characteristics:**
-- Inference Time: ~15ms per embedding (CPU, batch size 1)
-- Throughput: ~65 embeddings/second (CPU, batch size 16)
-- Memory Usage: ~500MB for model + inference buffer
-
-#### Cache Configuration
-
-| Parameter | Value | Details |
-|-----------|-------|---------|
-| **Cache Backend** | SQLite `embedding_cache` table | SHA-256 content hash lookup |
-| **Cache TTL** | 24 hours | Prevents stale embeddings |
-| **Cache Hit Rate** | >80% | Expected for typical workloads |
-| **Invalidation** | Time-based + manual | SHA-256 hash recomputed on content change
+**Notes:**
+- Database structure matches RMM Memory middleware requirements
+- Middleware handles embedding generation, similarity search, and memory decay
+- Integration interface defined by middleware API
 
 ### 3.4 Audit Log Database (`audit.db`)
 
@@ -425,23 +383,493 @@ erDiagram
 
 ## 4. API Contract
 
-This section defines the internal APIs for component communication. External APIs (Telegram webhooks) follow platform-specific protocols. API contracts implement the Gateway communication interface defined in [Architecture.md Section 4.1](Architecture.md#41-gateway-communication-interface).
+RealClaw implements the **Open Responses API** as its primary interface contract. This positions RealClaw as an Open Responses Provider, enabling ecosystem compatibility while maintaining its unique deterministic, sandboxed execution model. Telegram and other input sources are implemented as adapters that convert platform-specific protocols to Open Responses input items.
 
-### 4.1 Gateway HTTP API
+**Open Responses Alignment:**
+- RealClaw is an **Open Responses Provider** - any Open Responses-compatible client can consume it
+- The agent loop implements the **agentic loop** pattern (reasoning → tool call → result → continue)
+- State management uses **thread_id** and **previous_response_id** mapping to LangGraph checkpoints
+- Streaming follows the **semantic event model** (not raw text deltas)
+- Tool execution is formalized as **externally-hosted tools** (executed in sandbox)
 
-**Base URL:** `http://127.0.0.1:3000`  
+### 4.1 Open Responses API Endpoint
+
+**Endpoint:** `POST /v1/responses`  
+**Base URL:** `http://127.0.0.1:3000` (local-only)  
 **Transport:** HTTP over Unix domain socket (production), TCP (development debug)  
 **Authentication:** None (local-only access via `127.0.0.1`)  
+**Content-Type:** `application/json`  
+**Accept:** `text/event-stream` (for streaming responses)
 
-#### 4.1.1 Health Endpoints
+#### 4.1.1 Request Schema
 
 ```yaml
 openapi: 3.0.3
 info:
-  title: RealClaw Gateway API
+  title: RealClaw Open Responses API
   version: 1.0.0
-  description: Internal gateway API for RealClaw agent runtime
+  description: Open Responses Provider API for RealClaw agent runtime
+  x-realclaw-version: "1.0.0"
 
+paths:
+  /v1/responses:
+    post:
+      operationId: createResponse
+      summary: Create agent response (Open Responses API)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                model:
+                  type: string
+                  description: Agent model identifier (e.g., 'claude-4')
+                  default: "claude-sonnet-4-2025"
+                input:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                        enum: [message]
+                      role:
+                        type: string
+                        enum: [user, assistant, system, developer]
+                      content:
+                        type: string
+                  description: Input items (messages). Telegram adapter converts updates to this format.
+                previous_response_id:
+                  type: string
+                  format: uuid
+                  description: Thread/checkpoint continuation. Maps to LangGraph checkpoint.
+                instructions:
+                  type: string
+                  description: Additional instructions for this response (appended to SOUL.md).
+                tools:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                        description: Tool name
+                      description:
+                        type: string
+                        description: Tool description
+                      type:
+                        type: string
+                        enum: [function]
+                      function:
+                        type: object
+                        properties:
+                          name:
+                            type: string
+                          description:
+                            type: string
+                          parameters:
+                            type: object
+                            description: JSON Schema for parameters
+                    required: [name, type]
+                  description: Available tools. RealClaw provides built-in tools (file, terminal, browser, etc.).
+                tool_choice:
+                  type: string
+                  enum: [auto, none, any]
+                  default: auto
+                  description: Controls which tools the model may use.
+                max_tool_calls:
+                  type: integer
+                  minimum: 1
+                  maximum: 100
+                  default: 10
+                  description: Maximum tool call iterations in the agent loop.
+                max_output_tokens:
+                  type: integer
+                  description: Maximum tokens in response.
+                temperature:
+                  type: number
+                  minimum: 0
+                  maximum: 2
+                  description: Sampling temperature.
+                stream:
+                  type: boolean
+                  default: true
+                  description: Stream response as SSE events.
+                # RealClaw Provider-Specific Extensions
+                realclaw:
+                  type: object
+                  properties:
+                    sandbox:
+                      type: object
+                      properties:
+                        enabled:
+                          type: boolean
+                          default: true
+                        network_isolation:
+                          type: string
+                          enum: [strict, relaxed, none]
+                          default: strict
+                        filesystem_zones:
+                          type: object
+                          properties:
+                            skills:
+                              type: string
+                              default: "/sandbox/skills"
+                            inputs:
+                              type: string
+                              default: "/sandbox/inputs"
+                            work:
+                              type: string
+                              default: "/sandbox/work"
+                            outputs:
+                              type: string
+                              default: "/sandbox/outputs"
+                    determinism:
+                      type: object
+                      properties:
+                        seed:
+                          type: integer
+                          description: Random seed for reproducible execution.
+                        checkpoint_before_tools:
+                          type: boolean
+                          default: true
+                          description: Checkpoint state before each tool call.
+                    session:
+                      type: object
+                      properties:
+                        channel:
+                          type: string
+                          enum: [telegram, debug, api]
+                          default: api
+                        channel_id:
+                          type: string
+                          description: Channel-specific identifier (e.g., Telegram chat_id).
+              required: [input]
+      responses:
+        '200':
+          description: Response generated (non-streaming)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                    description: Response identifier (maps to checkpoint_id).
+                  object:
+                    type: string
+                    enum: [response]
+                  created_at:
+                    type: integer
+                    description: Unix timestamp.
+                  status:
+                    type: string
+                    enum: [completed, in_progress, cancelled]
+                  model:
+                    type: string
+                  input:
+                    type: array
+                    description: Echo of input items.
+                  output:
+                    type: array
+                    description: Output items (messages, tool calls, reasoning).
+                  error:
+                    type: object
+                    description: Error information if failed.
+        '202':
+          description: Response accepted for streaming
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: SSE stream of Open Responses events.
+```
+
+#### 4.1.2 Streaming Events (SSE)
+
+RealClaw streams events following the Open Responses semantic event model:
+
+```yaml
+components:
+  schemas:
+    SSEvent:
+      type: object
+      properties:
+        event:
+          type: string
+          description: Event type identifier
+        data:
+          type: string
+          description: JSON-serialized event data
+    EventTypes:
+      type: string
+      enum:
+        # Lifecycle
+        - response.started
+        - response.completed
+        - response.failed
+        # Reasoning
+        - response.reasoning.start
+        - response.reasoning.delta
+        - response.reasoning.summary_text
+        # Messages
+        - response.message.start
+        - response.message.delta
+        - response.message.completed
+        # Tool Calls
+        - response.tool_call.start
+        - response.tool_call.arguments.delta
+        - response.tool_call.result
+        - response.tool_call.completed
+        # State
+        - response.state
+        # RealClaw-Specific
+        - realclaw.sandbox.started
+        - realclaw.sandbox.terminated
+        - realclaw.checkpoint.created
+```
+
+**Example SSE Stream:**
+```
+event: response.started
+data: {"response_id": "resp_abc123", "thread_id": "thread_telegram_123", "model": "claude-4"}
+
+event: response.message.start
+data: {"message_id": "msg_1", "role": "assistant"}
+
+event: response.message.delta
+data: {"message_id": "msg_1", "delta": "I'll help you with that."}
+
+event: response.tool_call.start
+data: {"tool_call_id": "tool_1", "function": {"name": "read_file", "arguments": {}}}
+
+event: response.tool_call.result
+data: {"tool_call_id": "tool_1", "content": "file contents..."}
+
+event: realclaw.checkpoint.created
+data: {"checkpoint_id": "cp_abc123", "thread_id": "thread_telegram_123"}
+
+event: response.completed
+data: {"response_id": "resp_abc123", "status": "completed"}
+```
+
+#### 4.1.3 Tool Definitions (Open Responses Format)
+
+RealClaw exposes its capabilities as Open Responses tools:
+
+```yaml
+components:
+  schemas:
+    RealClawTool:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Tool identifier
+        description:
+          type: string
+          description: What the tool does
+        type:
+          type: string
+          enum: [function]
+        function:
+          type: object
+          properties:
+            name:
+              type: string
+            description:
+              type: string
+            parameters:
+              type: object
+              description: JSON Schema for arguments
+              properties:
+                type:
+                  type: string
+                  enum: [object]
+                properties:
+                  type: object
+                  additionalProperties: true
+                required:
+                  type: array
+                  items:
+                    type: string
+                additionalProperties:
+                  type: boolean
+            strict:
+              type: boolean
+              default: true
+```
+
+**RealClaw Built-in Tools:**
+```yaml
+tools:
+  - name: read_file
+    description: Read contents of a file in the sandbox work directory.
+    type: function
+    function:
+      name: read_file
+      description: Read file contents
+      parameters:
+        type: object
+        properties:
+          path:
+            type: string
+            description: Absolute path within sandbox (e.g., /sandbox/work/file.txt)
+        required: [path]
+
+  - name: write_file
+    description: Write content to a file in the sandbox work directory.
+    type: function
+    function:
+      name: write_file
+      parameters:
+        type: object
+        properties:
+          path:
+            type: string
+            description: Absolute path within sandbox
+          content:
+            type: string
+            description: File content to write
+        required: [path, content]
+
+  - name: list_directory
+    description: List contents of a directory in the sandbox.
+    type: function
+    function:
+      name: list_directory
+      parameters:
+        type: object
+        properties:
+          path:
+            type: string
+            description: Directory path
+
+  - name: execute_terminal
+    description: Execute a terminal command in the sandbox.
+    type: function
+    function:
+      name: execute_terminal
+      parameters:
+        type: object
+        properties:
+          command:
+            type: string
+            description: Command to execute
+          timeout:
+            type: integer
+            description: Timeout in seconds (default: 30)
+        required: [command]
+
+  - name: browse_url
+    description: Browse a URL and return rendered content.
+    type: function
+    function:
+      name: browse_url
+      parameters:
+        type: object
+        properties:
+          url:
+            type: string
+            description: URL to browse
+          timeout:
+            type: integer
+            description: Request timeout in seconds
+
+  - name: search_web
+    description: Search the web for information.
+    type: function
+    function:
+      name: search_web
+      parameters:
+        type: object
+        properties:
+          query:
+            type: string
+          num_results:
+            type: integer
+            default: 5
+```
+
+### 4.2 Input Adapters
+
+RealClaw separates input sources from the API layer. Telegram, future web interfaces, and other inputs are adapters that convert platform-specific protocols to Open Responses input items.
+
+#### 4.2.1 Telegram Adapter
+
+**Integration:** Input adapter that converts Telegram Bot API updates to Open Responses input items.
+
+**Flow:**
+1. Telegram sends webhook POST to `/webhook/telegram`
+2. Adapter extracts message content and metadata
+3. Adapter constructs Open Responses `input` array:
+   ```typescript
+   interface TelegramInputAdapter {
+     convert(update: TelegramUpdate): InputItem[] {
+       return [
+         {
+           type: "message",
+           role: "user",
+           content: update.message.text
+         },
+         {
+           type: "message",
+           role: "system",
+           content: `Telegram metadata: chat_id=${update.message.chat.id}, from=${update.message.from.username}`
+         }
+       ];
+     }
+   }
+   ```
+4. Adapter calls `POST /v1/responses` with constructed input
+5. Response events are streamed back to Telegram as messages
+
+**Endpoint:** `POST /webhook/telegram`  
+**Authentication:** HMAC-SHA256 signature verification (grammY built-in)
+
+```yaml
+paths:
+  /webhook/telegram:
+    post:
+      operationId: telegramWebhook
+      summary: Telegram Bot API webhook (Input Adapter)
+      security:
+        - apiKey: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Telegram Bot API Update object
+      responses:
+        '200':
+          description: Update processed (response streamed separately)
+        '401':
+          description: Invalid signature
+        '400':
+          description: Invalid update format
+        '500':
+          description: Processing error
+```
+
+#### 4.2.2 Future Input Adapters
+
+RealClaw's architecture supports additional input adapters:
+
+- **Web UI Adapter:** Browser-based chat interface → Open Responses input
+- **MCP Adapter:** MCP protocol → Open Responses input (existing)
+- **CLI Adapter:** Terminal input → Open Responses input
+- **Scheduling Adapter:** Cron triggers → Open Responses input
+
+All adapters follow the same pattern: convert platform input → call `POST /v1/responses` → stream events → convert output to platform format.
+
+### 4.3 Health and Observability Endpoints
+
+```yaml
 paths:
   /health:
     get:
@@ -544,555 +972,9 @@ paths:
                   runtime:
                     type: string
                     enum: [bun]
-```
-
-#### 4.1.2 Agent Session API
-
-```yaml
-  /api/v1/sessions:
-    post:
-      operationId: createSession
-      summary: Create new agent session
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                channel:
-                  type: string
-                  enum: [telegram, mcp, debug]
-                  description: Source channel for session
-                channelId:
-                  type: string
-                  description: Channel-specific identifier (Telegram chat_id)
-                initialContext:
-                  type: object
-                  description: Optional initial context for session
-                  properties:
-                    scheduledTask:
-                      type: string
-                      description: Task ID if triggered by scheduler
-                    userMessage:
-                      type: string
-                      description: Initial user message
-              required: [channel, channelId]
-      responses:
-        '201':
-          description: Session created
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  sessionId:
+                  openresponses_version:
                     type: string
-                    format: uuid
-                  threadId:
-                    type: string
-                    description: Day-based thread ID (YYYY-MM-DD-channelId)
-                  sandboxId:
-                    type: string
-                    format: uuid
-                  status:
-                    type: string
-                    enum: [initializing, ready, running]
-        '400':
-          description: Invalid request parameters
-
-  /api/v1/sessions/{sessionId}:
-    get:
-      operationId: getSession
-      summary: Get session status
-      parameters:
-        - name: sessionId
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      responses:
-        '200':
-          description: Session information
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  sessionId:
-                    type: string
-                    format: uuid
-                  status:
-                    type: string
-                    enum: [initializing, ready, running, completed, error]
-                  threadId:
-                    type: string
-                  sandboxId:
-                    type: string
-                  startedAt:
-                    type: string
-                    format: date-time
-                  lastActivityAt:
-                    type: string
-                    format: date-time
-                  messageCount:
-                    type: integer
-        '404':
-          description: Session not found
-
-    delete:
-      operationId: terminateSession
-      summary: Terminate active session
-      parameters:
-        - name: sessionId
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      responses:
-        '200':
-          description: Session terminated
-        '404':
-          description: Session not found
-        '409':
-          description: Session not in terminable state
-```
-
-#### 4.1.3 Message API
-
-```yaml
-  /api/v1/sessions/{sessionId}/messages:
-    post:
-      operationId: sendMessage
-      summary: Send message to agent session
-      parameters:
-        - name: sessionId
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                content:
-                  type: string
-                  description: Message content
-                contentType:
-                  type: string
-                  enum: [text, image, file]
-                  default: text
-                attachments:
-                  type: array
-                  items:
-                    type: object
-                    properties:
-                      filename:
-                        type: string
-                      mimeType:
-                        type: string
-                      url:
-                        type: string
-                        description: URL or file path for attachment
-                  description: File attachments
-              required: [content]
-      responses:
-        '202':
-          description: Message accepted, agent processing
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  messageId:
-                    type: string
-                    format: uuid
-                  status:
-                    type: string
-                    enum: [accepted]
-        '400':
-          description: Invalid message format
-        '404':
-          description: Session not found
-        '409':
-          description: Session busy, retry later
-
-    get:
-      operationId: getMessages
-      summary: Get session messages
-      parameters:
-        - name: sessionId
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-        - name: limit
-          in: query
-          schema:
-            type: integer
-            default: 50
-            maximum: 100
-        - name: before:
-          in: query
-          schema:
-            type: string
-            format: uuid
-            description: Message ID for pagination
-      responses:
-        '200':
-          description: Message list
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  messages:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        id:
-                          type: string
-                          format: uuid
-                        role:
-                          type: string
-                          enum: [user, assistant, system, tool]
-                        content:
-                          type: string
-                        timestamp:
-                          type: string
-                          format: date-time
-                  hasMore:
-                    type: boolean
-                  nextCursor:
-                    type: string
-                    format: uuid
-```
-
-#### 4.1.4 Error Response Schema
-
-All API endpoints return structured JSON errors following the specification below.
-
-```yaml
-components:
-  schemas:
-    ErrorResponse:
-      type: object
-      properties:
-        error:
-          type: object
-          properties:
-            code:
-              type: string
-              description: Machine-readable error code
-              enum:
-                # Client Errors (4xx)
-                - "INVALID_REQUEST"           # 400: Malformed request body
-                - "MISSING_FIELD"             # 400: Required field missing
-                - "INVALID_SESSION"           # 400: Session ID format invalid
-                - "SESSION_NOT_FOUND"         # 404: Session does not exist
-                - "SESSION_TERMINATED"        # 410: Session was terminated
-                - "SESSION_BUSY"              # 409: Session processing request
-                - "RATE_LIMITED"              # 429: Too many requests
-                - "UNAUTHORIZED"              # 401: Missing/invalid auth token
-                
-                # Server Errors (5xx)
-                - "INTERNAL_ERROR"            # 500: Unexpected server error
-                - "SANDBOX_UNAVAILABLE"       # 503: Sandbox runtime not ready
-                - "DATABASE_ERROR"            # 503: Database connection failed
-                - "EGRESS_GATEWAY_ERROR"      # 503: Proxy unavailable
-                - "MCP_SERVER_ERROR"          # 502: MCP server connection failed
-                
-                # Sandbox Errors (4xx/5xx)
-                - "SANDBOX_EXECUTION_FAILED"  # 500: Command execution failed
-                - "SANDBOX_TIMEOUT"           # 504: Command exceeded timeout
-                - "SANDBOX_CONSTRAINT_VIOLATION"  # 403: Security constraint violated
-                
-            message:
-              type: string
-              description: Human-readable error description
-            details:
-              type: object
-              description: Additional error context (optional)
-              properties:
-                field:
-                  type: string
-                  description: Field that caused the error
-                reason:
-                  type: string
-                  description: Specific reason for the error
-                suggested_action:
-                  type: string
-                  description: Guidance for resolving the error
-        metadata:
-          type: object
-          properties:
-            correlation_id:
-              type: string
-              format: uuid
-              description: UUID for tracing the request across services
-            timestamp:
-              type: string
-              format: date-time
-              description: ISO8601 timestamp of error occurrence
-            request_id:
-              type: string
-              format: uuid
-              description: Original request identifier
-            retry_after:
-              type: integer
-              description: Seconds until retry is safe (Rate Limited only)
-            version:
-              type: string
-              description: API version string
-
-#### HTTP Status Code Reference
-
-| Status Code | Meaning | Usage |
-|-------------|---------|-------|
-| **200** | OK | Successful GET requests, health checks |
-| **201** | Created | Successful resource creation (sessions) |
-| **202** | Accepted | Message queued for processing |
-| **400** | Bad Request | Invalid request body or parameters |
-| **401** | Unauthorized | Missing or invalid authentication |
-| **403** | Forbidden | Request violates security policy |
-| **404** | Not Found | Resource does not exist |
-| **409** | Conflict | Resource state prevents operation |
-| **410** | Gone | Resource was deleted/terminated |
-| **429** | Too Many Requests | Rate limit exceeded |
-| **500** | Internal Server Error | Unexpected server failure |
-| **502** | Bad Gateway | Upstream service failure (MCP servers) |
-| **503** | Service Unavailable | Dependency unavailable (DB, sandbox, proxy) |
-| **504** | Gateway Timeout | Upstream service timeout |
-
-### 4.2 Egress Gateway Management API
-
-**Base URL:** `http://127.0.0.1:3001` (separate port for isolation)  
-**Transport:** HTTP over Unix domain socket  
-**Authentication:** None (local-only, managed by Orchestrator)  
-
-```yaml
-paths:
-  /api/v1/allowlist:
-    get:
-      operationId: getAllowlist
-      summary: Get current allowlist
-      responses:
-        '200':
-          description: Current allowlist with tiers
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  system:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        domain:
-                          type: string
-                        description:
-                          type: string
-                        addedAt:
-                          type: string
-                          format: date-time
-                  skill:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        domain:
-                          type: string
-                        skillId:
-                          type: string
-                        expiresAt:
-                          type: string
-                          format: date-time
-                  owner:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        domain:
-                          type: string
-                        addedBy:
-                          type: string
-                        addedAt:
-                          type: string
-                          format: date-time
-
-    post:
-      operationId: addToAllowlist
-      summary: Add domain to allowlist
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                domain:
-                  type: string
-                  description: Domain pattern (*.example.com or exact)
-                tier:
-                  type: string
-                  enum: [skill, owner]
-                  description: Domain tier
-                skillId:
-                  type: string
-                  description: Required if tier=skill
-                ttl:
-                  type: integer
-                  description: Time-to-live in seconds (skill tier only)
-                  default: 3600
-              required: [domain, tier]
-      responses:
-        '201':
-          description: Domain added
-        '400':
-          description: Invalid domain format or tier
-
-    delete:
-      operationId: removeFromAllowlist
-      summary: Remove domain from allowlist
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                domain:
-                  type: string
-                tier:
-                  type: string
-                  enum: [skill, owner]
-              required: [domain, tier]
-      responses:
-        '200':
-          description: Domain removed
-
-  /api/v1/logs:
-    get:
-      operationId: getProxyLogs
-      summary: Retrieve proxy access logs
-      parameters:
-        - name: start
-          in: query
-          schema:
-            type: string
-            format: date-time
-        - name: end
-          in: query
-          schema:
-            type: string
-            format: date-time
-        - name: disposition
-          in: query
-          schema:
-            type: string
-            enum: [allowed, denied, error]
-        - name: limit
-          in: query
-          schema:
-            type: integer
-            default: 100
-            maximum: 1000
-      responses:
-        '200':
-          description: Log entries
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  logs:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/ProxyLogEntry'
-                  hasMore:
-                    type: boolean
-
-  /api/v1/reload:
-    post:
-      operationId: reloadAllowlist
-      summary: Reload allowlist configuration
-      responses:
-        '200':
-          description: Configuration reloaded
-        '500':
-          description: Reload failed
-
-components:
-  schemas:
-    ProxyLogEntry:
-      type: object
-      properties:
-        id:
-          type: string
-          format: uuid
-        timestamp:
-          type: string
-          format: date-time
-        sourceProcess:
-          type: string
-        destinationDomain:
-          type: string
-        destinationPort:
-          type: integer
-        requestMethod:
-          type: string
-        disposition:
-          type: string
-          enum: [allowed, denied, error]
-        bytesIn:
-          type: integer
-          format: int64
-        bytesOut:
-          type: integer
-          format: int64
-        durationMs:
-          type: integer
-```
-
-### 4.3 Telegram Webhook Endpoint
-
-**Endpoint:** `POST /webhook/telegram`  
-**Transport:** HTTPS (TLS termination at reverse proxy or load balancer)  
-**Authentication:** HMAC-SHA256 signature verification (grammY built-in)  
-
-```yaml
-paths:
-  /webhook/telegram:
-    post:
-      operationId: telegramWebhook
-      summary: Telegram Bot API webhook
-      security:
-        - apiKey: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              description: Telegram Bot API Update object
-      responses:
-        '200':
-          description: Update processed
-        '401':
-          description: Invalid signature
-        '400':
-          description: Invalid update format
-        '500':
-          description: Processing error
+                    description: Open Responses API version
 ```
 
 ---
@@ -1104,13 +986,14 @@ paths:
 The following directory structure enforces Clean Architecture principles. Business logic is isolated from infrastructure concerns. The structure supports horizontal scaling of components while maintaining clear boundaries.
 
 ```
-/home/oscar/GitHub/realclaw/
+realclaw/
 ├── README.md
 ├── AGENTS.md
-├── ARCHITECTURE.md
+├── PRD.md
+├── Architecture.md
 ├── TechSpec.md                    # This document
 ├── package.json
-├── bun.lockb
+├── bun.lock
 ├── tsconfig.json
 ├── .nix/
 │   ├── flake.nix
@@ -1118,123 +1001,123 @@ The following directory structure enforces Clean Architecture principles. Busine
 │   └── nixos-modules/
 │       ├── realclaw.nix
 │       └── realclaw-darwin.nix
-├── src/
-│   ├── main.ts                    # Application entry point
-│   ├── orchestrator/              # Bun-based Orchestrator
-│   │   ├── index.ts               # Orchestrator bootstrap
-│   │   ├── config/
-│   │   │   ├── index.ts           # Configuration loader
-│   │   │   ├── schema.ts          # Configuration validation
-│   │   │   └── defaults.ts        # Default values
-│   │   ├── api/                   # HTTP API handlers
-│   │   │   ├── server.ts          # Bun HTTP server
-│   │   │   ├── health.ts          # Health endpoints
-│   │   │   ├── sessions.ts        # Session management
-│   │   │   └── middleware.ts      # Request processing
-│   │   ├── agent/                 # LangChain/LangGraph agent
-│   │   │   ├── index.ts           # Agent factory
-│   │   │   ├── types.ts           # Agent type definitions
-│   │   │   ├── checkpointer.ts    # SqliteCheckpointer wrapper
-│   │   │   └── tools/             # Tool implementations
-│   │   │       ├── index.ts
-│   │   │       ├── file.ts
-│   │   │       ├── terminal.ts
-│   │   │       ├── browser.ts
-│   │   │       ├── network.ts
-│   │   │       └── delivery.ts
-│   │   ├── middleware/            # LangChain middleware stack
-│   │   │   ├── index.ts
-│   │   │   ├── policy.ts          # Tier 1: Foundational policy
-│   │   │   ├── cron.ts            # Tier 2: Scheduled tasks
-│   │   │   ├── websearch.ts       # Tier 2: Web search
-│   │   │   ├── browser.ts         # Tier 2: Browser automation
-│   │   │   ├── memory.ts          # Tier 2: Memory management
-│   │   │   ├── mcp.ts             # Tier 2: MCP adapter
-│   │   │   ├── skills.ts          # Tier 2: Skill loading
-│   │   │   ├── subagent.ts        # Tier 2: Sub-agent delegation
-│   │   │   ├── summarization.ts   # Tier 3: Context compression
-│   │   │   └── human-in-loop.ts   # Tier 3: Owner approval
-│   │   ├── callbacks/             # LangChain callback handlers
-│   │   │   ├── index.ts
-│   │   │   ├── logger.ts          # Logger callback
-│   │   │   ├── opentelemetry.ts   # OTel tracing callback
-│   │   │   └── content-scan.ts    # Outbound content scanning
-│   │   ├── sandbox/               # Platform adapter for sandbox
-│   │   │   ├── index.ts           # Sandbox factory
-│   │   │   ├── platform.ts        # Platform detection
-│   │   │   ├── linux.ts           # Bubblewrap configuration
-│   │   │   ├── darwin.ts          # Seatbelt configuration
-│   │   │   └── types.ts           # Sandbox types
-│   │   ├── credentials/           # Credential vault abstraction
-│   │   │   ├── index.ts
-│   │   │   ├── vault.ts           # CredentialVault interface
-│   │   │   ├── keychain.ts        # macOS Keychain
-│   │   │   ├── secret-service.ts  # Linux secret-service
-│   │   │   └── memory.ts          # In-memory caching
-│   │   ├── channels/              # External channel integrations
-│   │   │   ├── index.ts
-│   │   │   ├── telegram/
-│   │   │   │   ├── index.ts
-│   │   │   │   ├── bot.ts         # grammY bot
-│   │   │   │   ├── webhook.ts      # Webhook handler
-│   │   │   │   └── types.ts
-│   │   │   └── mcp/
-│   │   │       ├── index.ts
-│   │   │       ├── client.ts      # MCP client wrapper
-│   │   │       └── types.ts
-│   │   ├── database/              # SQLite database layer
-│   │   │   ├── index.ts
-│   │   │   ├── connection.ts     # Database connection pool
-│   │   │   ├── migrations/        # Schema migrations
-│   │   │   │   ├── 001_init.sql
-│   │   │   │   ├── 002_messages.sql
-│   │   │   │   ├── 003_memory.sql
-│   │   │   │   ├── 004_audit.sql
-│   │   │   │   └── 005_proxy.sql
-│   │   │   └── repositories/      # Data access objects
-│   │   │       ├── index.ts
-│   │   │       ├── checkpoints.ts
-│   │   │       ├── messages.ts
-│   │   │       ├── memories.ts
-│   │   │       ├── audit.ts
-│   │   │       └── proxy.ts
-│   │   ├── observability/         # Logging and metrics
-│   │   │   ├── index.ts
-│   │   │   ├── logger.ts
-│   │   │   ├── tracer.ts
-│   │   │   └── metrics.ts
-│   │   └── gateway/               # Egress gateway client
-│   │       ├── index.ts
-│   │       ├── client.ts          # HTTP client for gateway
-│   │       ├── types.ts
-│   │       └── exceptions.ts
-│   │
-│   ├── gateway/                   # Egress Gateway (Go)
-│   │   ├── main.go
-│   │   ├── config/
-│   │   ├── proxy/
-│   │   │   ├── http.go            # HTTP CONNECT handler
-│   │   │   ├── socks5.go          # SOCKS5 handler
-│   │   │   └── allowlist.go       # Domain validation
-│   │   ├── logging/
-│   │   │   ├── logger.go
-│   │   │   └── database.go
-│   │   ├── api/
-│   │   │   ├── server.go
-│   │   │   └── handlers.go
-│   │   └── platform/
-│   │       └── service.go         # Systemd/launchd integration
-│   │
-│   ├── skills/                     # Bundled skills (AgentSkills.io format)
-│   │   ├── python-helper/
-│   │   │   ├── SKILL.md
-│   │   │   └── scripts/
-│   │   │       └── run.sh
-│   │   └── git-helper/
-│   │       ├── SKILL.md
-│   │       └── scripts/
-│   │
-│   └── storage/                    # Runtime data (managed by Nix)
+└── src/
+    ├── main.ts                    # Application entry point
+    ├── orchestrator/              # Bun-based Orchestrator
+    │   ├── index.ts               # Orchestrator bootstrap
+    │   ├── config/
+    │   │   ├── index.ts           # Configuration loader
+    │   │   ├── schema.ts          # Configuration validation
+    │   │   └── defaults.ts        # Default values
+    │   ├── api/                   # HTTP API handlers
+    │   │   ├── server.ts          # Bun HTTP server
+    │   │   ├── health.ts          # Health endpoints
+    │   │   ├── responses.ts       # Open Responses /v1/responses endpoint
+    │   │   ├── adapters.ts        # Input adapters (Telegram, MCP, etc.)
+    │   │   └── middleware.ts      # Request processing
+    │   ├── agent/                 # LangChain/LangGraph agent
+    │   │   ├── index.ts           # Agent factory
+    │   │   ├── types.ts           # Agent type definitions
+    │   │   ├── checkpointer.ts    # SqliteCheckpointer wrapper
+    │   │   └── tools/             # Tool implementations
+    │   │       ├── index.ts
+    │   │       ├── file.ts
+    │   │       ├── terminal.ts
+    │   │       ├── browser.ts
+    │   │       ├── network.ts
+    │   │       └── delivery.ts
+    │   ├── middleware/            # LangChain middleware stack
+    │   │   ├── index.ts
+    │   │   ├── policy.ts          # Tier 1: Foundational policy
+    │   │   ├── cron.ts            # Tier 2: Scheduled tasks
+    │   │   ├── websearch.ts       # Tier 2: Web search
+    │   │   ├── browser.ts         # Tier 2: Browser automation
+    │   │   ├── memory.ts          # Tier 2: Memory management
+    │   │   ├── mcp.ts             # Tier 2: MCP adapter
+    │   │   ├── skills.ts          # Tier 2: Skill loading
+    │   │   ├── subagent.ts        # Tier 2: Sub-agent delegation
+    │   │   ├── summarization.ts   # Tier 3: Context compression
+    │   │   └── human-in-loop.ts   # Tier 3: Owner approval
+    │   ├── callbacks/             # LangChain callback handlers
+    │   │   ├── index.ts
+    │   │   ├── logger.ts          # Logger callback
+    │   │   └── opentelemetry.ts   # OTel tracing callback
+    │   ├── sandbox/               # Platform adapter for sandbox
+    │   │   ├── index.ts           # Sandbox factory
+    │   │   ├── platform.ts        # Platform detection
+    │   │   ├── linux.ts           # Bubblewrap configuration
+    │   │   ├── darwin.ts          # Seatbelt configuration
+    │   │   └── types.ts           # Sandbox types
+    │   ├── credentials/           # Credential vault abstraction
+    │   │   ├── index.ts
+    │   │   ├── vault.ts           # CredentialVault interface
+    │   │   ├── keychain.ts        # macOS Keychain
+    │   │   ├── secret-service.ts  # Linux secret-service
+    │   │   └── memory.ts          # In-memory caching
+    │   ├── channels/              # External channel integrations
+    │   │   ├── index.ts
+    │   │   ├── telegram/
+    │   │   │   ├── index.ts
+    │   │   │   ├── bot.ts         # grammY bot
+    │   │   │   ├── webhook.ts     # Webhook handler
+    │   │   │   └── types.ts
+    │   │   └── mcp/
+    │   │       ├── index.ts
+    │   │       ├── client.ts      # MCP client wrapper
+    │   │       └── types.ts
+    │   ├── database/              # SQLite database layer
+    │   │   ├── index.ts
+    │   │   ├── connection.ts      # Database connection pool
+    │   │   ├── migrations/        # Schema migrations
+    │   │   │   ├── 001_init.sql
+    │   │   │   ├── 002_messages.sql
+    │   │   │   ├── 003_memory.sql
+    │   │   │   ├── 004_audit.sql
+    │   │   │   └── 005_proxy.sql
+    │   │   └── repositories/      # Data access objects
+    │   │       ├── index.ts
+    │   │       ├── checkpoints.ts
+    │   │       ├── messages.ts
+    │   │       ├── memories.ts
+    │   │       ├── audit.ts
+    │   │       └── proxy.ts
+    │   ├── observability/         # Logging and metrics
+    │   │   ├── index.ts
+    │   │   ├── logger.ts
+    │   │   ├── tracer.ts
+    │   │   └── metrics.ts
+    │   └── gateway/               # Egress gateway client
+    │       ├── index.ts
+    │       ├── client.ts          # HTTP client for gateway
+    │       ├── types.ts
+    │       └── exceptions.ts
+    │
+    ├── gateway/                   # Egress Gateway (Go)
+    │   ├── main.go
+    │   ├── config/
+    │   ├── proxy/
+    │   │   ├── http.go            # HTTP CONNECT handler
+    │   │   ├── socks5.go          # SOCKS5 handler
+    │   │   └── allowlist.go       # Domain validation
+    │   ├── logging/
+    │   │   ├── logger.go
+    │   │   └── database.go
+    │   ├── api/
+    │   │   ├── server.go
+    │   │   └── handlers.go
+    │   └── platform/
+    │       └── service.go         # Systemd/launchd integration
+    │
+    ├── skills/                    # Bundled skills (AgentSkills.io format)
+    │   ├── python-helper/
+    │   │   ├── SKILL.md
+    │   │   └── scripts/
+    │   │       └── run.sh
+    │   └── git-helper/
+    │       ├── SKILL.md
+    │       └── scripts/
+    │
+    └── storage/                   # Runtime data (managed by Nix)
         ├── data/
         │   ├── checkpoints.db
         │   ├── messages.db
@@ -1299,10 +1182,10 @@ Contains HTTP handlers, webhook processors, and external protocol implementation
 }
 ```
 
-**ESLint Configuration:**
-- Base config: `eslint:recommended`
-- TypeScript: `@typescript-eslint/recommended`
-- Prettier integration for formatting
+**Code Quality Tools:**
+- **Biome** with Ultracite preset for linting and formatting
+- Replaces ESLint and Prettier with single unified tool
+- Uses opt-in rule approach with full visibility into enabled rules
 - No console.log statements in production code (use structured logger)
 
 **Async/Await Patterns:**
@@ -1463,7 +1346,7 @@ function runMigrations(db: Database, migrationsDir: string) {
 
 ### 5.5 Middleware Composition Order
 
-Middleware executes in the order defined below. Later middleware operates on the outputs of earlier middleware. This order is intentional—foundational policy must execute before capabilities. Middleware composition is defined in [Architecture.md Section 4.2](Architecture.md#42-gateway-components). Middleware composition is defined in [Architecture.md Section 4.2](Architecture.md#42-gateway-components).
+Middleware executes in the order defined below. Later middleware operates on the outputs of earlier middleware. This order is intentional—foundational policy must execute before capabilities.
 
 #### 5.5.1 Complete Middleware List with Execution Order
 
@@ -1534,7 +1417,7 @@ interface MiddlewareOutput {
 
 ### 5.6 Callback Execution Order
 
-Callbacks execute in parallel across all middleware layers. Callbacks do not modify behavior—they observe and record. The callback system implements observability as specified in [Architecture.md Section 5.2](Architecture.md#52-observability). The callback system implements observability as specified in [Architecture.md Section 5.2](Architecture.md#52-observability).
+Callbacks execute in parallel across all middleware layers. Callbacks do not modify behavior—they observe and record. The callback system implements observability as specified in [Architecture.md Section 5.2](Architecture.md#52-observability).
 
 #### 5.6.1 Complete Event Types List
 
@@ -1564,16 +1447,13 @@ Callbacks execute in the following order to ensure complete capture and proper d
    - Includes correlation_id for request tracing
    - Sanitizes sensitive data before storage
 
-2. **OpenTelemetry Callback Handler** (Middle chain)
+2. **OpenTelemetry Callback Handler** (Last in chain)
    - Emits distributed traces via OTLP exporter
    - Records span attributes for performance analysis
    - Exports metrics to Prometheus endpoint
    - Handles export failures gracefully (fallback to local buffer)
 
-3. **Content Scanning Callback Handler** (Last in chain for responses)
-   - Inspects all outbound content for PII/credentials
-   - Blocks delivery if sensitive data detected
-   - Logs policy violations to audit trail
+**Note:** PII detection and content scanning are handled by LangChain's built-in `piiMiddleware` in the middleware layer, not as callbacks.
    - Supports configurable detection patterns
 
 #### 5.6.3 Error Handling Requirements
@@ -1600,7 +1480,7 @@ interface CallbackHandler {
 
 #### 5.6.4 Sanitization Rules for Logs
 
-All callbacks must sanitize sensitive data before logging or export:
+All callbacks must sanitize sensitive data before logging or export. LangChain provides built-in middleware for content moderation and sensitive data detection.
 
 | Data Type | Action | Method |
 |-----------|--------|--------|
@@ -1701,11 +1581,7 @@ channels:
     secretToken: "${TELEGRAM_SECRET}"  # Interpolated from vault
   mcp:
     enabled: true
-    servers:
-      - name: "slack"
-        command: "npx"
-        args: ["-y", "@modelcontextprotocol/server-slack"]
-        env: {}
+    servers: []  # Configurable list of MCP server configurations
     connectionTimeoutSeconds: 30
 
 middleware:
@@ -1719,13 +1595,7 @@ middleware:
       blockPii: true
   memory:
     enabled: true
-    embeddingModel: "intfloat/multilingual-e5-small"
-    embeddingDimension: 384
-    maxTokens: 512
-    inputPrefix: "query: "  # Verify if model requires prefix
-    maxMemories: 1000
-    relevanceThreshold: 0.7
-    decayEnabled: true
+    # RMM Memory middleware configuration deferred to middleware documentation
   humanInLoop:
     enabled: true
     operations:
@@ -1757,11 +1627,11 @@ storage:
     retentionDays: 7
 ```
 
-## 6. Performance Requirements
+## 7. Performance Requirements
 
 This section defines measurable SLAs for system performance. These benchmarks guide implementation decisions and provide acceptance criteria for operational readiness.
 
-### 6.1 Latency Requirements
+### 7.1 Latency Requirements
 
 | Operation | Target P50 | Target P99 | Measurement Method |
 |-----------|------------|------------|-------------------|
@@ -1773,7 +1643,7 @@ This section defines measurable SLAs for system performance. These benchmarks gu
 | **Gateway HTTP API response** | < 10ms | < 50ms | End-to-end request handling (health endpoints) |
 | **Telegram webhook processing** | < 100ms | < 200ms | From signature verification to acknowledgment |
 
-### 6.2 Throughput Requirements
+### 7.2 Throughput Requirements
 
 | Metric | Target | Conditions |
 |--------|--------|------------|
@@ -1782,7 +1652,7 @@ This section defines measurable SLAs for system performance. These benchmarks gu
 | **Proxy connections/second** | 100 | Per-session connection rate limit |
 | **Embedding computations/second** | 10 | Sequential embedding model. Supports real-time retrieval |
 
-### 6.3 Resource Utilization
+### 7.3 Resource Utilization
 
 | Resource | Target | Threshold |
 |----------|--------|-----------|
@@ -1791,7 +1661,7 @@ This section defines measurable SLAs for system performance. These benchmarks gu
 | **Database size** | < 10GB | Per database file. Triggers Owner alert |
 | **Proxy log retention** | 30 days | 100MB automatic rotation |
 
-### 6.4 Benchmark Methodology
+### 7.4 Benchmark Methodology
 
 Performance benchmarks are measured using:
 
@@ -1803,9 +1673,9 @@ All benchmarks produce structured output stored in `audit.db` for trend analysis
 
 ---
 
-## 7. Security Considerations
+## 8. Security Considerations
 
-### 7.1 Threat Model
+### 8.1 Threat Model
 
 | Threat | Mitigation |
 |--------|------------|
@@ -1816,7 +1686,7 @@ All benchmarks produce structured output stored in `audit.db` for trend analysis
 | Session hijacking | Unix domain socket authentication via process ID verification. Local-only network binding. |
 | Supply chain attacks | Pin all dependencies in package.json. Hash verification via Nix. Skill script LLM pre-analysis. |
 
-### 7.2 Credential Handling
+### 8.2 Credential Handling
 
 Credentials follow strict lifecycle rules:
 
@@ -1826,7 +1696,7 @@ Credentials follow strict lifecycle rules:
 4. **Rotation:** Re-read from vault on signal (SIGHUP) or timeout. No restart required.
 5. **Destruction:** Process memory cleared on shutdown. No persistent storage.
 
-### 7.3 Sandboxing Guarantees
+### 8.3 Sandboxing Guarantees
 
 | Capability | Linux (Bubblewrap) | macOS (Seatbelt) |
 |------------|-------------------|------------------|
@@ -1838,9 +1708,9 @@ Credentials follow strict lifecycle rules:
 
 ---
 
-## 8. Deployment Architecture
+## 9. Deployment Architecture
 
-### 8.1 Nix Flake Structure
+### 9.1 Nix Flake Structure
 
 The Platform Manager uses Nix Flakes for reproducible builds across Linux and macOS.
 
@@ -1849,7 +1719,7 @@ The Platform Manager uses Nix Flakes for reproducible builds across Linux and ma
   description = "RealClaw - Deterministic Security-First Agentic Runtime";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
     flake-utils.url = "github:numtide/flake-utils";
     bun-overlay.url = "github:oven-sh/bun/flake";
   };
@@ -1876,7 +1746,7 @@ The Platform Manager uses Nix Flakes for reproducible builds across Linux and ma
 }
 ```
 
-### 8.2 Service Management
+### 9.2 Service Management
 
 **Linux (systemd):**
 ```ini
@@ -1923,7 +1793,7 @@ WantedBy=multi-user.target
 
 ---
 
-## 9. Appendix: Version History
+## 10. Appendix: Version History
 
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
@@ -1934,6 +1804,7 @@ WantedBy=multi-user.target
 | 1.4.0 | 2026-02-04 | Principal Software Engineer | Verified intfloat/e5-small-v2 details via HuggingFace model card: 384 dimensions, 33.4M params, 12 layers, 512 max tokens |
 | 1.5.0 | 2026-02-04 | Principal Software Engineer | Changed embedding model from intfloat/e5-small-v2 to intfloat/multilingual-e5-small (multilingual support). Verified via HuggingFace API: 384 dimensions, 12 layers, 512 max tokens, XLMRobertaTokenizer, 100+ languages. |
 | 1.6.0 | 2026-02-04 | Principal Software Engineer | Removed duplicate code (Repository Pattern example). Removed Section 9 "Pending Architectural Decisions" - all decisions resolved. Renumbered Appendix to Section 9. |
+| 1.7.0 | 2026-02-04 | Principal Software Engineer | Major updates: Adopted Open Responses API as primary interface contract; Updated checkpointer schema to LangGraph-compatible with BLOB serialization; Removed embedding model details (RMM Memory middleware is external integration); Replaced ESLint/Prettier with Biome + Ultracite; Removed Content Scanning callback (uses LangChain built-in piiMiddleware); Updated Nix versions (2.31.3/nixpkgs 25.11); Removed Docker Compose (Nix-driven sandboxing only); Simplified project structure.
 
 ---
 
