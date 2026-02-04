@@ -37,10 +37,11 @@ RealClaw is a **personal AI agent runtime** with the following bounded capabilit
 - **Scheduled Tasks:** Cron-based task execution with full agent capabilities
 - **Persistent Memory:** Three-tier recall system (checkpointer, message log, semantic memory) backed by SQLite
 - **Observability:** Comprehensive logging, distributed tracing, and metrics for operational visibility
+- **Owner Interfaces:** Command-line interface for development and debugging; web-based interface for monitoring and configuration
 
 **Integration Boundaries:**
-- **In Scope:** Telegram, MCP servers (Slack, Discord, email, calendar, custom services), OpenTelemetry-compatible observability backends
-- **Out of Scope:** Direct WhatsApp integration (requires MCP bridge), native mobile notifications, voice interfaces
+- **In Scope:** Telegram, MCP servers (Slack, Discord, email, calendar, custom services), OpenTelemetry-compatible observability backends, CLI and Web UI for Owner interaction
+- **Out of Scope:** Direct WhatsApp integration (requires MCP bridge), native mobile notifications, voice interfaces, multi-user web access
 
 **Security Boundaries:**
 - **Deterministic Enforcement:** All safety constraints are enforced architecturally, not probabilistically
@@ -139,7 +140,7 @@ The following containers constitute the deployable units of the RealClaw system.
 
 **Credential Vault**: Platform-specific abstraction layer — Provides unified interface to OS-level credential storage, exposing `store(service, secret)`, `retrieve(service)`, and `rotate(service)` methods. On macOS, this layer integrates with Keychain Services API; on Linux, it interfaces with secret-service API (GNOME Keyring, KWallet, or pass). Credentials never leave runtime memory; the vault abstraction prevents any code path from writing secrets to filesystem, logs, or network connections.
 
-**Egress Gateway**: Go or Rust binary implementing HTTP CONNECT proxy with domain allowlisting — Operates as independent system service bound to localhost only. Enforces strict allowlist-only network policy for all sandbox egress, logs every connection attempt with complete context (timestamp, destination, disposition, bytes transferred), and returns structured JSON errors for denied requests. Communicates with Gateway via HTTP over Unix domain socket.
+**Egress Gateway**: Go binary implementing HTTP CONNECT proxy with domain allowlisting — Operates as independent system service bound to localhost only. Enforces strict allowlist-only network policy for all sandbox egress, logs every connection attempt with complete context (timestamp, destination, disposition, bytes transferred), and returns structured JSON errors for denied requests. Communicates with Gateway via HTTP over Unix domain socket.
 
 ### Layer 1: The Sandbox
 
@@ -207,7 +208,7 @@ C4Container
     Container(gateway, "Gateway", "Bun/TypeScript", "Central orchestration: agent loop, tool dispatch, policy enforcement")
     ContainerDb(checkpointer, "Checkpointer", "SQLite + LangGraph", "State persistence: conversation, checkpoints, writes")
     ContainerDb(structured_log, "Structured Logger", "SQLite", "Audit trail: operations, errors, durations")
-    Container(egress_gateway, "Egress Gateway", "Go/Rust Binary", "HTTP CONNECT proxy with domain allowlisting")
+    Container(egress_gateway, "Egress Gateway", "Go Binary", "HTTP CONNECT proxy with domain allowlisting")
     Container(sandbox, "Sandbox Runtime", "Anthropic Sandbox Runtime", "Process isolation via bubblewrap/seatbelt")
     Container(credential_vault, "Credential Vault", "Platform Abstraction", "OS-level vaults: Keychain/secret-service")
     ContainerDb(memory_bank, "Memory Bank", "SQLite", "Semantic memories with embeddings")
@@ -661,9 +662,19 @@ The architecture implements a comprehensive error handling strategy that ensures
 | Decision | Rationale | Implications |
 |----------|-----------|--------------|
 | Modular Monolith over Microservices | Single-tenant deployment eliminates distributed systems benefits; monolithic deployment simplifies credential enforcement and tracing | No horizontal scaling capability; component boundaries must be maintained through discipline |
+| Bun Runtime for Gateway | High performance, Node.js compatibility (~95% API coverage), mature ecosystem for TypeScript development | Smaller ecosystem than Node.js; some packages may require compatibility work |
+| Go for Egress Gateway | Strong stdlib for networking and HTTP proxy implementation; simple deployment model; battle-tested reliability | Requires Go toolchain in build environment; separate language from Gateway |
 | SQLite for All Persistence | WAL mode provides durability and concurrency; single backend simplifies backup and recovery | Write-heavy workloads may require optimization; not appropriate for high-throughput scenarios |
 | Egress Gateway as Separate Process | Separate trust boundary enables defense-in-depth; independent lifecycle prevents cascade failures | Adds latency to all network operations; requires process supervision |
 | Unix Domain Socket for RPC | Provides authentication through filesystem permissions; avoids network exposure | Communication limited to same host; socket file must be protected |
 | Callback-Based Observability | Minimal overhead on critical path; composable handlers | No automatic correlation—correlation IDs must be explicitly passed |
+| CLI First, Web UI Before Public | CLI enables rapid development iteration; Web UI required for production polish and Owner experience | Dual interface maintenance; Web UI technology selection pending |
 
 > **ADR References:** See [TechSpec.md Section 2](TechSpec.md#2-architecture-decision-records) for full ADR documentation with context, alternatives considered, and consequences analysis.
+>
+> **Owner Decision Pending (Implementation Phase):**
+> - CLI framework technology selection
+> - Web UI framework technology selection  
+> - LLM Provider selection (Anthropic, OpenAI, etc.)
+>
+> These implementation decisions are deferred to the third agent (Tech Lead) per role boundaries defined in AGENTS.md.
