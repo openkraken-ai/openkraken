@@ -1,4 +1,4 @@
-# Product Requirements Document: RealClaw
+# Product Requirements Document: RealClaw (Codename)
 
 ## 1. Executive Summary
 
@@ -12,7 +12,7 @@ Current personal AI agent implementations suffer from fundamental architectural 
 
 ### Success Metrics
 
-RealClaw will be considered successful when the following qualitative conditions are met: the Owner can provision credentials for any integration without those credentials ever appearing in logs, filesystem, or network captures accessible to the agent; the agent cannot access any network destination or file path that the Owner has not explicitly allowed, regardless of how the agent frames its requests; every agent action—including tool invocations, network calls, and file operations—is logged with sufficient detail for complete audit and reproduction; scheduled tasks execute precisely as configured without requiring the Owner to maintain running processes; and the agent demonstrates genuine helpfulness within its security constraints rather than refusing all actions that require external capability. The system must feel to the Owner like a capable assistant that happens to be unbreakable, rather than an unbreakable system that happens to be unhelpful.
+RealClaw will be considered successful when the following qualitative conditions are met: the Owner can provision credentials for any integration without those credentials ever appearing in logs, filesystem, or network captures accessible to the agent; the agent cannot access any network destination or file path that the Owner has not explicitly allowed, regardless of how the agent frames its requests; every agent action—including tool invocations, network calls, and file operations—is logged with sufficient detail for complete audit and reproduction; the Gateway operates as a persistent background service that automatically starts on system boot, maintains continuous availability for scheduled tasks, and responds instantly to Owner interactions; and the agent demonstrates genuine helpfulness within its security constraints rather than refusing all actions that require external capability. The system must feel to the Owner like a capable assistant that happens to be unbreakable, rather than an unbreakable system that happens to be unhelpful.
 
 **Cross-Platform Consistency Criteria:** The System shall deliver identical capability semantics across Linux and macOS platforms with the following measurable criteria: path allowlist validation must produce identical results regardless of platform filesystem conventions (case sensitivity, path separators, volume mounting); network egress policies must enforce identical domain restrictions across platforms using platform-native sandbox mechanisms; credential vault operations must provide equivalent security properties (Keychain on macOS, secret-service on Linux) with identical API semantics; and CLI commands must produce functionally equivalent behavior across platforms with platform-specific formatting only where semantically required. Cross-platform consistency shall be validated through automated test suites that execute identical capability requests on both platforms and verify equivalent outcomes.
 
@@ -25,12 +25,12 @@ The following terms constitute the Ubiquitous Language of RealClaw. All document
 | Term | Definition | Do Not Use |
 |------|------------|------------|
 | **Owner** | The single human who provisions, configures, and operates a RealClaw instance. The Owner has full system access and is the only human in the loop. There is no concept of multiple users, administrators, or tenants. | User, Client, Customer, Administrator, Operator |
-| **Agent** | The AI-driven runtime subsystem operating inside the sandbox. The Agent is a managed capability provider, not a peer to the Owner. It has no awareness of platform internals, no access to credentials, and no ability to modify its own constraints. | Assistant, Bot, Worker, Subagent, Chatbot |
+| **Agent** | The AI-driven runtime subsystem operating inside the sandbox. The Agent is a managed capability provider, not a peer to the Owner. It has no awareness of platform internals, no access to credentials, and no ability to modify its own constraints. The Agent operates within a bounded filesystem environment at /sandbox/ with awareness of zone structure but no visibility into host paths or actual filesystem location. | Assistant, Bot, Worker, Subagent, Chatbot |
 | **Gateway** | The orchestration layer that mediates all communication between the Owner, external integrations, and the Agent. The Gateway injects identity, enforces policies, manages state, and handles credential isolation. It is the only component aware of platform specifics. | Orchestrator, Controller, Server, API Layer |
-| **Sandbox** | The isolation environment where the Agent executes. The Sandbox uses platform-native mechanisms (bubblewrap on Linux, sandbox-exec on macOS) to enforce resource and capability boundaries. The Agent has no awareness of the Sandbox's existence. | Container, VM, Isolation Layer, Jail, Bubblewrap |
+| **Sandbox** | The isolation environment where the Agent executes. The Agent operates within a bounded filesystem rooted at /sandbox/ with four logical zones: skills (read-only, immutable per session), inputs (read-only, per-session), work (read-write, cleared at session boundaries), and outputs (read-write, cleared at session boundaries). The Sandbox uses platform-native mechanisms to enforce resource and capability boundaries, presenting identical semantics across Linux and macOS platforms. The Agent has no awareness of the Sandbox's existence or which mechanism enforces its boundaries. | Container, VM, Isolation Layer, Jail, Bubblewrap |
 | **Credential** | Any secret value that authorizes access to external services, including API keys, OAuth tokens, passwords, and private keys. Credentials must be stored in OS-level vaults and never exposed to the Agent or written to persistent storage beyond runtime memory. | Secret, API Key, Token, Password, Auth Value |
 | **Skill** | A packaged capability that extends the Agent's functionality. Skills are authored by the Owner or sourced from trusted repositories and executed within the Sandbox with controlled permissions. | Plugin, Extension, Tool, Module, Addon |
-| **Middleware** | A composable extension point in the Gateway that intercepts, modifies, or responds to Agent operations. Memory management, policy enforcement, and observability are implemented as middleware. | Hook, Filter, Interceptor, Handler, Callback |
+| **Middleware** | A LangChain API extension point that intercepts, modifies, or responds to Agent operations as part of the Agent lifecycle. Middleware is strongly coupled to the Agent's execution flow, enabling context injection, policy enforcement, memory management, and observability. Unlike generic hooks, LangChain Middleware operates synchronously during Agent execution, transforming inputs and outputs at defined points in the call chain. | Hook, Filter, Interceptor, Handler, Callback |
 | **Checkpointer** | The persistent state store that preserves Agent state across Gateway restarts. Checkpointers ensure session continuity and durable execution tracking. | Session Store, State Store, Persistence Layer |
 | **Egress Proxy** | The network intermediary that enforces domain allowlisting for Agent-initiated outbound connections. All sandbox network traffic passes through the Egress Proxy, which logs access for security auditing. | Firewall, Proxy, Network Filter, Outbound Gateway |
 
@@ -40,11 +40,11 @@ The following terms constitute the Ubiquitous Language of RealClaw. All document
 
 ### The Sovereign Owner
 
-The Owner persona represents the entire user base of RealClaw—individuals who value both AI capability and security sovereignty. This persona has invested significant effort in understanding how traditional agent implementations fail and specifically seeks a solution that does not rely on hoping the AI will behave. The Owner is technically sophisticated enough to configure CLI tools, understand credential vault integration, and evaluate security claims, yet prioritizes outcomes over implementation details. The Owner's primary emotional state is cautious confidence: they want to trust their AI assistant but have learned from experience that trust must be architecturally enforced. The Owner values transparency into Agent behavior, deterministic guarantees over probabilistic assurances, and the ability to audit every decision after the fact. The Owner does not expect to manage multiple users, share instances, or deploy to cloud infrastructure—this is explicitly not the product for those use cases.
+The Owner persona represents the entire user base of RealClaw—individuals who value both AI capability and security sovereignty. This persona has invested significant effort in understanding how traditional agent implementations fail and specifically seeks a solution that does not rely on hoping the AI will behave. The Owner is technically sophisticated enough to configure CLI tools, understand credential vault integration, and evaluate security claims, yet prioritizes outcomes over implementation details. The Owner's primary emotional state is cautious confidence: they want to trust their AI assistant but have learned from experience that trust must be architecturally enforced. The Owner values transparency into Agent behavior, deterministic guarantees over probabilistic assurances, and the ability to audit every decision after the fact. The Owner may deploy the system on personal devices or VPS infrastructure—the system provides identical capabilities regardless of deployment location, with Telegram serving as the primary interaction channel. The Owner does not expect to manage multiple users, share instances, or deploy to multi-tenant cloud infrastructure—this is explicitly not the product for those use cases.
 
 ### The Managed Agent
 
-The Agent is not a persona in the traditional sense but represents the behavioral envelope of the system. The Agent exists to provide genuine assistance within unbreakable constraints. The Agent's "personality" is defined by the SOUL.md document injected at runtime—helpful within boundaries, honest about limitations, and harmless by design. The Agent has no awareness of the sandbox, no concept of credentials, and no memory across sessions except through middleware-managed retrieval. The Agent is not a user of the system but a subsystem within it, optimized for precision and predictability rather than personality expression.
+The Agent is not a persona in the traditional sense but represents the behavioral envelope of the system. The Agent exists to provide genuine assistance within unbreakable constraints. The Agent's "personality" is defined by the SOUL.md document injected at runtime—helpful within boundaries, honest about limitations, and harmless by design. The Agent has no awareness of sandbox mechanisms, platform internals, or host filesystem paths, but operates within a bounded filesystem environment at /sandbox/ with awareness of logical zone structure for task execution. The Agent has no concept of credentials, no access to secrets, and no memory across sessions except through middleware-managed retrieval. The Agent is not a user of the system but a subsystem within it, optimized for precision and predictability rather than personality expression.
 
 ### Value Principles
 
@@ -80,6 +80,8 @@ Agent behavior is defined through constitutional documents injected at runtime, 
 
 **CAP-005:** The System shall maintain conversation state, intermediate reasoning, and execution context in the Checkpointer, ensuring continuity across Gateway restarts.
 
+**CAP-006:** The System shall operate as a persistent background service orchestrated by the platform layer, enabling scheduled task execution, webhook handling for Telegram integration, and real-time WebSocket communication for the Web UI. The Gateway maintains continuous operation to support cron-based scheduling and instant response to Owner interactions.
+
 ### Epic: Security Enforcement (P0)
 
 **CAP-010:** The System shall isolate Agent execution within platform-native sandbox mechanisms, preventing the Agent from accessing resources outside its permitted scope regardless of input manipulation.
@@ -90,7 +92,7 @@ Agent behavior is defined through constitutional documents injected at runtime, 
 
 **CAP-013:** The System shall inject Agent identity (SOUL.md) directly into the system prompt at runtime, never materializing identity documents as files within the Sandbox.
 
-**CAP-014:** The System shall validate all file paths accessed by the Agent against an Owner-defined allowlist before Sandbox invocation, rejecting any path outside permitted zones.
+**CAP-014:** The System shall validate all file paths accessed by the Agent against an Owner-defined allowlist before Sandbox invocation, rejecting any path outside permitted zones. The Agent shall operate within a bounded filesystem environment rooted at /sandbox/ with awareness of zone structure (skills, inputs, work, outputs) but no visibility into host paths or actual filesystem location.
 
 ### Epic: Skill System (P0)
 
@@ -134,13 +136,15 @@ Agent behavior is defined through constitutional documents injected at runtime, 
 
 **CAP-061:** The System shall provide structured logging of all Agent actions with sufficient detail for complete reproduction and security audit.
 
-**CAP-062:** The System shall expose observability data through multiple backends including SQLite, OTLP collectors, and LangSmith-compatible endpoints.
+**CAP-062:** The System shall expose observability data through multiple backends including SQLite for direct Owner access and OTLP collectors for standard interoperability. The Owner can always access raw observability data directly from the SQLite database without requiring external services.
+
+**CAP-063:** The System shall implement automatic retry with exponential backoff for transient failures in LLM calls and external API tool invocations. Permanent failures shall be logged with detailed error information and the Owner notified through configured channels. All retry operations shall be logged for audit purposes.
 
 ### Epic: Owner Interfaces (P0)
 
-**CAP-080:** The System shall provide a Command Line Interface (CLI) for Owner interaction, supporting the following capability categories: configuration management (setting and viewing policies, credential provisioning, and integration setup); debugging and diagnostics (session inspection, observability data retrieval, and system health verification); and automation (scriptable interactions for workflow integration and scheduled task management). The CLI shall use token-based authentication where Owners authenticate once to receive time-limited tokens for subsequent operations.
+**CAP-080:** The System shall provide a Command Line Interface (CLI) for Owner interaction with feature parity to the Web UI. The CLI supports the following capability categories: configuration management (setting and viewing policies, credential provisioning, and integration setup); debugging and diagnostics (session inspection, observability data retrieval, and system health verification); and automation (scriptable interactions for workflow integration and scheduled task management). The CLI shall use token-based authentication where Owners authenticate once to receive time-limited tokens for subsequent operations. Both CLI and Web UI provide equal access to system capabilities, enabling Owners to choose their preferred interaction mode.
 
-**CAP-081:** The System shall provide a Web User Interface (Web UI) for casual Owner interaction and monitoring, featuring real-time conversation display with full observability integration, configuration panels for policy management and integration setup, and dashboard views for system status, scheduled tasks, and recent activity.
+**CAP-081:** The System shall provide a Web User Interface (Web UI) for Owner interaction with feature parity to the CLI. The Web UI features real-time conversation display with full observability integration, configuration panels for policy management and integration setup, and dashboard views for system status, scheduled tasks, and recent activity. Both CLI and Web UI provide equal access to system capabilities, enabling Owners to choose their preferred interaction mode.
 
 **CAP-082:** The System shall ensure the CLI interface is fully keyboard-navigable and compatible with screen readers for accessibility, with all functionality accessible without requiring mouse interaction and clear focus indicators for navigation state.
 
@@ -162,7 +166,7 @@ RealClaw must satisfy the following security constraints without exception: all 
 
 ### Availability and Reliability
 
-The Agent must operate with session continuity across Gateway restarts, with no loss of conversation context or pending execution state; scheduled tasks must execute within one minute of configured time under normal system conditions; the Checkpointer must maintain WAL mode for concurrent access resilience; and the system must provide graceful degradation for external integration failures without cascading to Agent unavailability.
+The Agent must operate as a persistent background service that maintains continuous availability for scheduled tasks and incoming interactions; the Gateway shall restart automatically on system boot and recover gracefully from failures; scheduled tasks must execute within one minute of configured time under normal system conditions; the Checkpointer must maintain WAL mode for concurrent access resilience; and the system must provide graceful degradation for external integration failures without cascading to Agent unavailability.
 
 ### Performance Constraints
 
@@ -178,11 +182,11 @@ The CLI interface must be navigable via standard keyboard shortcuts and screen r
 
 ### In Scope
 
-RealClaw is scoped to deliver a deterministic, security-first personal AI agent runtime for single-tenant deployment on Linux and macOS. The core value proposition encompasses: architectural safety enforcement that makes rule violations physically impossible regardless of prompt sophistication; credential isolation through OS-level vault integration with zero exposure to the Agent; capability-based security through strict allowlisting for filesystem access and network egress; persistent memory management that preserves context while maintaining Owner control; and complete observability for debugging, audit, and optimization purposes. The system serves one Owner per instance with full system access—no user isolation, no shared hosting, no multi-tenant scenarios are in scope for this version.
+RealClaw is scoped to deliver a deterministic, security-first personal AI agent runtime for single-tenant deployment on Linux and macOS. The core value proposition encompasses: architectural safety enforcement that makes rule violations physically impossible regardless of prompt sophistication; credential isolation through OS-level vault integration with zero exposure to the Agent; capability-based security through strict allowlisting for filesystem access and network egress; persistent memory management that preserves context while maintaining Owner control; complete observability for debugging, audit, and optimization purposes; and flexible deployment to personal devices or VPS infrastructure with identical capabilities. The system serves one Owner per instance with full system access—no user isolation, no shared hosting, no multi-tenant scenarios are in scope for this version.
 
 ### Out of Scope
 
-The following capabilities, while potentially valuable, are explicitly excluded from this version to maintain focus and security posture. Direct WhatsApp integration is out of scope; Owners requiring WhatsApp must use an MCP bridge. Native mobile notifications are out of scope; the system provides browser-based and Telegram notifications only. Voice interfaces are out of scope; the system provides text-based interaction exclusively. Multi-user support is out of scope; the system serves one Owner and cannot be shared across users. Cloud deployment is out of scope; the system targets personal device deployment exclusively.
+The following capabilities, while potentially valuable, are explicitly excluded from this version to maintain focus and security posture. Direct WhatsApp integration is out of scope; Owners requiring WhatsApp must use an MCP bridge. Native mobile notifications are out of scope; the system provides browser-based and Telegram notifications only. Voice interfaces are out of scope; the system provides text-based interaction exclusively. Multi-user support is out of scope; the system serves one Owner and cannot be shared across users. Multi-tenant cloud deployment is out of scope; the system targets single-tenant deployment on personal devices or VPS infrastructure exclusively.
 
 ### Anti-Patterns to Avoid
 
@@ -194,6 +198,8 @@ RealClaw explicitly rejects several patterns common in agent frameworks. The sys
 
 ### Diagram A: System Context (C4 Level 1)
 
+> **Note:** The Checkpointer uses SQLite as its internal storage for all state and observability data. The Owner can query this data directly or export it to an OTLP collector. The relationship to OTLP Collector shown above represents the export path, not the primary storage.
+
 ```mermaid
 C4Context
   title System Context Diagram for RealClaw
@@ -203,9 +209,9 @@ C4Context
   System_Boundary(realclaw_boundary, "RealClaw Runtime") {
     System(gateway, "Gateway", "Orchestration layer that injects identity, enforces policies, manages state, and handles credential isolation")
     System(sandbox, "Sandbox", "Isolation environment where the Agent executes with bounded capabilities")
-    System(agent, "Agent", "AI-driven managed subsystem with no awareness of platform internals")
-    System(middleware, "Middleware", "Composable extensions for memory, policy, and observability")
-    System(checkpointer, "Checkpointer", "Persistent state store for session continuity")
+    System(agent, "Agent", "AI-driven managed subsystem with bounded filesystem awareness")
+    System(middleware, "Middleware", "LangChain API extension points for Agent lifecycle management")
+    System(checkpointer, "Checkpointer", "Persistent state store for session continuity and observability")
     System(vault, "Credential Vault", "OS-level vault integration (Keychain/secret-service)")
     System(egress_proxy, "Egress Proxy", "Network intermediary enforcing domain allowlisting")
   }
@@ -213,11 +219,12 @@ C4Context
   System_Ext(telegram, "Telegram", "First-class integration channel for Owner interaction")
   System_Ext(mcp_servers, "MCP Servers", "Model Context Protocol adapters for Slack, Discord, email, calendar")
   System_Ext(llm_provider, "LLM Provider", "External language model for Agent intelligence")
-  System_Ext(otel_backend, "Observability Backend", "OpenTelemetry-compatible backend for tracing and logging")
+  System_Ext(otel_collector, "OTLP Collector", "External OpenTelemetry collector for observability (Owner-configured)")
 
   Rel(Owner, CLI, "Configures, debugs, automates via")
   Rel(Owner, Web_UI, "Interacts, monitors via")
   Rel(Owner, Telegram, "Interacts via")
+  Rel(Owner, otel_collector, "Connects as OTLP consumer via")
 
   Rel(CLI, gateway, "Sends commands to")
   Rel(Web_UI, gateway, "Sends commands to")
@@ -226,14 +233,14 @@ C4Context
   Rel(gateway, vault, "Stores/retrieves credentials via")
   Rel(gateway, egress_proxy, "Routes Agent network traffic through")
   Rel(gateway, sandbox, "Invokes Agent execution in")
-  Rel(gateway, checkpointer, "Persists state to")
-  Rel(gateway, middleware, "Chains extension points through")
+  Rel(gateway, checkpointer, "Persists state and observability to")
+  Rel(gateway, middleware, "Chains LangChain middleware via")
 
   Rel(sandbox, agent, "Hosts")
   Rel(agent, llm_provider, "Calls for intelligence via")
 
   Rel(gateway, mcp_servers, "Integrates via MCP adapters")
-  Rel(gateway, otel_backend, "Emits telemetry to")
+  Rel(checkpointer, otel_collector, "Exports OTLP telemetry to")
 ```
 
 ### Diagram B: Domain Model (Class Diagram)
@@ -289,13 +296,16 @@ classDiagram
     +restoreSession(sessionId)
     +logMemory(memory)
     +retrieveMemories(query)
+    +storeObservability(event)
+    +queryObservability(filter)
   }
 
   class Middleware {
-    <<interface>>
-    +intercept(request)
-    +modify(request)
-    +respond(response)
+    <<LangChain API>>
+    +handleLLMCall(input, output)
+    +handleToolExecution(input, output)
+    +handleRetrieverRetrieval(query, documents)
+    +handleChainExecution(input, output)
   }
 
   class Skill {
@@ -327,14 +337,16 @@ classDiagram
   Owner "1" --> "1" Gateway : configures
   Owner "1" --> "1" CredentialVault : provisions credentials via
   Owner "1" --> "*" Skill : uploads
-  Gateway "1" --> "1" Agent : injects SOUL into
-  Gateway "1" --> "*" Middleware : chains
-  Gateway "1" --> "1" Checkpointer : persists to
+  Gateway "1" --> "1" Agent : invokes with context
+  Gateway "1" --> "*" Middleware : chains LangChain middleware for
+  Agent "1" --> "*" Middleware : executes through lifecycle
+  Gateway "1" --> "1" Checkpointer : persists state and observability to
   Gateway "1" --> "1" EgressProxy : routes through
   Gateway "1" --> "1" Sandbox : invokes
   Agent "1" --> "*" Tool : invokes
   Sandbox "1" --> "1" Agent : hosts
-  Checkpointer "1" --> "*" Middleware : enables
+  Checkpointer "1" --> "*" Middleware : stores events from
+  Checkpointer "1" --> "1" otel_collector : exports OTLP telemetry to
   EgressProxy "1" --> "*" Integration : proxies to
   Skill "*" --> "1" Gateway : registered with
   Policy "1" --> "1" Gateway : enforces
@@ -351,7 +363,7 @@ The Owner has indicated interest in the following technologies for implementatio
 - **Agent Orchestration:** LangChain.js v1 with LangGraph.js
 - **Protocol Integration:** Model Context Protocol (MCP) via @langchain/mcp-adapters
 - **State Persistence:** SQLite with WAL mode
-- **Sandbox Isolation:** Anthropic Sandbox Runtime (bubblewrap on Linux, sandbox-exec on macOS)
-- **Observability:** Custom OpenTelemetry implementation with OTLP, LangSmith, and SQLite export options
+- **Sandbox Isolation:** Platform-native isolation using OS-level mechanisms (specific implementation technologies are documented separately and are considered implementation details)
+- **Observability:** Custom OpenTelemetry implementation with OTLP and SQLite export options (LangSmith not supported)
 
 These technology choices represent the Owner's current preference based on investigation and evaluation. The architecture must remain flexible to accommodate alternative implementations where the Owner determines ecosystem maturity or compatibility warrants change.
