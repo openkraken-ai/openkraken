@@ -1,6 +1,107 @@
 # Architecture.md: Logical System Blueprint for RealClaw
 
+> **Implementation Reference:** This document describes architectural decisions. Concrete technology versions and specifications are documented in [TechSpec.md](TechSpec.md). All technology selections referenced herein are specified in TechSpec v1.6.0.
+
 ## 1. Architectural Strategy
+
+### Problem Context: What We're Responding To
+
+RealClaw is architected as a direct response to the failures of "OpenClaw" (née Clawdbot → Moltbot), a prior agent implementation that demonstrated the fundamental unsafety of dominant agent architectures. Every design decision in this document traces to a specific failure mode observed in OpenClaw:
+
+- **Probabilistic Safety Failure:** OpenClaw relied on `AGENTS.md` directives—system prompt rules telling the LLM "don't do dangerous things." A single prompt injection through any connected messaging channel yielded full shell access. RealClaw enforces safety at the sandbox and tool level, not the prompt level, using Anthropic's Sandbox Runtime for deterministic isolation.
+
+- **Localhost Trust / No Auth by Default:** OpenClaw auto-trusted connections from `127.0.0.1`. Behind any reverse proxy, all external traffic appeared local. Shodan found 1,800+ exposed instances. RealClaw binds to `127.0.0.1` or Tailscale only, with no implicit trust model. Telegram webhooks require cryptographic signature verification.
+
+- **Flat Credential Storage:** API keys, OAuth tokens, and bot tokens stored in plaintext on the local filesystem, fully accessible to the agent. RealClaw stores credentials in OS-level vaults (Keychain, secret-service) and never exposes them to the sandbox context.
+
+- **Unaudited Memory Writes:** OpenClaw's Markdown-based memory was readable and writable by the agent with no gating. A prompt injection could silently rewrite the agent's long-term memory. RealClaw removes the agent from the memory write path entirely—memory extraction and consolidation are handled by middleware, not agent-initiated tool calls.
+
+- **Uncontrolled Egress:** The agent could compose and send messages to any connected channel without content validation, rate limiting, or approval gates. RealClaw gates all outbound delivery through a single auditable egress chokepoint with structured JSON errors and comprehensive request logging.
+
+- **No Supply Chain Integrity:** 300+ contributors, a skills/plugin ecosystem pulling arbitrary code, no hermetic builds, no hash verification. RealClaw pins and hashes everything via Nix and analyzes skill scripts before execution.
+
+- **No Network Isolation:** The agent inherited the host's full network access. RealClaw defaults to offline and whitelists explicitly via egress proxy. The Anthropic Sandbox Runtime ensures all network traffic routes through the proxy.
+
+- **Custom Security Infrastructure:** Building custom sandboxing implementations led to gaps and inconsistencies. RealClaw leverages Anthropic's production-tested Sandbox Runtime for consistent cross-platform isolation.
+
+### Scope Definition: What This Project Builds
+
+RealClaw is a **personal AI agent runtime** with the following bounded capabilities. Items outside these boundaries require explicit architectural extension.
+
+**Primary Capabilities:**
+- **Conversational Interaction:** Bidirectional messaging via Telegram (primary) and MCP-connected services (secondary)
+- **Terminal Execution:** Sandboxed command execution with on-demand package provisioning via Nix and Anthropic Sandbox Runtime
+- **File Operations:** Read/write access within scoped filesystem zones
+- **Web Automation:** Browser automation via Vercel Agent Browser for form filling, navigation, and data extraction
+- **Skill System:** Extensible capability bundles following AgentSkills.io format with LLM pre-analysis and Owner approval
+- **Scheduled Tasks:** Cron-based task execution with full agent capabilities
+- **Persistent Memory:** Three-tier recall system (checkpointer, message log, semantic memory) backed by SQLite
+- **Observability:** Comprehensive logging, distributed tracing, and metrics for operational visibility
+
+**Integration Boundaries:**
+- **In Scope:** Telegram, MCP servers (Slack, Discord, email, calendar, custom services), OpenTelemetry-compatible observability backends
+- **Out of Scope:** Direct WhatsApp integration (requires MCP bridge), native mobile notifications, voice interfaces
+
+**Security Boundaries:**
+- **Deterministic Enforcement:** All safety constraints are enforced architecturally, not probabilistically
+- **Zero Trust:** No implicit trust for any input, network connection, or file access
+- **Isolated Execution:** Agent operates inside sandbox; credentials never enter sandbox context
+
+### Architectural Entities
+
+Four architectural entities appear throughout this document, each with distinct technology stacks, lifecycles, and trust boundaries. See TechSpec.md Section 1 for specific version bindings.
+
+**Project** — The framework itself, authored and maintained by the RealClaw team. The Project defines platform skills, default policies, security constraints, and the "Constitution" (`SOUL.md`, `SAFETY.md`). The Project is the authority on _how_ the system works.
+
+**Owner** — The person who installs and runs an instance. The Owner provisions credentials, configures integrations, uploads personal skills, and interacts with the Agent. In a single-tenant system, the Owner is the only human in the loop.
+
+**Agent** — The LLM-driven runtime operating inside the sandbox. A managed sub-system, not a peer.
+
+**Gateway** — The orchestration layer that mediates all communication between the Owner, external integrations, and the Agent. The Gateway injects identity, enforces policies, manages state, and handles credential isolation. It is the only component aware of platform specifics. (formerly "Orchestrator"—see Ubiquitous Language in PRD.md)
+
+**Egress Gateway** — The network boundary component implementing HTTP CONNECT proxy with domain allowlisting. Implemented as a separate Go or Rust binary with independent lifecycle, managed by Nix as a system service. Enforces strict allowlist-only network policy for all sandbox egress.
+
+**Platform Adapter** — The cross-platform abstraction layer handling OS-specific behaviors for sandbox invocation and credential retrieval. Implemented with runtime detection within the Gateway binary, abstracting differences between Linux (bubblewrap, secret-service) and macOS (Seatbelt, Keychain).
+
+The Owner trusts the Project (by choosing to install it). The Project trusts the Owner (by giving them full configuration authority). Neither trusts the Agent (which operates under deterministic constraints). The Gateway does not trust the Egress Gateway—communication follows strict RPC patterns with no implicit trust.
+
+### Core Philosophies
+
+These philosophical commitments shape every architectural decision. Deviations require explicit justification and ADR documentation.
+
+1.  **Trust the Sandbox, Not the Model:** Safety is enforced by the sandbox and tool-level validation, not by the System Prompt.
+
+2.  **Immutability by Default:** The Agent's identity (`SOUL.md`) and core configuration are injected at runtime and cannot be modified by the Agent.
+
+3.  **Ephemeral Tooling:** Packages are available on-demand via Nix and require no pre-installation or system modification.
+
+4.  **Capability-Based Security:** Blacklists fail. We use strict whitelisting for network egress and file access.
+
+5.  **Supply Chain Integrity:** System packages resolve from nixpkgs. Language-specific Skill dependencies are converted at ingestion time from standard lockfiles into Nix derivations. Native package managers are never invoked at runtime.
+
+6.  **Gated Egress:** Network access from sandboxed processes passes through an egress proxy with domain allowlisting. Direct internet access is blocked. The proxy enforces structured policies and logs all access for security auditing.
+
+7.  **Minimal Tool Surface:** Every tool invocation is attack surface. The Agent prefers answering from knowledge when possible and only invokes tools when the task requires execution, file access, or capabilities beyond training data.
+
+8.  **Middleware-Managed Memory:** The Agent does not manage its own long-term memory. Memory extraction, consolidation, retrieval, and injection are handled by Gateway middleware—invisible to the Agent and immune to prompt injection.
+
+9.  **Single-Tenant by Design:** The system serves one Owner per instance. This is not a limitation to be overcome later—it is a deliberate architectural decision that eliminates multi-tenancy complexity.
+
+10. **Everything is Middleware:** Agent capabilities—scheduling, web search, sub-agent orchestration, memory, skills, MCP integration, observability—are implemented as composable LangChain middleware. No privileged internal mechanisms exist that custom middleware cannot replicate.
+
+11. **Build on Proven Foundations:** Where the ecosystem provides battle-tested solutions for security-critical infrastructure (sandboxing, observability, protocol implementations), we integrate them rather than reinventing. Custom implementation is reserved for gateway-specific concerns.
+
+12. **Nix-Native, Nix-Invisible:** The system leverages Nix for reproducibility, package management, and cross-platform configuration. However, Nix internals are never exposed to the Agent—packages simply become available when requested, with no awareness of the underlying mechanism.
+
+13. **Tool-Level Isolation:** Different tools enforce security boundaries appropriate to their function. File operations use path validation; command execution uses the Anthropic Sandbox Runtime; browser automation uses isolated browser profiles with proxy enforcement.
+
+14. **Identity Injection:** The Agent's core identity (`SOUL.md`) is never materialized as a file within the sandbox. It is injected directly into the system prompt by the Gateway. This prevents exfiltration of the "Constitution" via file copy operations.
+
+15. **Durable State Persistence:** Agent state survives Gateway restarts via LangGraph SqliteCheckpointer with WAL mode. Session continuity is an architectural guarantee, not an in-memory optimization.
+
+16. **Observable by Default:** All Agent operations are logged, traced, and metered. The Owner has complete visibility into Agent behavior for debugging, audit, and optimization purposes.
+
+17. **Credential Isolation:** Credentials are stored in OS-level vaults (Keychain on macOS, secret-service on Linux) and never exposed to the Agent or written to persistent storage beyond runtime memory.
 
 ### The Pattern: Layered Modular Monolith with Strict Boundary Enforcement
 
@@ -12,6 +113,8 @@ RealClaw adopts a **Layered Modular Monolith** architecture that enforces strict
 
 **Third**, the cross-platform requirement (Linux and macOS) creates enough environmental variance without adding service distribution complexity. The architecture delegates platform abstraction to well-defined boundaries—the Platform Adapter and the Anthropic Sandbox Runtime—rather than distributing concerns across independently deployable services that must each handle platform differences.
 
+> **Technology Bindings:** The Gateway runtime uses Bun 1.3.8 with TypeScript 5.9.3. See [TechSpec.md Section 1.1](TechSpec.md#11-core-runtime-and-language) for version specifications and [TechSpec.md Section 1.2](TechSpec.md#12-agent-orchestration-framework) for LangChain/LangGraph versions.
+
 ### Justification: Why This Pattern Fits the PRD Constraints
 
 The PRD explicitly rejects the "probabilistic safety" model prevalent in agent frameworks, demanding instead "architectural enforcement" that makes rule violations "physically impossible regardless of how the agent is prompted." This requirement maps directly to the Layered Modular Monolith's strength in providing clear, enforceable boundaries. The Gateway sits at the center of all data flows, acting as the mandatory intermediary through which every Agent action must pass. This creates a chokepoint where security policies can be enforced without relying on the Agent's compliance.
@@ -19,6 +122,8 @@ The PRD explicitly rejects the "probabilistic safety" model prevalent in agent f
 The availability requirement of "session continuity across Gateway restarts" is achieved through the Checkpointer's SQLite persistence with WAL mode, a pattern that requires shared filesystem access available in monolithic deployments but problematic across service boundaries. The checkpoint schema maintains conversation state and tool call sequences with rollback capability, enabling the Gateway to restore exact session state after any interruption.
 
 The performance constraint of "sandbox invocation within 100ms" further favors monolithic deployment. Tool calls must traverse the Gateway-Sandbox RPC interface regardless of architecture, but adding service-to-service latency between Gateway components would violate the latency budget. The monolithic pattern keeps all Gateway components in the same process, eliminating network round-trips from the critical path.
+
+> **See Also:** [TechSpec.md Section 2](TechSpec.md#2-architecture-decision-records) for ADRs documenting these architectural decisions with full context and alternatives analysis.
 
 ---
 
@@ -34,25 +139,37 @@ The following containers constitute the deployable units of the RealClaw system.
 
 **Credential Vault**: Platform-specific abstraction layer — Provides unified interface to OS-level credential storage, exposing `store(service, secret)`, `retrieve(service)`, and `rotate(service)` methods. On macOS, this layer integrates with Keychain Services API; on Linux, it interfaces with secret-service API (GNOME Keyring, KWallet, or pass). Credentials never leave runtime memory; the vault abstraction prevents any code path from writing secrets to filesystem, logs, or network connections.
 
-**Egress Gateway**: Go or Rust binary implementing HTTP CONNECT proxy with domain allowlisting — Operates as independent system service bound to localhost only. Enforces strict allowlist-only network policy for all sandbox egress, logs every connection attempt with complete context (timestamp, destination, disposition, bytes transferred), and returns structured JSON errors for denied requests. Communicates with Orchestrator via HTTP over Unix domain socket.
+**Egress Gateway**: Go or Rust binary implementing HTTP CONNECT proxy with domain allowlisting — Operates as independent system service bound to localhost only. Enforces strict allowlist-only network policy for all sandbox egress, logs every connection attempt with complete context (timestamp, destination, disposition, bytes transferred), and returns structured JSON errors for denied requests. Communicates with Gateway via HTTP over Unix domain socket.
 
 ### Layer 1: The Sandbox
 
 **Sandbox Runtime**: Anthropic Sandbox Runtime (`@anthropic-ai/sandbox-runtime`) — Provides filesystem isolation through OS-native mechanisms (bubblewrap on Linux, sandbox-exec on macOS) and network isolation that routes all traffic through Egress Gateway. The Agent operates inside this boundary with no awareness of its existence. Sandbox configuration is platform-agnostic; the runtime handles translation to optimal native mechanisms.
 
-### Layer 3: The Orchestrator
+> **Platform Implementation:** On Linux, uses bubblewrap with seccomp filters. On macOS, uses sandbox-exec (Seatbelt) profiles. See [TechSpec.md Section 1.3](TechSpec.md#13-protocol-and-integration-libraries) for runtime version and [Section 7.3](TechSpec.md#73-sandboxing-guarantees) for platform-specific guarantees.
 
-**Orchestrator**: Bun/TypeScript runtime managing LangChain/LangGraph execution — Central orchestration component owning session management, tool dispatch, prompt injection, and policy enforcement. Uses LangChain.js v1 `createAgent()` API as canonical entry point and LangGraph for stateful workflow management. Runs as Nix-managed service with independent lifecycle from Egress Gateway.
+### Layer 3: The Gateway
+
+**Gateway**: Bun/TypeScript runtime managing LangChain/LangGraph execution — Central orchestration component owning session management, tool dispatch, prompt injection, and policy enforcement. Uses LangChain.js v1 `createAgent()` API as canonical entry point and LangGraph for stateful workflow management. Runs as Nix-managed service with independent lifecycle from Egress Gateway.
+
+> **Version Reference:** LangChain.js 1.2.19 (core) / 1.2.17 (bindings), LangGraph.js 1.1.2. See [TechSpec.md Section 1.2](TechSpec.md#12-agent-orchestration-framework) for complete stack specification.
 
 **Telegram Adapter**: grammY integration for Telegram Bot API — Primary interaction channel receiving Owner messages via webhook (cryptographically verified) and delivering Agent responses.
 
+> **Technology Version:** grammY 1.39.3 with Telegram Bot API 9.3 support. See [TechSpec.md Section 1.3](TechSpec.md#13-protocol-and-integration-libraries).
+
 **MCP Adapter**: `@langchain/mcp-adapters` integration — Provides access to Model Context Protocol servers for Slack, Discord, email, calendar, and custom services.
 
-**Checkpointer**: SQLite with WAL mode and LangGraph integration — Persists agent state across Orchestrator restarts using `SqliteCheckpointer`. Maintains checkpoint tables for conversation state and writes tables for metadata.
+> **Version:** @langchain/mcp-adapters 1.1.2. See [TechSpec.md Section 1.2](TechSpec.md#12-agent-orchestration-framework).
+
+**Checkpointer**: SQLite with WAL mode and LangGraph integration — Persists agent state across Gateway restarts using `SqliteCheckpointer`. Maintains checkpoint tables for conversation state and writes tables for metadata.
+
+> **Technology:** SQLite 3.x with Write-Ahead Logging mode. See [TechSpec.md Section 3](TechSpec.md#3-database-schema) for schema specifications.
 
 **Structured Logger**: SQLite-based logging subsystem with automatic rotation — Captures all Agent operations including tool invocations, model calls, and middleware execution.
 
 **OpenTelemetry Handler**: Custom callback implementation for distributed tracing — Intercepts LLM calls, tool invocations, chain executions, and memory operations.
+
+> **Tracing Implementation:** Custom OpenTelemetry callback for LangChain.js. See [TechSpec.md Section 8.1](TechSpec.md#81-observability-integration) for implementation details.
 
 ### Middleware Components
 
@@ -64,6 +181,8 @@ The following containers constitute the deployable units of the RealClaw system.
 
 **Browser Middleware**: Provides browser automation tools, managing isolated browser profiles per session and routing traffic through Egress Gateway.
 
+> **Browser Technology:** Vercel Agent Browser 0.9.0 with CDP protocol support. See [TechSpec.md Section 1.3](TechSpec.md#13-protocol-and-integration-libraries).
+
 **Memory Middleware**: Manages three-tier recall system — Retrieves relevant memories before model calls using embedding-based retrieval and consolidates memories after agent completion.
 
 **Skill Loader Middleware**: Injects skill manifests into Agent context based on task — Reads skill folders and loads SKILL.md content.
@@ -71,6 +190,8 @@ The following containers constitute the deployable units of the RealClaw system.
 **Human-in-the-Loop Middleware**: Interrupts on configured operations for Owner approval via Telegram inline keyboards.
 
 **Summarization Middleware**: Compresses older messages when context exceeds token thresholds to prevent context overflow.
+
+> **Middleware Implementation:** See [TechSpec.md Section 5.5](TechSpec.md#55-middleware-composition-order) for composition order and [TechSpec.md Section 5.6](TechSpec.md#56-callback-execution-order) for callback execution order.
 
 ---
 
@@ -83,7 +204,7 @@ C4Container
   Person_Ext(Owner, "Owner", "Single human provisioning, configuring, and operating the instance")
 
   System_Boundary(realclaw_runtime, "RealClaw Runtime") {
-    Container(orchestrator, "Orchestrator", "Bun/TypeScript", "Central orchestration: agent loop, tool dispatch, policy enforcement")
+    Container(gateway, "Gateway", "Bun/TypeScript", "Central orchestration: agent loop, tool dispatch, policy enforcement")
     ContainerDb(checkpointer, "Checkpointer", "SQLite + LangGraph", "State persistence: conversation, checkpoints, writes")
     ContainerDb(structured_log, "Structured Logger", "SQLite", "Audit trail: operations, errors, durations")
     Container(egress_gateway, "Egress Gateway", "Go/Rust Binary", "HTTP CONNECT proxy with domain allowlisting")
@@ -117,9 +238,9 @@ C4Container
   Rel(Owner, Telegram, "Interacts via")
 
   Rel(Telegram, telegram_adapter, "Sends updates to (webhook)")
-  Rel(telegram_adapter, orchestrator, "Routes messages to")
+  Rel(telegram_adapter, gateway, "Routes messages to")
 
-  Rel(orchestrator, policy_mw, "Chains through")
+  Rel(gateway, policy_mw, "Chains through")
   Rel(policy_mw, cron_mw, "Middleware chain")
   Rel(cron_mw, web_mw, "Middleware chain")
   Rel(web_mw, browser_mw, "Middleware chain")
@@ -127,23 +248,23 @@ C4Container
   Rel(memory_mw, skill_mw, "Middleware chain")
   Rel(skill_mw, hitl_mw, "Middleware chain")
   Rel(hitl_mw, summarize_mw, "Middleware chain")
-  Rel(summarize_mw, orchestrator, "Completes middleware chain")
+  Rel(summarize_mw, gateway, "Completes middleware chain")
 
-  Rel(orchestrator, checkpointer, "Persists state to")
-  Rel(orchestrator, structured_log, "Emits audit records to")
-  Rel(orchestrator, credential_vault, "Retrieves credentials from")
-  Rel(orchestrator, egress_gateway, "Manages allowlist via RPC")
-  Rel(orchestrator, sandbox, "Invokes command execution via")
-  Rel(orchestrator, memory_bank, "Stores/retrieves memories via")
+  Rel(gateway, checkpointer, "Persists state to")
+  Rel(gateway, structured_log, "Emits audit records to")
+  Rel(gateway, credential_vault, "Retrieves credentials from")
+  Rel(gateway, egress_gateway, "Manages allowlist via RPC")
+  Rel(gateway, sandbox, "Invokes command execution via")
+  Rel(gateway, memory_bank, "Stores/retrieves memories via")
 
   Rel(sandbox, egress_gateway, "Routes all traffic through")
   Rel(sandbox, llm_provider, "Calls for intelligence")
   Rel(sandbox, exa_api, "Searches web via")
 
-  Rel(orchestrator, mcp_adapter, "Connects to MCP servers")
+  Rel(gateway, mcp_adapter, "Connects to MCP servers")
   Rel(mcp_adapter, mcp_servers, "Integrates with external services")
 
-  Rel(orchestrator, otel_backend, "Exports traces to")
+  Rel(gateway, otel_backend, "Exports traces to")
 ```
 
 ---
@@ -158,7 +279,7 @@ sequenceDiagram
   participant Owner as Owner
   participant Telegram as Telegram
   participant Adapter as Telegram Adapter
-  participant Orchestrator as Orchestrator
+  participant Gateway as Gateway
   participant PolicyMW as Policy Middleware
   participant MemoryMW as Memory Middleware
   participant Agent as Agent
@@ -175,10 +296,10 @@ sequenceDiagram
   rect rgb(240, 248, 255)
     Note right of Adapter: Authentication Boundary
     Adapter->>Adapter: Verify Telegram signature
-    Adapter->>Orchestrator: InvokeAgent(message, threadId)
+    Adapter->>Gateway: InvokeAgent(message, threadId)
   end
   
-  Orchestrator->>PolicyMW: process(message)
+  Gateway->>PolicyMW: process(message)
   PolicyMW->>Checkpointer: Load session state (threadId)
   Checkpointer-->>PolicyMW: Session state
   
@@ -189,33 +310,60 @@ sequenceDiagram
   MemoryBank-->>MemoryMW: Relevant memories
   MemoryMW-->>PolicyMW: Context bundle
   
-  PolicyMW->>Orchestrator: Continue with context
-  Orchestrator->>Agent: execute(systemPrompt, userMessage, context)
+  PolicyMW->>Gateway: Continue with context
+  Gateway->>Agent: execute(systemPrompt, userMessage, context)
   
   Note over Agent: Agent reasoning occurs here
   Agent->>LLM: Claude API call (with injected SOUL.md)
   LLM-->>Agent: Reasoning + tool selection
   
-  Agent->>Orchestrator: Tool call: get_calendar_events
-  Orchestrator->>MCPAdapter: calendar.getEvents()
+  Agent->>Gateway: Tool call: get_calendar_events
+  Gateway->>MCPAdapter: calendar.getEvents()
   MCPAdapter-->>LLM: Calendar data
   LLM-->>Agent: Analysis complete
-  Agent->>Orchestrator: Final response
-  Orchestrator->>Scanner: scan(response.content)
+  Agent->>Gateway: Final response
+  Gateway->>Scanner: scan(response.content)
   
   rect rgb(255, 240, 245)
     Note right of Scanner: Content Security Boundary
     Scanner->>Scanner: Detect credentials, PII, violations
-    Scanner-->>Orchestrator: Clean bill of health OR reject
+    Scanner-->>Gateway: Clean bill of health OR reject
   end
   
-  Orchestrator->>Checkpointer: Save checkpoint (state, messages)
-  Checkpointer-->>Orchestrator: Confirmed
-  Orchestrator->>Adapter2: SendResponse(response)
+  Gateway->>Checkpointer: Save checkpoint (state, messages)
+  Checkpointer-->>Gateway: Confirmed
+  Gateway->>Adapter2: SendResponse(response)
   Adapter2->>Telegram: Delivers message to Owner
+  
+  %% Error Paths
+  rect rgb(255, 200, 200)
+    Note over Adapter,Adapter: ERROR: Invalid Telegram signature
+    Adapter-->>Telegram: HTTP 401 Unauthorized
+  end
+  
+  rect rgb(255, 200, 200)
+    Note over PolicyMW,Checkpointer: ERROR: Checkpoint load failure
+    PolicyMW-->>Gateway: Error: Session unavailable
+    Gateway->>Adapter2: SendResponse("Session restore failed")
+  end
+  
+  rect rgb(255, 200, 200)
+    Note over Scanner,Gateway: ERROR: Content policy violation
+    Scanner-->>Gateway: Reject: Policy violation
+    Gateway->>Adapter2: SendResponse("Content blocked by policy")
+  end
+  
+  rect rgb(255, 200, 200)
+    Note over Gateway,LLM: ERROR: LLM provider unavailable
+    Gateway-->>Agent: Error: Service temporarily unavailable
+    Agent-->>Gateway: Fallback response
+    Gateway->>Adapter2: SendResponse("Service unavailable")
+  end
 ```
 
 **Flow Analysis**: This sequence reveals several architectural commitments. The Policy Middleware sits at the entry point, meaning every conversation passes through security validation before Agent invocation. The Memory Middleware operates invisibly to the Agent—the Agent receives consolidated context but has no awareness of memory operations. The Content Scanner sits in the response path, ensuring no credential leak or policy violation reaches the Owner. Each checkpoint write blocks until confirmed, ensuring session continuity is not compromised by write failures.
+
+> **Error Handling:** All external dependencies (LLM, MCP, Checkpointer) implement retry with exponential backoff and circuit breaker patterns. See [TechSpec.md Section 4.1](TechSpec.md#41-gateway-http-api) for error response schemas.
 
 ### Flow 2: Terminal Command Execution in Sandbox
 
@@ -223,7 +371,7 @@ sequenceDiagram
 sequenceDiagram
   autonumber
   participant Agent as Agent
-  participant Orchestrator as Orchestrator
+  participant Gateway as Gateway
   participant PolicyMW as Policy Middleware
   participant CredentialVault as Credential Vault
   participant EgressGW as Egress Gateway
@@ -231,29 +379,29 @@ sequenceDiagram
   participant Bash as Sandboxed Shell
   participant Checkpointer as Checkpointer
 
-  Agent->>Orchestrator: Tool call: terminal.run("npm install")
+  Agent->>Gateway: Tool call: terminal.run("npm install")
   
   rect rgb(240, 248, 255)
-    Note right of Orchestrator: Tool Dispatch Boundary
-    Orchestrator->>PolicyMW: validateToolRequest("npm install")
+    Note right of Gateway: Tool Dispatch Boundary
+    Gateway->>PolicyMW: validateToolRequest("npm install")
     PolicyMW->>PolicyMW: Check package allowlist
-    PolicyMW-->>Orchestrator: Approved OR Rejected
+    PolicyMW-->>Gateway: Approved OR Rejected
   end
   
   alt Package Allowed
-    Orchestrator->>CredentialVault: retrieve("npm_token")
-    CredentialVault-->>Orchestrator: Token (runtime memory only)
+    Gateway->>CredentialVault: retrieve("npm_token")
+    CredentialVault-->>Gateway: Token (runtime memory only)
     
     rect rgb(255, 240, 245)
-      Note right of Orchestrator: Egress Configuration Boundary
-      Orchestrator->>EgressGW: POST /api/v1/allowlist/add ["registry.npmjs.org"]
-      EgressGW-->>Orchestrator: Confirmed
+      Note right of Gateway: Egress Configuration Boundary
+      Gateway->>EgressGW: POST /api/v1/allowlist/add ["registry.npmjs.org"]
+      EgressGW-->>Gateway: Confirmed
     end
     
-    Orchestrator->>Checkpointer: Log tool invocation (PRE)
-    Checkpointer-->>Orchestrator: Recorded
+    Gateway->>Checkpointer: Log tool invocation (PRE)
+    Checkpointer-->>Gateway: Recorded
     
-    Orchestrator->>Sandbox: invoke(command="npm install", env={}, timeout=300s)
+    Gateway->>Sandbox: invoke(command="npm install", env={}, timeout=300s)
     
     rect rgb(240, 248, 255)
       Note right of Sandbox: Isolation Boundary
@@ -269,22 +417,59 @@ sequenceDiagram
     EgressGW-->>Bash: Tunnel established
     
     Bashes-->>Sandbox: stdout/stderr streams
-    Sandbox-->>Orchestrator: Exit code, output
+    Sandbox-->>Gateway: Exit code, output
     
-    Orchestrator->>Checkpointer: Log tool completion (POST, exitCode)
-    Checkpointer-->>Orchestrator: Recorded
+    Gateway->>Checkpointer: Log tool completion (POST, exitCode)
+    Checkpointer-->>Gateway: Recorded
     
-    Orchestrator->>EgressGW: POST /api/v1/allowlist/remove ["registry.npmjs.org"]
-    EgressGW-->>Orchestrator: Confirmed (reset to baseline)
+    Gateway->>EgressGW: POST /api/v1/allowlist/remove ["registry.npmjs.org"]
+    EgressGW-->>Gateway: Confirmed (reset to baseline)
     
-    Orchestrator->>Agent: Tool result
+    Gateway->>Agent: Tool result
     
   else Package Not Allowed
-    Orchestrator->>Agent: Tool error: "Package not in allowlist"
+    Gateway->>Agent: Tool error: "Package not in allowlist"
+  end
+  
+  %% Error Paths
+  rect rgb(255, 200, 200)
+    Note over PolicyMW,Gateway: ERROR: Package not in allowlist
+    PolicyMW-->>Gateway: Rejected: Package not allowed
+    Gateway->>Agent: Error: "npm install not permitted"
+  end
+  
+  rect rgb(255, 200, 200)
+    Note over CredentialVault,Gateway: ERROR: Credential unavailable
+    CredentialVault-->>Gateway: Error: Credential not found
+    Gateway->>Agent: Error: "npm token not configured"
+  end
+  
+  rect rgb(255, 200, 200)
+    Note over Gateway,EgressGW: ERROR: Gateway unavailable
+    Gateway->>EgressGW: POST /api/v1/allowlist/add
+    EgressGW-->>Gateway: Error: Connection refused
+    Gateway->>Agent: Error: "Network proxy unavailable"
+  end
+  
+  rect rgb(255, 200, 200)
+    Note over Sandbox,Gateway: ERROR: Sandbox execution failure
+    Sandbox-->>Gateway: Error: Command timeout (300s)
+    Gateway->>Checkpointer: Log timeout
+    Gateway->>Agent: Error: "Command timed out"
+  end
+  
+  rect rgb(255, 200, 200)
+    Note over EgressGW,Bash: ERROR: Domain not allowed
+    EgressGW-->>Bash: Error: Domain not in allowlist
+    Bashes-->>Sandbox: Connection rejected
+    Sandbox-->>Gateway: Exit code 1
+    Gateway->>Agent: Error: "Connection to registry rejected"
   end
 ```
 
 **Flow Analysis**: This flow exposes the defense-in-depth strategy. The package allowlist is checked before any resource allocation. The credential is retrieved from the vault and exists only in runtime memory—never written to environment variables. The Egress Gateway allowlist is explicitly modified to add the npm registry, used for the command duration, then removed. The Sandbox applies filesystem zones that prevent the command from accessing anything outside `/sandbox/work/`. Every action is logged before and after execution, enabling complete audit trails.
+
+> **Cross-Platform Implementation:** Linux uses bubblewrap with `--bind` mounts. macOS uses sandbox-exec (Seatbelt) profiles. See [TechSpec.md Section 7.3](TechSpec.md#73-sandboxing-guarantees) for platform-specific isolation details.
 
 ### Flow 3: Browser Automation with Network Enforcement
 
@@ -292,18 +477,18 @@ sequenceDiagram
 sequenceDiagram
   autonumber
   participant Agent as Agent
-  participant Orchestrator as Orchestrator
+  participant Gateway as Gateway
   participant BrowserMW as Browser Middleware
   participant AgentBrowser as Vercel Agent Browser
   participant EgressGW as Egress Gateway
   participant Checkpointer as Checkpointer
   participant DomainAllowlist as Domain Allowlist
 
-  Agent->>Orchestrator: Tool call: browser.navigate("https://docs.example.com")
+  Agent->>Gateway: Tool call: browser.navigate("https://docs.example.com")
   
   rect rgb(240, 248, 255)
-    Note right of Orchestrator: Tool Validation Boundary
-    Orchestrator->>BrowserMW: validateNavigation("docs.example.com")
+    Note right of Gateway: Tool Validation Boundary
+    Gateway->>BrowserMW: validateNavigation("docs.example.com")
     BrowserMW->>DomainAllowlist: Check if allowed
     DomainAllowlist-->>BrowserMW: ALLOWED or DENIED
   end
@@ -322,12 +507,12 @@ sequenceDiagram
     EgressGW-->>AgentBrowser: Tunnel established
     
     AgentBrowser-->>BrowserMW: Session created
-    BrowserMW-->>Orchestrator: Confirmed
+    BrowserMW-->>Gateway: Confirmed
     
-    Orchestrator->>Checkpointer: Log browser session start
-    Checkpointer-->>Orchestrator: Recorded
+    Gateway->>Checkpointer: Log browser session start
+    Checkpointer-->>Gateway: Recorded
     
-    Orchestrator->>AgentBrowser: navigate("https://docs.example.com")
+    Gateway->>AgentBrowser: navigate("https://docs.example.com")
     
     Note over AgentBrowser,Target: All browser traffic routes through Egress Gateway
     AgentBrowser->>EgressGW: CONNECT docs.example.com
@@ -339,21 +524,56 @@ sequenceDiagram
     BrowserMW->>Checkpointer: Log navigation completion
     Checkpointer-->>BrowserMW: Recorded
     
-    BrowserMW-->>Orchestrator: Snapshot
-    Orchestrator-->>Agent: Tool result
+    BrowserMW-->>Gateway: Snapshot
+    Gateway-->>Agent: Tool result
     
   else Domain Denied
-    Orchestrator->>EgressGW: POST /api/v1/logs (blocked attempt)
-    EgressGW-->>Orchestrator: Recorded
-    Orchestrator->>Agent: Tool error: "Domain not in allowlist"
+    Gateway->>EgressGW: POST /api/v1/logs (blocked attempt)
+    EgressGW-->>Gateway: Recorded
+    Gateway->>Agent: Tool error: "Domain not in allowlist"
   end
   
-  Note over AgentBrowser,Orchestrator: Session isolation ensures no cross-thread state leakage
-  AgentBrowser->>Orchestrator: closeSession()
-  Orchestrator->>Checkpointer: Log session closure
+  Note over AgentBrowser,Gateway: Session isolation ensures no cross-thread state leakage
+  AgentBrowser->>Gateway: closeSession()
+  Gateway->>Checkpointer: Log session closure
+  
+  %% Error Paths
+  rect rgb(255, 200, 200)
+    Note over BrowserMW,DomainAllowlist: ERROR: Domain not in allowlist
+    DomainAllowlist-->>BrowserMW: DENIED
+    BrowserMW-->>Gateway: Error: Domain not permitted
+    Gateway->>Agent: Error: "docs.example.com not allowed"
+  end
+  
+  rect rgb(255, 200, 200)
+    Note over AgentBrowser,EgressGW: ERROR: Proxy tunnel failure
+    AgentBrowser->>EgressGW: CONNECT docs.example.com
+    EgressGW-->>AgentBrowser: Error: Connection failed
+    AgentBrowser-->>BrowserMW: Error: Tunnel failed
+    BrowserMW-->>Gateway: Error: "Cannot reach docs.example.com"
+    Gateway->>Agent: Error: "Navigation failed"
+  end
+  
+  rect rgb(255, 200, 200)
+    Note over AgentBrowser,Gateway: ERROR: Browser session failure
+    AgentBrowser-->>BrowserMW: Error: Profile creation failed
+    BrowserMW-->>Gateway: Error: "Browser unavailable"
+    Gateway->>Agent: Error: "Browser tool failed"
+  end
+  
+  rect rgb(255, 200, 200)
+    Note over EgressGW,Gateway: ERROR: Egress Gateway unavailable
+    AgentBrowser->>EgressGW: CONNECT docs.example.com
+    EgressGW-->>AgentBrowser: Error: Gateway not responding
+    AgentBrowser-->>BrowserMW: Error: Proxy unreachable
+    BrowserMW-->>Gateway: Error: "Network proxy unavailable"
+    Gateway->>Agent: Error: "Browser navigation failed"
+  end
 ```
 
 **Flow Analysis**: Browser automation presents unique risks because web content can contain malicious JavaScript attempting network connections, filesystem access, or credential theft. The architecture mitigates these risks through multiple layers. The domain allowlist is checked before navigation begins. The Agent Browser runs in an isolated profile per session, preventing state leakage between conversations. All browser traffic routes through the Egress Gateway, ensuring the same allowlist rules apply to browser-initiated connections as to command-line tools. Each navigation is logged for security audit.
+
+> **Browser Technology:** Vercel Agent Browser 0.9.0 with CDP protocol. See [TechSpec.md Section 1.3](TechSpec.md#13-protocol-and-integration-libraries) for version and [TechSpec.md Section 4.1](TechSpec.md#41-gateway-http-api) for browser tool API specifications.
 
 ---
 
@@ -369,9 +589,11 @@ The RealClaw architecture implements a layered authentication and authorization 
 
 **Agent Authorization Model**: The Agent operates under a capability-based authorization system where capabilities are granted by middleware rather than inherited from the Owner's identity. When the Agent attempts to invoke a tool, the Policy Middleware validates the request against configured policies. This separation means the Agent's effective permissions are a subset of the Owner's permissions, never a superset.
 
-**Credential Access Authorization**: Credentials stored in the vault are accessed by the Orchestrator only when required for external service calls. The Agent has no direct credential access—any tool requiring credentials must be dispatched through the Orchestrator, which retrieves the credential from the vault, injects it into the appropriate context, and ensures the credential is never exposed to the Agent.
+**Credential Access Authorization**: Credentials stored in the vault are accessed by the Gateway only when required for external service calls. The Agent has no direct credential access—any tool requiring credentials must be dispatched through the Gateway, which retrieves the credential from the vault, injects it into the appropriate context, and ensures the credential is never exposed to the Agent.
 
 **Egress Gateway Authorization**: The Gateway communicates with the Egress Gateway over a Unix domain socket with restricted permissions (typically `gateway:gateway` ownership with `0600` permissions). The socket accepts only local connections from processes with appropriate credentials. Additionally, the Gateway's management API requires authenticated requests using an internal token.
+
+> **Credential Technology:** macOS uses Keychain Services API, Linux uses secret-service API (GNOME Keyring, KWallet, or pass). See [TechSpec.md Section 1.5](TechSpec.md#15-infrastructure-and-build) for Egress Gateway implementation and [TechSpec.md Section 7.2](TechSpec.md#72-credential-handling) for credential handling details.
 
 ### 5.2 Observability
 
@@ -383,6 +605,8 @@ The observability strategy in RealClaw addresses three distinct needs: operation
 
 **Health and Metrics Endpoints**: The Gateway exposes standardized endpoints for operational monitoring. The `/health` endpoint returns HTTP 200 indicating the process is running. The `/ready` endpoint performs dependency checks (SQLite connectivity, MCP server availability, Egress Gateway responsiveness) and returns 200 only when all dependencies are healthy. The `/metrics` endpoint serves Prometheus-compatible metrics including HTTP request counts, tool invocation counts, and proxy dispositions.
 
+> **Logging Schema:** See [TechSpec.md Section 3.4](TechSpec.md#34-audit-log-database-auditdb) for audit log schema and [TechSpec.md Section 3.5](TechSpec.md#35-proxy-access-log-database-proxydb) for proxy access log schema.
+
 ### 5.3 Error Handling and Degradation
 
 The architecture implements a comprehensive error handling strategy that ensures system safety under failure conditions while providing clear feedback.
@@ -392,6 +616,8 @@ The architecture implements a comprehensive error handling strategy that ensures
 **Retry Policies with Exponential Backoff**: Transient failures in external services trigger automatic retries with exponential backoff. The retry policy applies to LLM API calls (up to 3 retries with 1s/2s/4s delays), MCP server connections (up to 2 retries with 500ms/1s delays), and Egress Gateway operations (up to 2 retries with 100ms/200ms delays).
 
 **Circuit Breaker Integration**: The architecture implements circuit breakers for external services to prevent cascade failures during extended outages. When a service fails repeatedly (5 failures in a 60-second window), the circuit opens and subsequent requests fail immediately with a service-unavailable error.
+
+> **Error Response Schema:** See [TechSpec.md Section 4.1](TechSpec.md#41-gateway-http-api) for standardized error response formats.
 
 ---
 
@@ -412,6 +638,11 @@ The architecture implements a comprehensive error handling strategy that ensures
 **MCP Adapter State Management**: The MCP adapter maintains persistent connections to MCP servers. If an MCP server crashes, the adapter may hold stale connection state until connection timeout. The architecture does not implement proactive health checking of MCP connections.
 
 **Cross-Platform Substrate Differences**: The architecture claims "identical Agent capability semantics" across Linux and macOS, but the underlying mechanisms differ significantly (bubblewrap bind mounts vs. Seatbelt profiles). Edge cases around symlink handling and violation detection differ between platforms.
+
+> **Platform-Specific Implementation Details:**
+> - **Linux:** Uses bubblewrap with `--bind` mounts for filesystem zones. Seccomp filters restrict syscalls. Network isolation via network namespace with proxy routing.
+> - **macOS:** Uses sandbox-exec (Seatbelt) profiles for filesystem and process restrictions. No network namespace support; proxy enforcement via environment variables only. Violation detection via sandbox violation log taps.
+> See [TechSpec.md Section 7.3](TechSpec.md#73-sandboxing-guarantees) for detailed platform-specific guarantees and [TechSpec.md Section 7.1](TechSpec.md#71-threat-model) for threat model per platform.
 
 ### Technical Debt
 
@@ -434,3 +665,5 @@ The architecture implements a comprehensive error handling strategy that ensures
 | Egress Gateway as Separate Process | Separate trust boundary enables defense-in-depth; independent lifecycle prevents cascade failures | Adds latency to all network operations; requires process supervision |
 | Unix Domain Socket for RPC | Provides authentication through filesystem permissions; avoids network exposure | Communication limited to same host; socket file must be protected |
 | Callback-Based Observability | Minimal overhead on critical path; composable handlers | No automatic correlation—correlation IDs must be explicitly passed |
+
+> **ADR References:** See [TechSpec.md Section 2](TechSpec.md#2-architecture-decision-records) for full ADR documentation with context, alternatives considered, and consequences analysis.

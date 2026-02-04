@@ -14,6 +14,8 @@ Current personal AI agent implementations suffer from fundamental architectural 
 
 RealClaw will be considered successful when the following qualitative conditions are met: the Owner can provision credentials for any integration without those credentials ever appearing in logs, filesystem, or network captures accessible to the agent; the agent cannot access any network destination or file path that the Owner has not explicitly allowed, regardless of how the agent frames its requests; every agent action—including tool invocations, network calls, and file operations—is logged with sufficient detail for complete audit and reproduction; scheduled tasks execute precisely as configured without requiring the Owner to maintain running processes; and the agent demonstrates genuine helpfulness within its security constraints rather than refusing all actions that require external capability. The system must feel to the Owner like a capable assistant that happens to be unbreakable, rather than an unbreakable system that happens to be unhelpful.
 
+**Cross-Platform Consistency Criteria:** The System shall deliver identical capability semantics across Linux and macOS platforms with the following measurable criteria: path allowlist validation must produce identical results regardless of platform filesystem conventions (case sensitivity, path separators, volume mounting); network egress policies must enforce identical domain restrictions across platforms using platform-native sandbox mechanisms; credential vault operations must provide equivalent security properties (Keychain on macOS, secret-service on Linux) with identical API semantics; and CLI commands must produce functionally equivalent behavior across platforms with platform-specific formatting only where semantically required. Cross-platform consistency shall be validated through automated test suites that execute identical capability requests on both platforms and verify equivalent outcomes.
+
 ---
 
 ## 2. Ubiquitous Language
@@ -48,17 +50,19 @@ The Agent is not a persona in the traditional sense but represents the behaviora
 
 The Agent's behavior is governed by four foundational values injected through constitutional documents at runtime. These values are not prompts the Agent "should follow" but architectural constraints that shape how the Agent interprets requests and generates responses.
 
-**Helpfulness (Primary):** The Agent shall genuinely assist the Owner within security constraints. Assistance is measured by task completion and useful information provision, not by compliance volume. The Agent may refuse requests that violate configured policies but must explain the refusal and, where possible, suggest alternative approaches within constraints.
+**Helpfulness (Primary):** The Agent shall genuinely assist the Owner within security constraints. Assistance is measured by task completion and useful information provision, not by compliance volume. The Agent may refuse requests that violate configured policies but must explain the refusal and, where possible, suggest alternative approaches within constraints. Success Indicator: The Agent completes at least 80% of non-policy-violating Owner requests within the configured capability scope, with meaningful progress communicated even when full completion requires Owner intervention.
 
-**Honesty (Mandatory):** The Agent shall be truthful in all interactions. When the Agent lacks information or certainty, it shall acknowledge this rather than fabricate responses. The Agent shall not obscure its limitations or the boundaries of its capabilities. Confidence levels shall accurately reflect actual certainty.
+**Honesty (Mandatory):** The Agent shall be truthful in all interactions. When the Agent lacks information or certainty, it shall acknowledge this rather than fabricate responses. The Agent shall not obscure its limitations or the boundaries of its capabilities. Confidence levels shall accurately reflect actual certainty. Success Indicator: Zero confirmed hallucinations in Owner-audited sessions; when uncertain, the Agent explicitly states uncertainty rather than generating plausible-sounding but unverified information.
 
-**Harmlessness (Non-Negotiable):** The Agent shall never facilitate illegal, unethical, or dangerous activities regardless of Owner request framing. Harmlessness is enforced architecturally through policy constraints and capability boundaries, not through prompting alone. The Agent shall refuse requests that would cause harm even if technically capable of execution.
+**Harmlessness (Non-Negotiable):** The Agent shall never facilitate illegal, unethical, or dangerous activities regardless of Owner request framing. Harmlessness is enforced architecturally through policy constraints and capability boundaries, not through prompting alone. The Agent shall refuse requests that would cause harm even if technically capable of execution. Success Indicator: Zero policy violations that result in actual harm; all potentially harmful requests are blocked at the policy enforcement layer with clear explanation of why the request was declined.
 
-**Transparency (Foundational):** The Agent shall be clear about its capabilities and limitations. The Owner shall always understand what the Agent can and cannot do, why specific actions were taken, and what constraints shaped the response. Transparency extends to the observability layer, where all Agent operations are logged for Owner review.
+**Transparency (Foundational):** The Agent shall be clear about its capabilities and limitations. The Owner shall always understand what the Agent can and cannot do, why specific actions were taken, and what constraints shaped the response. Transparency extends to the observability layer, where all Agent operations are logged for Owner review. Success Indicator: Owner can audit 100% of Agent decisions through observability layer; Agent explanations enable Owners to understand decision rationale without requiring access to internal system prompts or architectural knowledge.
 
 ### Constitutional Framework
 
 Agent behavior is defined through constitutional documents injected at runtime, not through static prompts or filesystem materials. The Gateway assembles these documents into the Agent's system prompt, ensuring the Agent has no awareness of its configuration and no ability to modify its own constraints. Identity documents are never materialized as files within the Sandbox, preventing exfiltration of behavioral guidelines through file copy operations. The constitution consists of immutable core identity, environment and harness context, and Owner-configured preferences, forming a hierarchical constraint system where higher-priority documents override lower-priority ones.
+
+**Core Philosophies:** RealClaw operates according to foundational philosophical principles that shape every architectural decision and implementation choice. These principles are documented in the Architecture documentation and include: Trust the Sandbox, Not the Model; Immutability by Default; Capability-Based Security; Supply Chain Integrity; Gated Egress; Middleware-Managed Memory; Single-Tenant by Design; Everything is Middleware; and Build on Proven Foundations. These philosophies represent non-negotiable constraints on implementation and should be referenced when evaluating proposed changes or extensions to the system.
 
 ---
 
@@ -118,11 +122,11 @@ Agent behavior is defined through constitutional documents injected at runtime, 
 
 ### Epic: Integration Framework (P1)
 
-**CAP-050:** The System shall provide Model Context Protocol (MCP) adapters for common services including Slack, Discord, email, and calendar integrations.
+**CAP-050:** The System shall provide Model Context Protocol (MCP) adapters for the following first-class integrations: Slack for team communication and workflow automation; Discord for community interaction and bot commands; email (IMAP/SMTP) for message retrieval and sending; calendar (iCal/Google Calendar) for scheduling and event management; and Telegram for real-time bidirectional interaction as defined in CAP-052. Additional MCP adapters may be configured by the Owner for services not listed here.
 
 **CAP-051:** The System shall expose CLI and Web UI interfaces for Owner configuration of integrations, with credential provisioning through vault integration.
 
-**CAP-052:** The System shall support Telegram as a first-class integration channel, providing real-time interaction capabilities.
+**CAP-052:** The System shall support Telegram as a first-class integration channel, providing real-time interaction capabilities through the grammY framework with sandbox enforcement.
 
 ### Epic: Observability (P1)
 
@@ -131,6 +135,16 @@ Agent behavior is defined through constitutional documents injected at runtime, 
 **CAP-061:** The System shall provide structured logging of all Agent actions with sufficient detail for complete reproduction and security audit.
 
 **CAP-062:** The System shall expose observability data through multiple backends including SQLite, OTLP collectors, and LangSmith-compatible endpoints.
+
+### Epic: Owner Interfaces (P0)
+
+**CAP-080:** The System shall provide a Command Line Interface (CLI) for Owner interaction, supporting the following capability categories: configuration management (setting and viewing policies, credential provisioning, and integration setup); debugging and diagnostics (session inspection, observability data retrieval, and system health verification); and automation (scriptable interactions for workflow integration and scheduled task management). The CLI shall use token-based authentication where Owners authenticate once to receive time-limited tokens for subsequent operations.
+
+**CAP-081:** The System shall provide a Web User Interface (Web UI) for casual Owner interaction and monitoring, featuring real-time conversation display with full observability integration, configuration panels for policy management and integration setup, and dashboard views for system status, scheduled tasks, and recent activity.
+
+**CAP-082:** The System shall ensure the CLI interface is fully keyboard-navigable and compatible with screen readers for accessibility, with all functionality accessible without requiring mouse interaction and clear focus indicators for navigation state.
+
+**CAP-083:** The System shall ensure the Web UI satisfies WCAG 2.1 AA accessibility compliance requirements including sufficient color contrast ratios, keyboard navigation support, screen reader compatibility for all interactive elements, and focus management for dynamic content updates.
 
 ### Epic: Cross-Platform Consistency (P2)
 

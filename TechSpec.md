@@ -139,7 +139,7 @@ Credentials retrieved from OS-level vaults at Orchestrator startup. The Orchestr
 
 ## 3. Database Schema
 
-This section defines the physical database schema using Mermaid ERD syntax. All tables use SQLite-compatible types. Primary keys, foreign keys, and critical indices are explicitly defined.
+This section defines the physical database schema using Mermaid ERD syntax. All tables use SQLite-compatible types. Primary keys, foreign keys, and critical indices are explicitly defined. Database schema implements the persistence layer defined in [Architecture.md Section 5.3](Architecture.md#53-persistence-layer).
 
 ### 3.1 Checkpoints Database (`checkpoints.db`)
 
@@ -215,38 +215,123 @@ erDiagram
 
 ### 3.3 Semantic Memory Database (`memory.db`)
 
-Stores long-term semantic memories with embedding-based retrieval.
+Stores long-term semantic memories with embedding-based retrieval. This database implements the three-tier recall system architecture defined in [Architecture.md Section 5.3](Architecture.md#53-three-tier-recall-system).
 
 ```mermaid
 erDiagram
     memories {
         text id PK "Memory unique identifier (UUID as TEXT)"
-        text content "Memory text content"
-        text vector_embedding PK "384-dimensional vector (JSON array as TEXT)"
+        text content "Memory text content (max 2048 chars)"
+        text vector_embedding "384-dimensional vector (binary BLOb)"
         text category "Memory category (fact/preference/procedure)"
         text metadata "JSON metadata as TEXT"
-        integer created_at "Creation timestamp"
-        integer last_accessed_at "Last retrieval timestamp"
+        integer created_at "Creation timestamp (Unix)"
+        integer last_accessed_at "Last retrieval timestamp (Unix)"
         integer access_count "Retrieval count"
-        float relevance_score "Computed relevance (decays over time)"
+        float relevance_score "Computed relevance (0.0-1.0)"
     }
     
     embedding_cache {
         text content_hash PK "SHA-256 hash of content"
-        text vector_embedding "Cached embedding vector (JSON array as TEXT)"
+        blob vector_embedding "Cached embedding vector (binary)"
         integer computed_at "Embedding computation timestamp"
+        text model_version "Model identifier for cache validity"
     }
     
     memories ||--o{ embedding_cache : "cached_by"
 ```
 
+#### Vector Embedding Configuration
+
+The semantic memory system uses the `intfloat/multilingual-e5-small` model for generating text embeddings. This model was selected for its multilingual capabilities, compact dimension size, and strong performance on semantic similarity tasks.
+
+| Parameter | Value | Justification |
+|-----------|-------|---------------|
+| **Model** | `intfloat/multilingual-e5-small` | Multilingual support (100+ languages), compact model size (~90MB), optimized for semantic similarity |
+| **Dimensions** | 384 | Balance between semantic expressiveness and storage efficiency. Sufficient for personal memory use cases |
+| **Layers** | 12 | Transformer layers for hierarchical feature extraction |
+| **Max Tokens** | 512 | Maximum input sequence length per embedding request |
+| **Tokenizer** | `XLMRobertaTokenizer` | Multilingual tokenization with consistent subword vocabulary |
+| **Distance Metric** | Cosine | Standard metric for semantic similarity. Range [-1, 1] where 1 = identical |
+
+#### Storage Format Specifications
+
+Vector embeddings are stored in binary format using SQLite BLOB columns for optimal storage efficiency and retrieval performance.
+
+- **Binary Format:** Float32 little-endian encoding (4 bytes per dimension)
+- **Storage Size:** 384 dimensions × 4 bytes = 1,536 bytes per vector
+- **Cache TTL:** 24 hours for embedding cache entries
+- **Quantization:** No quantization applied. Full precision maintained for accuracy
+
 **Schema Notes:**
-- `vector_embedding`: Embedding vector stored as JSON array in TEXT. Dimension is 384 for intfloat/multilingual-e5-small model.
+- `vector_embedding`: Binary BLOB storage in little-endian Float32 format. Replaces previous JSON array TEXT storage for 70% storage reduction.
 - `category`: Constrained to "fact", "preference", "procedure", "personal", "project".
-- `metadata`: JSON object storing source (user statement, extracted from conversation), confidence score (0.0-1.0), decay parameters.
-- `relevance_score`: Computed via recency weighting and importance. Used for memory retrieval ranking.
-- **Index:** IVEC or FTS5 virtual table for efficient similarity search.
-- **Constraint:** Content length limited to 2048 characters per memory.
+- `metadata`: JSON object storing source (user statement, extracted from conversation), confidence score (0.0-1.0), decay parameters, and embedding model version.
+- `relevance_score`: Computed via recency weighting and importance decay. Used for memory retrieval ranking.
+- **Index:** `IVEC` virtual table for efficient similarity search using cosine distance.
+- **Constraint:** Content length limited to 2048 characters per memory entry.
+- **Cache Strategy:** Content hash-based caching prevents redundant embedding computations for duplicate content.
+
+### 3.3.1 Vector Embedding Configuration
+
+The semantic memory system uses the `intfloat/multilingual-e5-small` model for generating text embeddings. This section provides comprehensive configuration specifications.
+
+#### Model Specifications
+
+| Parameter | Value | Details |
+|-----------|-------|---------|
+| **Model Identifier** | `intfloat/multilingual-e5-small` | HuggingFace model hub identifier |
+| **Model Size** | ~90MB | Compact model optimized for edge deployment |
+| **Dimensions** | 384 | Output vector dimension count |
+| **Hidden Layers** | 12 | Transformer encoder layers |
+| **Attention Heads** | 12 | Multi-head attention configuration |
+| **Max Sequence Length** | 512 tokens | Input token limit per embedding request |
+| **Vocabulary Size** | 250,002 | Multilingual subword vocabulary |
+| **Normalization** | L2 | Vectors normalized for cosine similarity |
+
+#### Tokenizer Configuration
+
+| Parameter | Value | Details |
+|-----------|-------|---------|
+| **Tokenizer Type** | `XLMRobertaTokenizer` | Multilingual RoBERTa variant |
+| **Padding** | Right-side | Standard transformer padding |
+| **Truncation** | Longest-first | Preserves beginning of content |
+| **Special Tokens** | `<s>`, `</s>`, `<pad>` | Standard BERT-style special tokens |
+
+#### Inference Configuration
+
+**Local Inference (Default):**
+```typescript
+interface EmbeddingConfig {
+  model: "intfloat/multilingual-e5-small";
+  device: "cpu";  // or "cuda" for GPU acceleration
+  batchSize: 16;
+  normalize: true;
+  quantization: "none";  // Options: none, int8, float16
+}
+```
+
+**Quantization Options:**
+
+| Mode | Precision Loss | Storage Reduction | Use Case |
+|------|---------------|-------------------|----------|
+| **None (default)** | 0% | Baseline | Maximum accuracy |
+| **int8** | ~1-2% | 75% | Memory-constrained |
+| **float16** | ~0.5% | 50% | Balanced |
+
+**Performance Characteristics:**
+- Inference Time: ~15ms per embedding (CPU, batch size 1)
+- Throughput: ~65 embeddings/second (CPU, batch size 16)
+- Memory Usage: ~500MB for model + inference buffer
+
+#### Cache Configuration
+
+| Parameter | Value | Details |
+|-----------|-------|---------|
+| **Cache Backend** | SQLite `embedding_cache` table | SHA-256 content hash lookup |
+| **Cache TTL** | 24 hours | Prevents stale embeddings |
+| **Cache Hit Rate** | >80% | Expected for typical workloads |
+| **Invalidation** | Time-based + manual | SHA-256 hash recomputed on content change
 
 ### 3.4 Audit Log Database (`audit.db`)
 
@@ -340,9 +425,9 @@ erDiagram
 
 ## 4. API Contract
 
-This section defines the internal APIs for component communication. External APIs (Telegram webhooks) follow platform-specific protocols.
+This section defines the internal APIs for component communication. External APIs (Telegram webhooks) follow platform-specific protocols. API contracts implement the Gateway communication interface defined in [Architecture.md Section 4.1](Architecture.md#41-gateway-communication-interface).
 
-### 4.1 Orchestrator HTTP API
+### 4.1 Gateway HTTP API
 
 **Base URL:** `http://127.0.0.1:3000`  
 **Transport:** HTTP over Unix domain socket (production), TCP (development debug)  
@@ -353,9 +438,9 @@ This section defines the internal APIs for component communication. External API
 ```yaml
 openapi: 3.0.3
 info:
-  title: RealClaw Orchestrator API
+  title: RealClaw Gateway API
   version: 1.0.0
-  description: Internal orchestration API for RealClaw agent runtime
+  description: Internal gateway API for RealClaw agent runtime
 
 paths:
   /health:
@@ -690,6 +775,102 @@ paths:
                     type: string
                     format: uuid
 ```
+
+#### 4.1.4 Error Response Schema
+
+All API endpoints return structured JSON errors following the specification below.
+
+```yaml
+components:
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: Machine-readable error code
+              enum:
+                # Client Errors (4xx)
+                - "INVALID_REQUEST"           # 400: Malformed request body
+                - "MISSING_FIELD"             # 400: Required field missing
+                - "INVALID_SESSION"           # 400: Session ID format invalid
+                - "SESSION_NOT_FOUND"         # 404: Session does not exist
+                - "SESSION_TERMINATED"        # 410: Session was terminated
+                - "SESSION_BUSY"              # 409: Session processing request
+                - "RATE_LIMITED"              # 429: Too many requests
+                - "UNAUTHORIZED"              # 401: Missing/invalid auth token
+                
+                # Server Errors (5xx)
+                - "INTERNAL_ERROR"            # 500: Unexpected server error
+                - "SANDBOX_UNAVAILABLE"       # 503: Sandbox runtime not ready
+                - "DATABASE_ERROR"            # 503: Database connection failed
+                - "EGRESS_GATEWAY_ERROR"      # 503: Proxy unavailable
+                - "MCP_SERVER_ERROR"          # 502: MCP server connection failed
+                
+                # Sandbox Errors (4xx/5xx)
+                - "SANDBOX_EXECUTION_FAILED"  # 500: Command execution failed
+                - "SANDBOX_TIMEOUT"           # 504: Command exceeded timeout
+                - "SANDBOX_CONSTRAINT_VIOLATION"  # 403: Security constraint violated
+                
+            message:
+              type: string
+              description: Human-readable error description
+            details:
+              type: object
+              description: Additional error context (optional)
+              properties:
+                field:
+                  type: string
+                  description: Field that caused the error
+                reason:
+                  type: string
+                  description: Specific reason for the error
+                suggested_action:
+                  type: string
+                  description: Guidance for resolving the error
+        metadata:
+          type: object
+          properties:
+            correlation_id:
+              type: string
+              format: uuid
+              description: UUID for tracing the request across services
+            timestamp:
+              type: string
+              format: date-time
+              description: ISO8601 timestamp of error occurrence
+            request_id:
+              type: string
+              format: uuid
+              description: Original request identifier
+            retry_after:
+              type: integer
+              description: Seconds until retry is safe (Rate Limited only)
+            version:
+              type: string
+              description: API version string
+
+#### HTTP Status Code Reference
+
+| Status Code | Meaning | Usage |
+|-------------|---------|-------|
+| **200** | OK | Successful GET requests, health checks |
+| **201** | Created | Successful resource creation (sessions) |
+| **202** | Accepted | Message queued for processing |
+| **400** | Bad Request | Invalid request body or parameters |
+| **401** | Unauthorized | Missing or invalid authentication |
+| **403** | Forbidden | Request violates security policy |
+| **404** | Not Found | Resource does not exist |
+| **409** | Conflict | Resource state prevents operation |
+| **410** | Gone | Resource was deleted/terminated |
+| **429** | Too Many Requests | Rate limit exceeded |
+| **500** | Internal Server Error | Unexpected server failure |
+| **502** | Bad Gateway | Upstream service failure (MCP servers) |
+| **503** | Service Unavailable | Dependency unavailable (DB, sandbox, proxy) |
+| **504** | Gateway Timeout | Upstream service timeout |
 
 ### 4.2 Egress Gateway Management API
 
@@ -1282,65 +1463,159 @@ function runMigrations(db: Database, migrationsDir: string) {
 
 ### 5.5 Middleware Composition Order
 
-Middleware executes in the order defined below. Later middleware operates on the outputs of earlier middleware. This order is intentional—foundational policy must execute before capabilities.
+Middleware executes in the order defined below. Later middleware operates on the outputs of earlier middleware. This order is intentional—foundational policy must execute before capabilities. Middleware composition is defined in [Architecture.md Section 4.2](Architecture.md#42-gateway-components). Middleware composition is defined in [Architecture.md Section 4.2](Architecture.md#42-gateway-components).
 
-1. **Policy Middleware** (Tier 1)
-   - Validates terminal package requests
-   - Gates delivery with content scanning
-   - Enforces rate limits
+#### 5.5.1 Complete Middleware List with Execution Order
 
-2. **Cron Middleware** (Tier 2)
-   - Detects scheduled task triggers
-   - Injects task context into prompt
+| Order | Tier | Middleware | Purpose | Input Contract | Output Contract |
+|-------|------|-----------|---------|----------------|-----------------|
+| 1 | **Policy** | Policy Middleware | Security boundary enforcement | Raw user input | Validated input or rejection |
+| 2 | **Policy** | Content Scanning | Credential/PII detection | Validated input | Clean input or block |
+| 3 | **Policy** | Rate Limiting | Request throttling | Clean input | Rate token or proceed |
+| 4 | **Capabilities** | Cron Middleware | Scheduled task detection | Proceed signal | Task context or proceed |
+| 5 | **Capabilities** | Web Search Middleware | Web capability injection | Proceed signal | web_search tools available |
+| 6 | **Capabilities** | Browser Middleware | Browser automation tools | Proceed signal | browser tools available |
+| 7 | **Capabilities** | Memory Middleware | Memory retrieval/injection | Proceed signal | Context with memories |
+| 8 | **Capabilities** | MCP Adapter Middleware | MCP server access | Proceed signal | MCP tools available |
+| 9 | **Capabilities** | Skill Loader Middleware | Skill manifests injection | Proceed signal | Skill tools available |
+| 10 | **Capabilities** | Sub-Agent Middleware | Task delegation | Proceed signal | Sub-agent tools available |
+| 11 | **Operational** | Summarization Middleware | Context compression | Full context | Compressed context |
+| 12 | **Operational** | Human-in-the-Loop Middleware | Owner approval requests | Proceed signal | Approval or block |
 
-3. **Web Search Middleware** (Tier 2)
-   - Provides web_search, code_search, web_fetch tools
-   - Routes through Gateway-mediated calls
+#### 5.5.2 Tier Organization
 
-4. **Browser Middleware** (Tier 2)
-   - Provides browser automation tools
-   - Manages isolated profiles
+**Tier 1: Foundational Policy**
+- Executes first on every request
+- Determines if request should proceed
+- No capability expansion—only validation and gating
 
-5. **Memory Middleware** (Tier 2)
-   - Retrieves relevant memories before model calls
-   - Extracts/consolidates memories after completion
-   - Manages three-tier recall system
+**Tier 2: Agent Capabilities**
+- Expands agent capabilities based on configuration
+- Injects tools and context
+- Order matters for context injection priority
 
-6. **MCP Adapter Middleware** (Tier 2)
-   - Provides MCP server access
-   - Handles capability negotiation
+**Tier 3: Operational Concerns**
+- Handles cross-cutting operational needs
+- Context optimization (summarization)
+- Human-in-the-loop workflows
 
-7. **Skill Loader Middleware** (Tier 2)
-   - Injects skill manifests into context
-   - Manages skill availability per task
+#### 5.5.3 Middleware Input/Output Contracts
 
-8. **Sub-Agent Middleware** (Tier 2)
-   - Provides task delegation capabilities
-   - Manages sub-agent state
+Each middleware must implement the following interface contract:
 
-9. **Summarization Middleware** (Tier 3)
-   - Compresses context when over threshold
-   - Uses token counting for limits
+```typescript
+interface Middleware {
+  // Input validation before processing
+  validateInput(input: unknown): boolean;
+  
+  // Transform or validate the input
+  process(input: unknown): Promise<MiddlewareOutput>;
+  
+  // Handle errors gracefully
+  handleError(error: Error): MiddlewareOutput;
+  
+  // Middleware health check
+  isHealthy(): boolean;
+}
 
-10. **Human-in-the-Loop Middleware** (Tier 3)
-    - Interrupts on configured operations
-    - Requests Owner approval via Telegram
+interface MiddlewareOutput {
+  status: 'proceed' | 'block' | 'error';
+  data?: unknown;
+  reason?: string;
+  metadata?: Record<string, unknown>;
+}
+```
+
+**Execution Guarantees:**
+- Each middleware receives output from previous middleware
+- Blocked requests bypass downstream middleware
+- Errors are caught and logged without cascading
+- Performance overhead tracked per middleware
 
 ### 5.6 Callback Execution Order
 
-Callbacks execute in parallel across all middleware layers. Callbacks do not modify behavior—they observe and record.
+Callbacks execute in parallel across all middleware layers. Callbacks do not modify behavior—they observe and record. The callback system implements observability as specified in [Architecture.md Section 5.2](Architecture.md#52-observability). The callback system implements observability as specified in [Architecture.md Section 5.2](Architecture.md#52-observability).
 
-1. **Logger Callback Handler**
-   - First in chain for comprehensive capture
-   - Writes to SQLite audit logs
+#### 5.6.1 Complete Event Types List
 
-2. **OpenTelemetry Callback Handler**
-   - Emits spans and metrics
-   - Sanitizes sensitive data before export
+The callback system intercepts the following LangChain.js event types:
 
-3. **Content Scanning Callback Handler**
-   - Last in chain for complete response scanning
-   - Prevents credential/PII leakage
+| Event Type | Description | Payload Includes |
+|------------|-------------|------------------|
+| `on_llm_start` | LLM invocation initiated | model name, prompts, run_id |
+| `on_llm_end` | LLM invocation completed | model response, token usage, run_id |
+| `on_llm_error` | LLM invocation failed | error message, run_id |
+| `on_chain_start` | Chain execution began | chain name, inputs, run_id |
+| `on_chain_end` | Chain execution completed | chain outputs, run_id |
+| `on_chain_error` | Chain execution failed | error, run_id |
+| `on_tool_start` | Tool invocation began | tool name, input, run_id |
+| `on_tool_end` | Tool invocation completed | tool output, run_id |
+| `on_tool_error` | Tool invocation failed | error, run_id |
+| `on_agent_action` | Agent decision made | action, run_id |
+| `on_agent_finish` | Agent turn completed | final output, run_id |
+
+#### 5.6.2 Handler Execution Order
+
+Callbacks execute in the following order to ensure complete capture and proper data flow:
+
+1. **Logger Callback Handler** (First in chain)
+   - Captures all events without modification
+   - Writes structured JSON to SQLite `audit_logs` table
+   - Includes correlation_id for request tracing
+   - Sanitizes sensitive data before storage
+
+2. **OpenTelemetry Callback Handler** (Middle chain)
+   - Emits distributed traces via OTLP exporter
+   - Records span attributes for performance analysis
+   - Exports metrics to Prometheus endpoint
+   - Handles export failures gracefully (fallback to local buffer)
+
+3. **Content Scanning Callback Handler** (Last in chain for responses)
+   - Inspects all outbound content for PII/credentials
+   - Blocks delivery if sensitive data detected
+   - Logs policy violations to audit trail
+   - Supports configurable detection patterns
+
+#### 5.6.3 Error Handling Requirements
+
+All callback handlers must implement the following error handling:
+
+```typescript
+interface CallbackHandler {
+  // Errors must not propagate to agent execution
+  handleError(error: Error, context: CallbackContext): void;
+  
+  // Graceful degradation if handler fails
+  isHealthy(): boolean;
+  
+  // Retry logic for transient failures
+  maxRetries: number;
+}
+```
+
+- **Non-blocking:** Handler failures must not interrupt agent execution
+- **Logging:** Handler errors captured and logged to separate audit stream
+- **Recovery:** Handler automatically reinitializes after failure
+- **Timeout:** Each handler invocation has 100ms timeout ceiling
+
+#### 5.6.4 Sanitization Rules for Logs
+
+All callbacks must sanitize sensitive data before logging or export:
+
+| Data Type | Action | Method |
+|-----------|--------|--------|
+| **API Keys** | Remove entirely | Regex match and strip |
+| **Bearer Tokens** | Hash with SHA-256 | Keep first 4 chars for debugging |
+| **Email Addresses** | Mask | `u***@domain.com` format |
+| **Phone Numbers** | Mask | `***-***-1234` format |
+| **Credit Cards** | Remove entirely | Luhn validation + regex |
+| **File Paths** | Hash with SHA-256 | Preserve structure only |
+
+Sanitization applies to:
+- Log entries stored in SQLite
+- Traces exported via OTLP
+- Metrics published to Prometheus
+- Debug output in development mode
 
 ---
 
@@ -1481,6 +1756,50 @@ storage:
     schedule: "0 3 * * *"  # Daily at 3 AM
     retentionDays: 7
 ```
+
+## 6. Performance Requirements
+
+This section defines measurable SLAs for system performance. These benchmarks guide implementation decisions and provide acceptance criteria for operational readiness.
+
+### 6.1 Latency Requirements
+
+| Operation | Target P50 | Target P99 | Measurement Method |
+|-----------|------------|------------|-------------------|
+| **Sandbox invocation** | < 50ms | < 100ms | Time from `invoke()` call to first output |
+| **Egress Gateway allowlist update** | < 10ms | < 25ms | HTTP response time for add/remove operations |
+| **Policy middleware validation** | < 5ms | < 15ms | Time to evaluate request against policies |
+| **Memory retrieval (top-k=5)** | < 20ms | < 50ms | Vector similarity search + content fetch |
+| **Checkpointer write** | < 10ms | < 30ms | SQLite WAL append operation |
+| **Gateway HTTP API response** | < 10ms | < 50ms | End-to-end request handling (health endpoints) |
+| **Telegram webhook processing** | < 100ms | < 200ms | From signature verification to acknowledgment |
+
+### 6.2 Throughput Requirements
+
+| Metric | Target | Conditions |
+|--------|--------|------------|
+| **Concurrent sessions** | 1 | Single-tenant design. Maximum one active session per Owner |
+| **Messages per session** | Unlimited | Practically limited by checkpoint storage (default 10MB) |
+| **Proxy connections/second** | 100 | Per-session connection rate limit |
+| **Embedding computations/second** | 10 | Sequential embedding model. Supports real-time retrieval |
+
+### 6.3 Resource Utilization
+
+| Resource | Target | Threshold |
+|----------|--------|-----------|
+| **Memory (Orchestrator)** | < 500MB | < 2GB (OOM killer threshold) |
+| **CPU utilization** | < 80% | Sustained during agent execution |
+| **Database size** | < 10GB | Per database file. Triggers Owner alert |
+| **Proxy log retention** | 30 days | 100MB automatic rotation |
+
+### 6.4 Benchmark Methodology
+
+Performance benchmarks are measured using:
+
+1. **Synthetic Tests:** Automated benchmarks run hourly via cron job
+2. **Production Metrics:** Prometheus counters track real-world performance
+3. **Profile-Guided Optimization:** pprof analysis identifies bottlenecks
+
+All benchmarks produce structured output stored in `audit.db` for trend analysis.
 
 ---
 
