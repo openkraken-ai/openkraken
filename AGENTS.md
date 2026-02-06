@@ -107,7 +107,41 @@ If you are adding platform-specific behavior, consider whether it should be hand
 
 The architecture describes a CredentialVault abstraction that provides a unified interface across platforms. On macOS, this uses the Keychain Services API. On Linux, this uses the secret-service API (compatible with GNOME Keyring, KWallet, or pass).
 
-If you are implementing credential handling, you are implementing against an interface, not writing platform-specific code directly. The abstraction ensures the Gateway remains portable across platforms.
+If you are implementing credential handling, you are implementing against an interface, not writing platform-specific code directly. The abstraction ensures the Orchestrator remains portable across platforms.
+
+### Architectural Layers
+
+OpenKraken's architecture is organized into six layers (defined in CHANGELOG.md v0.13.0):
+
+**Layer -1: Platform Manager** — Nix-based provisioning and deployment automation
+**Layer 0: Host** — The host system (Linux or macOS) where OpenKraken runs
+**Layer 1: Sandbox Runtime** — Anthropic Sandbox Runtime providing isolation
+**Layer 2: Middleware Stack** — LangChain middleware extensions
+**Layer 3: The Orchestrator** — Bun/TypeScript orchestration layer
+**Layer 4: Owner Interfaces** — CLI, Web UI, and communication channels
+
+When you see references to "Layer 3" or "Layer 2" in Architecture.md or CHANGELOG.md, they refer to this layered architecture.
+
+> **For details:** See Architecture.md Section "Architectural Entities" and "Container Components"
+
+---
+
+### Terminology Evolution: Gateway vs Orchestrator
+
+Following architectural evolution in v0.13.0, terminology was updated to clarify component responsibilities across the codebase:
+
+| Historical Name | Current Name | Scope | Context |
+|----------------|--------------|-------|---------|
+| Gateway | Orchestrator | Agent orchestration layer | Bun/TypeScript runtime managing LangChain/LangGraph agents. Renamed from "Gateway" in v0.13.0. |
+| Gateway | Egress Gateway | Network proxy layer | Go binary enforcing domain allowlisting (independent process). Always refers to network proxy. |
+
+**Migration Note:** Older documentation (pre-v0.13.0) may use "Gateway" ambiguously to refer to either the Orchestrator or Egress Gateway based on context. When reading older sections:
+
+- References to "Gateway managing agent threads" → Orchestrator
+- References to "Gateway network filtering" → Egress Gateway
+- References to "Gateway HTTP server" → Usually Orchestrator, could be either
+
+Newer documentation (v0.13.0+) uses precise terminology consistently. If you encounter ambiguous "Gateway" references in code comments or older sections, ask for clarification rather than assume.
 
 ## Key Files and Their Purposes
 
@@ -135,7 +169,7 @@ Your guide to understanding the project context, current state, and guiding prin
 
 When you are asked to work on this project, follow this approach.
 
-**First, orient yourself.** Read AGENTS.md for context. Read the relevant sections of ARCHITECTURE.md to understand the component you are working on. Check ARCHITECTURE_CHANGELOG.md to see recent changes and current version.
+**First, orient yourself.** Read AGENTS.md for context. Read the relevant sections of ARCHITECTURE.md to understand the component you are working on. Check CHANGELOG.md to see recent changes and current version.
 
 **Second, investigate before implementing.** If you are evaluating a technology, verify its current status, maintenance, and compatibility with our stack. Use the Librarian CLI to explore official documentation. Do not assume your training data is current—the technology landscape evolves faster than my weights.
 

@@ -1,8 +1,6 @@
 # TechSpec.md: OpenKraken Technical Specification
 
-**Document Version:** 1.0.0  
 **Generated:** 2026-02-04  
-**Architecture Reference:** ARCHITECTURE.md (v0.11.0)  
 **Classification:** Internal Technical Document  
 
 ---
@@ -17,6 +15,7 @@ This section defines the concrete technology stack for OpenKraken, specifying ex
 |-----------|---------|---------------|
 | **Bun Runtime** | 1.3.8 | Latest stable as of February 2026. Provides native SQLite support, TypeScript compilation, and superior cold-start performance compared to Node.js. Verified Node.js API compatibility (~95% coverage). |
 | **TypeScript** | 5.9.3 (bundled with Bun) | Strict type checking enabled. All source code written in TypeScript with strict mode activated. |
+| **Go Runtime** | 1.25.6 | Egress Gateway implementation. Systems programming language for HTTP CONNECT proxy with domain allowlisting. Selected for mature stdlib networking, simple concurrency (goroutines), and battle-tested reliability. |
 | **Node.js Compatibility** | 20.x LTS (runtime detection only) | Required for packages lacking Bun native support. Bun automatically handles Node.js compatibility layer. |
 | **SQLite** | 3.x (bundled with Bun runtime) | Native SQLite support via Bun.sqlite module. Provides durable state persistence with Write-Ahead Logging (WAL) mode. Zero-configuration persistence. |
 
@@ -137,6 +136,299 @@ Credentials retrieved from OS-level vaults at Orchestrator startup. The Orchestr
 - **Positive:** Credentials protected by platform security mechanisms in production. No plaintext credential storage. Credential rotation supported via re-reading from vault. Dev-mode fallback enables rapid local iteration.
 - **Negative:** Platform vault complexity. macOS Keychain requires appropriate access groups. Linux secret-service requires D-Bus session bus. Initial credential provisioning requires Owner action.
 - **Mitigation:** Provide CLI commands for credential provisioning (`openkraken credentials set`). Document platform-specific setup requirements. Log warnings when using env var fallback. Enforce vault-only in production by default.
+
+---
+
+### ADR-006: OpenTUI for CLI Interface
+
+**Title:** OpenTUI for Terminal User Interface Implementation (Bun Runtime)
+
+**Context:**
+OpenKraken requires a Terminal User Interface (TUI) for power-user operations including configuration, debugging, and automation. The solution must support Bun runtime (no Node.js), provide modern component-based UI with keyboard navigation, and integrate with OpenKraken's internal APIs.
+
+**Alternatives Considered:**
+
+| Framework | Bun Native | Production Ready | Pros | Cons |
+|-----------|------------|------------------|------|------|
+| **OpenTUI** (@opentui/core) | ✅ Officially mandated | ⚠️ Beta (v0.1.76) | Flexbox layouts, TypeScript-first, React integration, Bun-first development | Not production-ready per npm, evolving API |
+| oclif | ✅ Compatible | ✅ Mature | Command-based CLI pattern, extensive ecosystem | Not TUI framework, requires separate UI layer |
+| commander.js | ✅ Compatible | ✅ Mature | Simple API, wide adoption | Not TUI framework |
+
+**Decision:**
+Select **OpenTUI** for CLI TUI implementation.
+
+**Rationale:**
+1. **Bun-First Development**: OpenTUI project explicitly mandates Bun runtime (documented in AGENTS.md), ensuring optimal compatibility
+2. **Component Architecture**: Flexbox layouts with React-like component model enable rapid UI development
+3. **Wide Adoption**: 8K+ GitHub stars with active maintenance despite beta status
+4. **Dual API Support**: Can use Core API for performance-critical sections, React API for complex components
+
+**Acceptance of Beta Status:**
+OpenTUI is marked as "not ready for production use" on npm, but this is acceptable because:
+- Active development by SST team (proven infrastructure company)
+- Wide real-world usage despite beta label
+- Bun-first mandate means framework is aligned with OpenKraken's runtime choice
+- TUI failure is non-critical: CLI remains functional in degraded mode if framework issues arise
+
+**Consequences:**
+
+Positive:
+- Faster TUI development with modern component patterns
+- Excellent TypeScript support and type safety
+- Integration with Bun's native features (WebSockets, SQLite)
+- Flex layout system matches modern web development expectations
+
+Negative:
+- API evolution may require updates during OpenTUI development
+- Beta status means potential breaking changes
+- Limited documentation compared to mature frameworks
+- Risk of framework issues in production TUI
+
+Mitigation:
+- Pin specific OpenTUI version (0.1.76 or later stable version when available)
+- Implement graceful degradation if TUI fails (fallback to basic CLI commands)
+- Monitor OpenTUI changelogs and issue tracker
+- Design TUI as thin layer over internal APIs to minimize framework lock-in
+
+**Implementation Notes:**
+- Use `bun create tui` for project scaffolding or manual setup with `@opentui/core`
+- Start with Core API for direct performance, evaluate React API for complex components
+- Integrate with OpenKraken's internal HTTP API (127.0.0.1 binding)
+- Ensure keyboard navigation for all screens (accessibility requirement per PRD)
+
+**References:**
+- OpenTUI Documentation: https://opentui.com/
+- GitHub Repository: https://github.com/sst/opentui
+- npm Package: @opentui/core v0.1.76
+- Project AGENTS.md: Bun runtime mandates documented
+
+---
+
+### ADR-007: SvelteKit for Web UI
+
+**Title:** Svelte 5 + SvelteKit for Web User Interface
+
+**Context:**
+OpenKraken requires a Web User Interface for casual user interaction and monitoring. The solution must provide excellent performance for real-time agent response streaming, support full-stack capabilities for direct API access, and integrate with OpenTelemetry for observability.
+
+**Alternatives Considered:**
+
+| Framework | Bundle Size | Performance | Ecosystem | TypeScript Support |
+|-----------|-------------|-------------|-----------|-------------------|
+| **Svelte 5** + SvelteKit | 3-12KB | Fastest (800ms first paint) | Growing (35K+ packages) | ✅ Excellent |
+| React 19 | 42-45KB | Good (1200ms first paint) | Dominant (450K+ packages) | ✅ Excellent |
+| Vue 4 | ~22KB | Very Good | Moderate | ✅ Excellent |
+
+**Decision:**
+Select **Svelte 5 + SvelteKit** for Web UI implementation.
+
+**Rationale:**
+1. **Performance Superiority**: Smallest bundle size and fastest First Contentful Paint critical for real-time agent interactions
+2. **Modern Reactivity**: Svelte 5 runes (`$state()`, `$derived()`) provide reactive state without boilerplate
+3. **TypeScript Excellence**: Native TypeScript integration with full type safety across components and server code
+4. **Full-Stack Simplicity**: SvelteKit provides API routes, SSR, server functions in one cohesive framework
+5. **Single-Tenant Match**: No need for enterprise-grade ecosystem (React) - project serves one Owner per instance
+
+**Consequences:**
+
+Positive:
+- Optimal performance for streaming agent responses over WebSocket
+- Smaller bundle size reduces load times (critical for deployment to VPS infrastructure)
+- Native TypeScript support across client and server code
+- Built-in SSR capability improves initial page load performance
+- Server-side API routes enable direct backend access without separate API layer
+
+Negative:
+- Smaller ecosystem than React means fewer component libraries
+- Hiring harder if team expands (fewer Svelte developers)
+- Some third-party integrations may require custom implementations
+- Learning curve for developers with React/Vue experience
+
+Mitigation:
+- Build minimal custom components (no heavy component library dependencies)
+- OpenKraken is single-tenant, no enterprise scale requirements
+- Document Svelte patterns and best practices for team members
+- Consider shadcn-svelte or similar when component library needed
+
+**Implementation Pattern:**
+
+Use Svelte 5 + SvelteKit with best practices from 2026:
+
+```typescript
+// Component state with runes
+<script lang="ts">
+  import type { PageData } from './$types'
+
+  // Reactive state
+  let messages = $state<Message[]>([])
+  
+  // Derived values
+  let messageCount = $derived(() => messages.length)
+  
+  // Effects for side effects
+  $effect(() => {
+    console.log('Messages changed:', messageCount)
+  })
+</script>
+
+// Server-side data loading
+// +page.server.ts
+export async function load({ fetch }) {
+  const response = await fetch('http://127.0.0.1:3000/api/health')
+  return { health: await response.json() }
+}
+```
+
+**Key Svelte 5 Features to Use:**
+- `$state()` for reactive state
+- `$derived()` and `$derived.by()` for computed values
+- `$effect()` for side effects (prefer over manual DOM manipulation)
+- `createContext()` for type-safe context
+- `bind:value` with function forms for complex two-way binding
+
+**OpenTelemetry Integration:**
+- Use Langchain's Langtrace OpenTelemetry Callback Handler on the server
+- Export traces to OTLP backend (SQLite for audit, external collectors for production)
+- Integrate SvelteKit with OpenTelemetry web instrumentation for frontend traces
+
+**Performance Optimization:**
+- Use SvelteKit's hydration strategy for SSR + client-side interactivity
+- Implement lazy loading for non-critical routes
+- Leverage Svelte compiler optimizations (no virtual DOM overhead)
+
+**References:**
+- Svelte 5 Documentation: https://svelte.dev/docs/svelte-5
+- SvelteKit TypeScript Guide: https://svelte.dev/docs/typescript
+- Comparison Articles:
+  - Svelte 5 vs React 19 [byteiota.com](https://byteiota.com/react-19-vs-vue-3-6-vs-svelte-5-2026-framework-convergence/)
+  - FrontendTools Benchmark [frontendtools.tech](https://www.frontendtools.tech/blog/best-frontend-frameworks-2025-comparison)
+
+---
+
+### ADR-008: Multi-LLM Provider Support
+
+**Title:** LangChain.js Native Multi-Provider Abstraction (Anthropic, OpenAI, Google)
+
+**Context:**
+OpenKraken must support multiple LLM providers (Anthropic, OpenAI, Google) to enable provider flexibility, failover capabilities, and cost optimization. The architecture integrates these providers through LangChain.js v1.2.18.
+
+**Decision:**
+Use **LangChain.js native multi-provider abstraction** without additional vendor abstraction layers.
+
+**Rationale:**
+1. **Built-in Support**: LangChain.js 1.2.18 includes native support for Anthropic (`@langchain/anthropic`), OpenAI (`@langchain/openai`), and Google (`@langchain/google-vertexai`)
+2. **Provider Swapping via Config**: Change providers by updating model string configuration:
+   - Anthropic: `"claude-sonnet:latest"`, `"claude-opus:latest"`
+   - OpenAI: `"gpt-4"`, `"gpt-3.5-turbo"`
+   - Google: `"gemini-pro"`, `"gemini-ultra"`
+3. **Consistent API**: All providers implement LangChain's `ChatModel` interface with identical streaming, tool calling, and retry logic
+4. **No Indirection Overhead**: Direct provider integration avoids unnecessary abstraction layers
+5. **Bun Compatibility**: All LangChain provider packages are Bun-compatible (verified through Librarian CLI research)
+
+**Implementation Pattern:**
+
+```typescript
+// src/orchestrator/providers/index.ts
+import { ChatAnthropic } from "@langchain/anthropic"
+import { ChatOpenAI } from "@langchain/openai"
+import { ChatVertexAI } from "@langchain/google-vertexai"
+
+type Provider = "anthropic" | "openai" | "google"
+
+interface ProviderConfig {
+  provider: Provider
+  model: string
+  apiKey?: string  // Retrieved from CredentialVault
+  fallback?: Provider
+}
+
+function createLLM(config: ProviderConfig) {
+  const credential = config.apiKey 
+    ? CredentialVault.retrieve(config.provider)
+    : undefined
+
+  switch (config.provider) {
+    case "anthropic":
+      return new ChatAnthropic({
+        model: config.model || "claude-sonnet:latest",
+        apiKey: credential,
+      })
+    case "openai":
+      return new ChatOpenAI({
+        model: config.model || "gpt-4",
+        apiKey: credential,
+      })
+    case "google":
+      return new ChatVertexAI({
+        model: config.model || "gemini-pro",
+        apiKey: credential,
+      })
+  }
+}
+
+// Agent creation (existing TechSpec pattern)
+const agent = createAgent({
+  model: "anthropic:claude-sonnet:latest",  // Provider:model syntax
+  tools: [...]
+})
+```
+
+**Provider Selection Strategy:**
+1. **Configuration-Based Default**: Owner configures primary provider in `config.yaml`
+2. **Task-Specific Fallback**: Middleware can override provider based on task requirements (e.g., use OpenAI for code generation)
+3. **Cost Optimization**: Lower-cost models (GPT-3.5, Claude Haiku) for routine tasks
+4. **Capability Routing**: Use Claude Opus for complex reasoning, GPT-4 for code generation
+
+**Failover Mechanism:**
+```typescript
+// Provider Failover Middleware
+const failoverMiddleware = createMiddleware({
+  name: "ProviderFailover",
+  async wrapModelCall(request, handler) {
+    try {
+      return await handler(request)
+    } catch (error) {
+      // Fallback to secondary provider on failure
+      if (error.isProviderError()) {
+        const fallbackProvider = getFallbackProvider()
+        request.runtime.model = fallbackProvider
+        return await handler(request)
+      }
+      throw error
+    }
+  }
+})
+```
+
+**Consequences:**
+
+Positive:
+- Minimal abstraction overhead: Direct provider calls via LangChain
+- Consistent retry, streaming, tool calling across all providers
+- Easy provider switching via configuration
+- LangChain maintenance handles provider API changes
+- Native Bun compatibility verified
+
+Negative:
+- Locked into LangChain's provider implementation quality
+- Provider-specific advanced features may be inaccessible (LangChain's common denominator)
+- Credential management complexity (multiple API keys in vault)
+
+Mitigation:
+- Monitor LangChain provider library quality and report issues
+- For provider-specific features, call provider APIs directly via custom tools
+- CredentialVault abstraction handles key management transparently
+- Maintain fallback provider configuration for high availability
+
+**Observability:**
+- LangChain OpenTelemetry callback automatically tracks which provider was used
+- `llm.provider` and `llm.model.name` attributes in traces
+- Token usage tracked per provider for cost analysis
+
+**References:**
+- LangChain.js 1.2.18 Provider Documentation: https://js.langchain.com/docs/modules/models/integrations/
+- Librarian CLI Verification: Confirmed Bun compatibility for all provider packages
+- TechSpec Section 1.2: LangChain version locked to 1.2.18
 
 ---
 
@@ -383,6 +675,144 @@ erDiagram
 - **Index:** `(disposition, domain)` for allowlist analysis.
 - **Index:** `(request_id)` for correlation with audit logs.
 - **Retention:** 30-day rolling retention, automatic rotation at 100MB.
+
+### 3.6 Migration Strategy
+
+OpenKraken uses a forward-only migration strategy with `bun:sqlite` for all database schema changes.
+
+#### Migration File Naming Convention
+
+Migrations are ordered using zero-padded prefixes:
+```
+src/orchestrator/database/migrations/
+├── 001_init.sql              # Initial schema
+├── 002_messages.sql          # Message log tables
+├── 003_memory.sql            # Semantic memory tables
+├── 004_audit.sql             # Audit log tables
+├── 005_proxy.sql             # Proxy access log tables
+└── 006_framework_decisions.sql  # Example: Future migration
+```
+
+#### Schema Version Tracking
+
+Each migration tracks its application state in the `schema_versions` table:
+```sql
+CREATE TABLE schema_versions (
+  version INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  applied_at INTEGER NOT NULL,  -- Unix timestamp
+  checksum TEXT NOT NULL,       -- SHA256 of migration file
+  success INTEGER NOT NULL DEFAULT 1
+);
+```
+
+#### Migration Execution
+
+1. **Checksum Verification**: Calculate SHA256 hash of migration file before execution
+2. **Atomic Transaction**: Execute migration within SQLite transaction; rollback on error
+3. **Version Recording**: Insert into `schema_versions` only after successful migration
+4. **Integrity Check**: Run `PRAGMA integrity_check` after each migration
+5. **Fail-Fast**: Stop migration chain on first error; report detailed failure info
+
+#### Custom Runner Implementation
+
+> **Note:** This is a conceptual implementation pattern. Actual implementation is deferred to the development phase.
+
+```typescript
+// src/orchestrator/database/migrations/runner.ts
+const { Database } = require("bun:sqlite");
+
+class MigrationRunner {
+  constructor(private db: Database) {}
+
+  async migrate(): Promise<void> {
+    const migrations = await loadMigrations();
+    const appliedVersions = this.getAppliedVersions();
+
+    for (const migration of migrations) {
+      if (!appliedVersions.includes(migration.version)) {
+        await this.applyMigration(migration);
+      }
+    }
+  }
+
+  private async applyMigration(migration: Migration): Promise<void> {
+    const tx = this.db.transaction(() => {
+      // Apply migration
+      this.db.exec(migration.sql);
+
+      // Verify schema integrity
+      const integrity = this.db.query("PRAGMA integrity_check").get();
+      if (integrity.integrity_check !== "ok") {
+        throw new Error("Integrity check failed");
+      }
+
+      // Record version
+      this.db.run(
+        "INSERT INTO schema_versions (version, name, applied_at, checksum) VALUES (?, ?, ?, ?)",
+        [migration.version, migration.name, Date.now(), migration.checksum]
+      );
+    });
+
+    tx();
+  }
+}
+```
+
+#### Rollback Strategy
+
+Current implementation uses **forward-only migrations** (no rollback SQL). Justification:
+- SQLite `ALTER TABLE` constraints make rollback complex and error-prone
+- Checkpoints provide time-machine capability for agent state
+- Database file snapshots via `bun:sqlite.serialize()` enable emergency recovery
+
+Future enhancement: Consider migration rollback if rollback patterns become critical.
+
+#### Migration Testing
+
+Each migration includes inline test assertions:```sql
+-- 006_framework_decisions.sql
+-- Migration: Add framework decision tracking tables
+
+-- Apply schema
+CREATE TABLE framework_decisions (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  decision TEXT NOT NULL,  -- JSON
+  created_at INTEGER NOT NULL
+);
+
+-- Test assertions (execute during migration)
+-- Should be empty initially
+SELECT assert(COUNT(*) = 0 FROM framework_decisions) FROM (SELECT 1);
+
+-- Should accept INSERT
+INSERT INTO framework_decisions (id, title, decision, created_at)
+VALUES ('test-001', 'Test Decision', '{"context": "test"}', 0);
+
+-- Should have 1 row after INSERT
+SELECT assert(COUNT(*) = 1 FROM framework_decisions) FROM (SELECT 1);
+```
+
+#### Integration with Application Startup
+
+> **Note:** Integration pattern is conceptual. Actual implementation deferred to development phase.
+
+```typescript
+// src/main.ts
+import { MigrationRunner } from "./orchestrator/database/migrations/runner";
+
+async function main() {
+  const db = openDatabase();
+  
+  // Run pending migrations on startup
+  const runner = new MigrationRunner(db);
+  await runner.migrate();
+  
+  // Start application
+  startOrchestrator();
+}
+```
 
 ---
 
@@ -1809,6 +2239,300 @@ Sanitization applies to:
 
 ---
 
+### 5.7 Testing Strategy
+
+> **TODO**: This is a large scope area requiring dedicated work. The following outline defines the approach, but full implementation is deferred until after initial foundation is established.
+
+#### Methodology
+
+OpenKraken follows **Test-Driven Development (TDD)**: Red → Green → Refactor.
+
+- **Red**: Write failing test describing expected behavior
+- **Green**: Implement minimal code to make test pass
+- **Refactor**: Improve code without breaking tests
+
+#### Testing Scope
+
+1. **Unit Tests** (Priority 1)
+   - Individual components and functions in isolation
+   - External dependencies mocked (LLM providers, sandbox, MCP servers)
+   - Fast execution (no external service calls)
+   
+2. **Integration Tests** (Priority 2)
+   - Cross-component interactions with real dependencies
+   - Minimal sandbox mocking (safe test environments only)
+   - Database operations with in-memory SQLite
+   
+3. **End-to-End Tests** (Priority 3 - DEFERRED)
+   - Full system flows including actual sandbox isolation
+   - Out of current scope due to complexity and execution time
+   - Add after unit/integration test coverage is stable
+
+#### Test Structure
+
+> **Note:** Directory structure is conceptual. Actual implementation deferred to development phase.
+
+```
+src/
+├── orchestrator/
+│   ├── agent/
+│   │   └── __tests__/
+│   │       ├── createAgent.test.ts
+│   │       └── tools.test.ts
+│   ├── middleware/
+│   │   └── __tests__/
+│   │       ├── policy.test.ts
+│   │       └── memory.test.ts
+│   └── database/
+│       └── __tests__/
+│           ├── migrations.test.ts
+│           └── repositories.test.ts
+```
+
+#### Test Tooling
+
+- **Test Runner**: Bun test runner (built-in, `bun test`)
+- **Mocking**: Built-in `bun:test` mock capabilities
+- **Coverage**: TBD (evaluate options after initial implementation)
+
+#### Coverage Targets
+
+- Unit tests: **80% minimum** coverage
+- Integration tests: **60% minimum** coverage
+- E2E tests: Deferred initially, 40% target when implemented
+
+#### Key Test Areas
+
+1. **Middleware Stack Composition**
+   - Test middleware order and chain execution
+   - Verify state propagation through middleware
+   - Test middleware interrupts (human-in-the-loop)
+
+2. **Checkpointer Serialization**
+   - Test state serialization/deserialization
+   - Verify WAL mode recovery
+   - Test concurrent access patterns
+
+3. **Credential Vault Abstraction**
+   - Test credential retrieval and caching
+   - Mock OS-level vaults for testing
+   - Verify credential isolation per service
+
+4. **Schema Migrations**
+   - Test migration forward application
+   - Verify schema integrity after migration
+   - Test migration idempotency
+
+5. **Path Normalization**
+   - Test cross-platform path resolution
+   - Verify allowlist validation
+   - Test symlink handling
+
+#### Future Work
+
+Detailed testing strategy expansion deferred to include:
+- Specific test patterns for asynchronous flows
+- Test fixtures and factory functions
+- Integration test environment setup
+- CI/CD test execution pipeline
+- Performance regression testing
+
+---
+
+### 5.8 OpenTelemetry Implementation
+
+> **Implementation Note:** This section documents OpenTelemetry concepts and patterns for LangChain integration. This is theoretical documentation intended to guide implementation—actual code implementation is deferred to the development phase.
+
+#### Integration Choice
+
+**Langfuse** provides plug-and-play LangChain integration for OpenTelemetry tracing:
+- Direct `@langfuse/langchain` callback handler
+- No reinventing the wheel
+- Production-tested with LangChain.js
+- Supports export to OTLP collectors, LangSmith, or SQLite
+
+#### Documentation-Only: Callback Handler Pattern
+
+LangChain's `BaseCallbackHandler` provides lifecycle hooks for observing agent execution. This is documentation of the pattern—concrete implementation will use Langfuse's pre-built handler.
+
+**Lifecycle Hooks:**
+
+| Hook Purpose | When Called | Usage |
+|--------------|-------------|-------|
+| `handleChainStart` | Before chain execution | Create span, capture inputs |
+| `handleChainEnd` | After chain completes | Record outputs, end span |
+| `handleChainError` | On chain failure | Capture error, set span status |
+| `handleLLMStart` | Before LLM invocation | Track model, token counts |
+| `handleLLMEnd` | After LLM response | Record tokens, latency |
+| `handleToolStart` | Before tool execution | Track tool name, inputs |
+| `handleToolEnd` | After tool result | Record outputs, duration |
+| `handleError` | On any error | Propagate to tracing |
+
+**Theoretical Span Creation Pattern:**
+
+> **Conceptual example only—actual implementation will follow Langfuse patterns**
+
+```typescript
+// THEORETICAL PATTERN - Documentation Only
+import { trace } from "@opentelemetry/api"
+
+class OpenTelemetryCallbackHandler extends BaseCallbackHandler {
+  private tracer = trace.getTracer("openkraken")
+  private activeSpans = new Map<string, Span>()
+  
+  handleChainStart(_ignored, inputs, runId) {
+    const span = this.tracer.startSpan(`langchain.chain.run`, {
+      attributes: {
+        "langchain.run_type": "chain",
+        "langchain.chain.inputs": JSON.stringify(inputs)
+      }
+    })
+    this.activeSpans.set(runId, span)
+  }
+  
+  handleChainEnd(outputs, runId) {
+    const span = this.activeSpans.get(runId)
+    span.setAttributes({
+      "langchain.chain.outputs": JSON.stringify(outputs)
+    })
+    span.end()
+    this.activeSpans.delete(runId)
+  }
+}
+```
+
+**Important:** Above code is for documentation purposes only to illustrate the pattern. Actual implementation will use Langfuse's `CallbackHandler` which implements these patterns.
+
+#### Documentation-Only: Semantic Conventions
+
+OpenTelemetry defines standard attributes for LLM operations. Langfuse follows these conventions—this documents what will be tracked.
+
+**LLM Operation Attributes:**
+
+| Attribute | Type | Description | Example |
+|-----------|------|-------------|---------|
+| `llm.request.type` | string | Type of request | `"chat"` |
+| `llm.model.name` | string | Model identifier | `"claude-3-sonnet-20240229"` |
+| `llm.prompt_tokens` | int | Number of input tokens | `1250` |
+| `llm.completion_tokens` | int | Number of output tokens | `342` |
+| `llm.response.model` | string | Actual model used | `"gpt-4-0125-preview"` |
+| `llm.provider` | string | LLM provider name | `"anthropic"` |
+
+**Span Naming Convention:**
+- Chain: `langchain.chain.<chain_name>`
+- LLM: `langchain.llm.<provider>.<model>` (e.g., `langchain.llm.anthropic.claude-opus`)
+- Tool: `langchain.tool.<tool_name>`
+
+#### Langfuse Integration Pattern
+
+> **Documentation of configuration pattern—implementation deferred**
+
+**Installation:**
+```bash
+bun add @langfuse/langchain
+```
+
+**Configuration Pattern:**
+```typescript
+// THEORETICAL CONFIGURATION - Documentation Only
+import { CallbackHandler } from "@langfuse/langchain"
+
+export const langfuseHandler = new CallbackHandler({
+  publicKey: process.env.LANGFUSE_PUBLIC_KEY,
+  secretKey: process.env.LANGFUSE_SECRET_KEY,
+  baseUrl: process.env.LANGFUSE_BASE_URL || "https://cloud.langfuse.com",
+  
+  // Session metadata
+  sessionId: generateSessionId(),
+  userId: retrieveOwnerId(),
+  tags: ["openkraken", env],
+  
+  // Callback execution order
+  flushAt: 10  // Batch size
+})
+```
+
+**Agent Integration Pattern:**
+```typescript
+// THEORETICAL USAGE - Documentation Only
+const result = await agent.invoke(
+  { messages: [...] },
+  { callbacks: [langfuseHandler] }
+)
+```
+
+#### Traced Data (Documentation)
+
+The Langfuse callback automatically tracks:
+
+1. **LLM Calls**
+   - Model: `llm.model.name`
+   - Tokens: `llm.prompt_tokens`, `llm.completion_tokens`
+   - Duration: `llm.latency`
+   - Provider: `llm.provider`
+
+2. **Tool Calls**
+   - Tool: `langchain.tool.name`
+   - Input: `langchain.tool.input`
+   - Output: `langchain.tool.output`
+   - Duration
+
+3. **Chain Execution**
+   - Chain: `langchain.chain.name`
+   - Input/Output: JSON payload
+   - State transitions
+
+4. **Middleware Execution**
+   - Middleware name and order
+   - State transformations
+   - Interruptions (human-in-the-loop)
+
+#### Export Configuration (Documentation)
+
+**SQLite for Audit (Primary):**
+> Theoretical export pattern for audit logging
+```typescript
+const sqliteExporter = new SQLiteSpanProcessor({
+  database: "openkraken.db",
+  tableName: "otel_spans"
+})
+```
+
+**OTLP Collector for Production:**
+> Theoretical export pattern for production systems
+```typescript
+const otlpExporter = new OTLPTraceExporter({
+  url: "http://jaeger:4318/v1/traces"
+})
+```
+
+**LangSmith for Development (Optional):**
+> Theoretical export pattern for development debugging
+```typescript
+const langsmithExporter = new LangSmithExporter({
+  apiKey: process.env.LANGSMITH_API_KEY
+})
+```
+
+#### Observability Endpoints
+
+> **Planned endpoints for future implementation**
+
+The `/metrics` endpoint will expose aggregate metrics:
+- Total LLM token usage by provider
+- Tool invocation frequency
+- Average latency per model type
+- Error rates
+
+#### Implementation Notes
+
+- This section documents OpenTelemetry concepts and patterns for reference during implementation
+- Actual callback handler will use Langfuse's built-in implementation, not custom code
+- Configuration patterns provide guidance for development phase
+- All concrete implementation is deferred until development begins
+
+---
+
 ## 6. Configuration Specification
 
 ### 6.1 Environment Variables
@@ -1822,7 +2546,7 @@ The Orchestrator reads configuration from environment variables set by the Platf
 | `OPENKRAKEN_CONFIG` | No | `$OPENKRAKEN_HOME/config.yaml` | Configuration file path |
 | `OPENKRAKEN_LOG_LEVEL` | No | `INFO` | Logging verbosity |
 | `OPENKRAKEN_SANDBOX_PATH` | No | Platform default | Sandbox binary location |
-| `OPENKRAKEN_GATEWAY_URL` | No | `http://127.0.0.1:3001` | Egress gateway URL |
+| `OPENKRAKEN_EGRESS_GATEWAY_URL` | No | `http://127.0.0.1:3001` | Egress Gateway URL (Go binary) |
 | `OPENKRAKEN_TELEGRAM_TOKEN` | Yes* | - | Telegram bot token (Keychain/macOS, secret-service/Linux) |
 | `OPENKRAKEN_ANTHROPIC_API_KEY` | Yes* | - | Anthropic API key (Keychain/secret-service) |
 | `OPENKRAKEN_VERCEL_API_KEY` | No | - | Vercel Agent Browser API key |

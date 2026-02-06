@@ -1,6 +1,6 @@
 # Architecture.md: Logical System Blueprint for OpenKraken
 
-> **Implementation Reference:** This document describes architectural decisions. Concrete technology versions and specifications are documented in [TechSpec.md](TechSpec.md). All technology selections referenced herein are specified in TechSpec v1.6.0.
+> **Implementation Reference:** This document describes architectural decisions. Concrete technology versions and specifications are documented in [TechSpec.md](TechSpec.md).
 
 ## 1. Architectural Strategy
 
@@ -58,13 +58,13 @@ Four architectural entities appear throughout this document, each with distinct 
 
 **Agent** — The LLM-driven runtime operating inside the sandbox. A managed sub-system, not a peer.
 
-**Gateway** — The orchestration layer that mediates all communication between the Owner, external integrations, and the Agent. The Gateway injects identity, enforces policies, manages state, and handles credential isolation. It is the only component aware of platform specifics. (formerly "Orchestrator"—see Ubiquitous Language in PRD.md)
+**Orchestrator** — The orchestration layer that mediates all communication between the Owner, external integrations, and the Agent. The Orchestrator injects identity, enforces policies, manages state, and handles credential isolation. It is the only component aware of platform specifics. Implemented as a Bun/TypeScript runtime (renamed from "Gateway" in v0.13.0 for clarity—see CHANGELOG.md).
 
 **Egress Gateway** — The network boundary component implementing HTTP CONNECT proxy with domain allowlisting. Implemented as a separate Go or Rust binary with independent lifecycle, managed by Nix as a system service. Enforces strict allowlist-only network policy for all sandbox egress.
 
-**Platform Adapter** — The cross-platform abstraction layer handling OS-specific behaviors for sandbox invocation and credential retrieval. Implemented with runtime detection within the Gateway binary, abstracting differences between Linux (bubblewrap, secret-service) and macOS (Seatbelt, Keychain).
+**Platform Adapter** — The cross-platform abstraction layer handling OS-specific behaviors for sandbox invocation and credential retrieval. Implemented with runtime detection within the Orchestrator binary, abstracting differences between Linux (bubblewrap, secret-service) and macOS (Seatbelt, Keychain).
 
-The Owner trusts the Project (by choosing to install it). The Project trusts the Owner (by giving them full configuration authority). Neither trusts the Agent (which operates under deterministic constraints). The Gateway does not trust the Egress Gateway—communication follows strict RPC patterns with no implicit trust.
+The Owner trusts the Project (by choosing to install it). The Project trusts the Owner (by giving them full configuration authority). Neither trusts the Agent (which operates under deterministic constraints). The Orchestrator does not trust the Egress Gateway—communication follows strict RPC patterns with no implicit trust.
 
 ### Core Philosophies
 
@@ -84,7 +84,7 @@ These philosophical commitments shape every architectural decision. Deviations r
 
 7.  **Minimal Tool Surface:** Every tool invocation is attack surface. The Agent prefers answering from knowledge when possible and only invokes tools when the task requires execution, file access, or capabilities beyond training data.
 
-8.  **Middleware-Managed Memory:** The Agent does not manage its own long-term memory. Memory extraction, consolidation, retrieval, and injection are handled by Gateway middleware—invisible to the Agent and immune to prompt injection.
+8.  **Middleware-Managed Memory:** The Agent does not manage its own long-term memory. Memory extraction, consolidation, retrieval, and injection are handled by Orchestrator middleware—invisible to the Agent and immune to prompt injection.
 
 9.  **Single-Tenant by Design:** The system serves one Owner per instance. This is not a limitation to be overcome later—it is a deliberate architectural decision that eliminates multi-tenancy complexity.
 
@@ -96,9 +96,9 @@ These philosophical commitments shape every architectural decision. Deviations r
 
 13. **Tool-Level Isolation:** Different tools enforce security boundaries appropriate to their function. File operations use path validation; command execution uses the Anthropic Sandbox Runtime; browser automation uses isolated browser profiles with proxy enforcement.
 
-14. **Identity Injection:** The Agent's core identity (`SOUL.md`) is never materialized as a file within the sandbox. It is injected directly into the system prompt by the Gateway. This prevents exfiltration of the "Constitution" via file copy operations.
+14. **Identity Injection:** The Agent's core identity (`SOUL.md`) is never materialized as a file within the sandbox. It is injected directly into the system prompt by the Orchestrator. This prevents exfiltration of the "Constitution" via file copy operations.
 
-15. **Durable State Persistence:** Agent state survives Gateway restarts via LangGraph SqliteCheckpointer with WAL mode. Session continuity is an architectural guarantee, not an in-memory optimization.
+15. **Durable State Persistence:** Agent state survives Orchestrator restarts via LangGraph SqliteCheckpointer with WAL mode. Session continuity is an architectural guarantee, not an in-memory optimization.
 
 16. **Observable by Default:** All Agent operations are logged, traced, and metered. The Owner has complete visibility into Agent behavior for debugging, audit, and optimization purposes.
 
@@ -125,15 +125,15 @@ OpenKraken adopts a **Layered Modular Monolith** architecture that enforces stri
 
 **Third**, the cross-platform requirement (Linux and macOS) creates enough environmental variance without adding service distribution complexity. The architecture delegates platform abstraction to well-defined boundaries—the Platform Adapter and the Anthropic Sandbox Runtime—rather than distributing concerns across independently deployable services that must each handle platform differences.
 
-> **Technology Bindings:** The Gateway runtime uses Bun 1.3.8 with TypeScript 5.9.3. See [TechSpec.md Section 1.1](TechSpec.md#11-core-runtime-and-language) for version specifications and [TechSpec.md Section 1.2](TechSpec.md#12-agent-orchestration-framework) for LangChain/LangGraph versions.
+> **Technology Bindings:** The Orchestrator runtime uses Bun 1.3.8 with TypeScript 5.9.3. See [TechSpec.md Section 1.1](TechSpec.md#11-core-runtime-and-language) for version specifications and [TechSpec.md Section 1.2](TechSpec.md#12-agent-orchestration-framework) for LangChain/LangGraph versions.
 
 ### Justification: Why This Pattern Fits the PRD Constraints
 
-The PRD explicitly rejects the "probabilistic safety" model prevalent in agent frameworks, demanding instead "architectural enforcement" that makes rule violations "physically impossible regardless of how the agent is prompted." This requirement maps directly to the Layered Modular Monolith's strength in providing clear, enforceable boundaries. The Gateway sits at the center of all data flows, acting as the mandatory intermediary through which every Agent action must pass. This creates a chokepoint where security policies can be enforced without relying on the Agent's compliance.
+The PRD explicitly rejects the "probabilistic safety" model prevalent in agent frameworks, demanding instead "architectural enforcement" that makes rule violations "physically impossible regardless of how the agent is prompted." This requirement maps directly to the Layered Modular Monolith's strength in providing clear, enforceable boundaries. The Orchestrator sits at the center of all data flows, acting as the mandatory intermediary through which every Agent action must pass. This creates a chokepoint where security policies can be enforced without relying on the Agent's compliance.
 
-The availability requirement of "session continuity across Gateway restarts" is achieved through the Checkpointer's SQLite persistence with WAL mode, a pattern that requires shared filesystem access available in monolithic deployments but problematic across service boundaries. The checkpoint schema maintains conversation state and tool call sequences with rollback capability, enabling the Gateway to restore exact session state after any interruption.
+The availability requirement of "session continuity across Orchestrator restarts" is achieved through the Checkpointer's SQLite persistence with WAL mode, a pattern that requires shared filesystem access available in monolithic deployments but problematic across service boundaries. The checkpoint schema maintains conversation state and tool call sequences with rollback capability, enabling the Orchestrator to restore exact session state after any interruption.
 
-The performance constraint of "sandbox invocation within 100ms" further favors monolithic deployment. Tool calls must traverse the Gateway-Sandbox RPC interface regardless of architecture, but adding service-to-service latency between Gateway components would violate the latency budget. The monolithic pattern keeps all Gateway components in the same process, eliminating network round-trips from the critical path.
+The performance constraint of "sandbox invocation within 100ms" further favors monolithic deployment. Tool calls must traverse the Orchestrator-Sandbox RPC interface regardless of architecture, but adding service-to-service latency between Orchestrator components would violate the latency budget. The monolithic pattern keeps all Orchestrator components in the same process, eliminating network round-trips from the critical path.
 
 > **See Also:** [TechSpec.md Section 2](TechSpec.md#2-architecture-decision-records) for ADRs documenting these architectural decisions with full context and alternatives analysis.
 
@@ -167,7 +167,7 @@ The following containers constitute the deployable units of the OpenKraken syste
 
 **Cron Middleware**: Detects scheduled task triggers and invokes Agent with scheduled context — Registers with host timer system and ensures at-least-once execution semantics.
 
-**Web Search Middleware**: Provides web search tools through Gateway-mediated HTTP calls, routing requests through Egress Gateway for policy enforcement.
+**Web Search Middleware**: Provides web search tools through Orchestrator-mediated HTTP calls, routing requests through Egress Gateway for policy enforcement.
 
 **Browser Middleware**: Provides browser automation tools, managing isolated browser profiles per session and routing traffic through Egress Gateway.
 
@@ -183,11 +183,11 @@ The following containers constitute the deployable units of the OpenKraken syste
 
 > **Middleware Implementation:** See [TechSpec.md Section 5.5](TechSpec.md#55-middleware-composition-order) for composition order and [TechSpec.md Section 5.6](TechSpec.md#56-callback-execution-order) for callback execution order.
 
-### Layer 3: The Gateway
+### Layer 3: The Orchestrator
 
-**Gateway**: Bun/TypeScript runtime managing LangChain/LangGraph execution — Central orchestration component owning session management, tool dispatch, prompt injection, and policy enforcement. Uses LangChain.js v1 `createAgent()` API as canonical entry point and LangGraph for stateful workflow management. Runs as Nix-managed service with independent lifecycle from Egress Gateway.
+**Orchestrator**: Bun/TypeScript runtime managing LangChain/LangGraph execution — Central orchestration component owning session management, tool dispatch, prompt injection, and policy enforcement. Uses LangChain.js v1 `createAgent()` API as canonical entry point and LangGraph for stateful workflow management. Runs as Nix-managed service with independent lifecycle from Egress Gateway.
 
-> **Version Reference:** LangChain.js 1.2.19 (core) / 1.2.17 (bindings), LangGraph.js 1.1.2. See [TechSpec.md Section 1.2](TechSpec.md#12-agent-orchestration-framework) for complete stack specification.
+> **Version Reference:** See [TechSpec.md Section 1.2](TechSpec.md#12-agent-orchestration-framework) for complete stack specification.
 
 **Telegram Adapter**: grammY integration for Telegram Bot API — Primary interaction channel receiving Owner messages via webhook (cryptographically verified) and delivering Agent responses.
 
@@ -197,7 +197,7 @@ The following containers constitute the deployable units of the OpenKraken syste
 
 > **Version:** @langchain/mcp-adapters 1.1.2. See [TechSpec.md Section 1.2](TechSpec.md#12-agent-orchestration-framework).
 
-**Checkpointer**: Custom Bun-native SQLite checkpointer — Persists agent state across Gateway restarts using SkrOYC's bun-sqlite-checkpointer. A custom implementation using `bun:sqlite` directly, avoiding the `better-sqlite3` FFI incompatibility with Bun's JavaScriptCore runtime. Maintains checkpoint tables for conversation state and writes tables for metadata.
+**Checkpointer**: Custom Bun-native SQLite checkpointer — Persists agent state across Orchestrator restarts using SkrOYC's bun-sqlite-checkpointer. A custom implementation using `bun:sqlite` directly, avoiding the `better-sqlite3` FFI incompatibility with Bun's JavaScriptCore runtime. Maintains checkpoint tables for conversation state and writes tables for metadata.
 
 > **Technology:** SQLite 3.x with Write-Ahead Logging mode via `bun:sqlite`. See [TechSpec.md Section 3](TechSpec.md#3-database-schema) for schema specifications and ADR-004 for implementation rationale.
 
@@ -213,7 +213,7 @@ The following containers constitute the deployable units of the OpenKraken syste
 
 **Cron Middleware**: Detects scheduled task triggers and invokes Agent with scheduled context — Registers with host timer system and ensures at-least-once execution semantics.
 
-**Web Search Middleware**: Provides web search tools through Gateway-mediated HTTP calls, routing requests through Egress Gateway for policy enforcement.
+**Web Search Middleware**: Provides web search tools through Orchestrator-mediated HTTP calls, routing requests through Egress Gateway for policy enforcement.
 
 **Browser Middleware**: Provides browser automation tools, managing isolated browser profiles per session and routing traffic through Egress Gateway.
 
@@ -240,7 +240,7 @@ C4Container
   Person_Ext(Owner, "Owner", "Single human provisioning, configuring, and operating the instance")
 
   System_Boundary(openkraken_runtime, "OpenKraken Runtime") {
-    Container(gateway, "Gateway", "Bun/TypeScript", "Central orchestration: agent loop, tool dispatch, policy enforcement")
+    Container(orchestrator, "Orchestrator", "Bun/TypeScript", "Central orchestration: agent loop, tool dispatch, policy enforcement")
     ContainerDb(checkpointer, "Checkpointer", "SQLite + LangGraph", "State persistence: conversation, checkpoints, writes")
     ContainerDb(structured_log, "Structured Logger", "SQLite", "Audit trail: operations, errors, durations")
     Container(egress_gateway, "Egress Gateway", "Go Binary", "HTTP CONNECT proxy with domain allowlisting")
@@ -274,9 +274,9 @@ C4Container
   Rel(Owner, Telegram, "Interacts via")
 
   Rel(Telegram, telegram_adapter, "Sends updates to (webhook)")
-  Rel(telegram_adapter, gateway, "Routes messages to")
+  Rel(telegram_adapter, orchestrator, "Routes messages to")
 
-  Rel(gateway, policy_mw, "Chains through")
+  Rel(orchestrator, policy_mw, "Chains through")
   Rel(policy_mw, cron_mw, "Middleware chain")
   Rel(cron_mw, web_mw, "Middleware chain")
   Rel(web_mw, browser_mw, "Middleware chain")
@@ -284,23 +284,23 @@ C4Container
   Rel(memory_mw, skill_mw, "Middleware chain")
   Rel(skill_mw, hitl_mw, "Middleware chain")
   Rel(hitl_mw, summarize_mw, "Middleware chain")
-  Rel(summarize_mw, gateway, "Completes middleware chain")
+  Rel(summarize_mw, orchestrator, "Completes middleware chain")
 
-  Rel(gateway, checkpointer, "Persists state to")
-  Rel(gateway, structured_log, "Emits audit records to")
-  Rel(gateway, credential_vault, "Retrieves credentials from")
-  Rel(gateway, egress_gateway, "Manages allowlist via RPC")
-  Rel(gateway, sandbox, "Invokes command execution via")
-  Rel(gateway, memory_bank, "Stores/retrieves memories via")
+  Rel(orchestrator, checkpointer, "Persists state to")
+  Rel(orchestrator, structured_log, "Emits audit records to")
+  Rel(orchestrator, credential_vault, "Retrieves credentials from")
+  Rel(orchestrator, egress_gateway, "Manages allowlist via RPC")
+  Rel(orchestrator, sandbox, "Invokes command execution via")
+  Rel(orchestrator, memory_bank, "Stores/retrieves memories via")
 
   Rel(sandbox, egress_gateway, "Routes all traffic through")
-  Rel(gateway, llm_provider, "Calls for intelligence")
-  Rel(gateway, exa_api, "Searches web via")
+  Rel(orchestrator, llm_provider, "Calls for intelligence")
+  Rel(orchestrator, exa_api, "Searches web via")
 
-  Rel(gateway, mcp_adapter, "Connects to MCP servers")
+  Rel(orchestrator, mcp_adapter, "Connects to MCP servers")
   Rel(mcp_adapter, mcp_servers, "Integrates with external services")
 
-  Rel(gateway, otel_backend, "Exports traces to")
+  Rel(orchestrator, otel_backend, "Exports traces to")
 ```
 
 ---
@@ -315,7 +315,7 @@ sequenceDiagram
   participant Owner as Owner
   participant Telegram as Telegram
   participant Adapter as Telegram Adapter
-  participant Gateway as Gateway
+  participant Orchestrator as Orchestrator
   participant PolicyMW as Policy Middleware
   participant MemoryMW as Memory Middleware
   participant Agent as Agent
@@ -332,10 +332,10 @@ sequenceDiagram
   rect rgb(240, 248, 255)
     Note right of Adapter: Authentication Boundary
     Adapter->>Adapter: Verify Telegram signature
-    Adapter->>Gateway: InvokeAgent(message, threadId)
+    Adapter->>Orchestrator: InvokeAgent(message, threadId)
   end
   
-  Gateway->>PolicyMW: process(message)
+  Orchestrator->>PolicyMW: process(message)
   PolicyMW->>Checkpointer: Load session state (threadId)
   Checkpointer-->>PolicyMW: Session state
   
@@ -346,29 +346,29 @@ sequenceDiagram
   MemoryBank-->>MemoryMW: Relevant memories
   MemoryMW-->>PolicyMW: Context bundle
   
-  PolicyMW->>Gateway: Continue with context
-  Gateway->>Agent: execute(systemPrompt, userMessage, context)
+  PolicyMW->>Orchestrator: Continue with context
+  Orchestrator->>Agent: execute(systemPrompt, userMessage, context)
   
   Note over Agent: Agent reasoning occurs here
   Agent->>LLM: Claude API call (with injected SOUL.md)
   LLM-->>Agent: Reasoning + tool selection
   
-  Agent->>Gateway: Tool call: get_calendar_events
-  Gateway->>MCPAdapter: calendar.getEvents()
+  Agent->>Orchestrator: Tool call: get_calendar_events
+  Orchestrator->>MCPAdapter: calendar.getEvents()
   MCPAdapter-->>LLM: Calendar data
   LLM-->>Agent: Analysis complete
-  Agent->>Gateway: Final response
-  Gateway->>PIIMW: scan(response.content)
+  Agent->>Orchestrator: Final response
+  Orchestrator->>PIIMW: scan(response.content)
   
   rect rgb(255, 240, 245)
     Note right of PIIMW: Content Security Boundary
     PIIMW->>PIIMW: Detect credentials, PII, violations via LangChain piiMiddleware
-    PIIMW-->>Gateway: Clean bill of health OR reject
+    PIIMW-->>Orchestrator: Clean bill of health OR reject
   end
   
-  Gateway->>Checkpointer: Save checkpoint (state, messages)
-  Checkpointer-->>Gateway: Confirmed
-  Gateway->>Adapter2: SendResponse(response)
+  Orchestrator->>Checkpointer: Save checkpoint (state, messages)
+  Checkpointer-->>Orchestrator: Confirmed
+  Orchestrator->>Adapter2: SendResponse(response)
   Adapter2->>Telegram: Delivers message to Owner
   
   %% Error Paths
@@ -379,20 +379,20 @@ sequenceDiagram
   
   rect rgb(255, 200, 200)
     Note over PolicyMW,Checkpointer: ERROR: Checkpoint load failure
-    PolicyMW-->>Gateway: Error: Session unavailable
-    Gateway->>Adapter2: SendResponse("Session restore failed")
+    PolicyMW-->>Orchestrator: Error: Session unavailable
+    Orchestrator->>Adapter2: SendResponse("Session restore failed")
   end
   
   rect rgb(255, 200, 200)
-    Note over PIIMW,Gateway: ERROR: Content policy violation
-    PIIMW-->>Gateway: Reject: Policy violation
-    Gateway->>Adapter2: SendResponse("Content blocked by policy")
+    Note over PIIMW,Orchestrator: ERROR: Content policy violation
+    PIIMW-->>Orchestrator: Reject: Policy violation
+    Orchestrator->>Adapter2: SendResponse("Content blocked by policy")
   end
   
   rect rgb(255, 200, 200)
-    Note over Gateway,LLM: ERROR: LLM provider unavailable
-    Gateway-->>Agent: Error: Service temporarily unavailable
-    Agent-->>Gateway: Fallback response
+    Note over Orchestrator,LLM: ERROR: LLM provider unavailable
+    Orchestrator-->>Agent: Error: Service temporarily unavailable
+    Agent-->>Orchestrator: Fallback response
     Gateway->>Adapter2: SendResponse("Service unavailable")
   end
 ```
@@ -407,7 +407,7 @@ sequenceDiagram
 sequenceDiagram
   autonumber
   participant Agent as Agent
-  participant Gateway as Gateway
+  participant Orchestrator as Orchestrator
   participant PolicyMW as Policy Middleware
   participant CredentialVault as Credential Vault
   participant EgressGW as Egress Gateway
@@ -415,29 +415,29 @@ sequenceDiagram
   participant Bash as Sandboxed Shell
   participant Checkpointer as Checkpointer
 
-  Agent->>Gateway: Tool call: terminal.run("npm install")
+  Agent->>Orchestrator: Tool call: terminal.run("npm install")
   
   rect rgb(240, 248, 255)
-    Note right of Gateway: Tool Dispatch Boundary
-    Gateway->>PolicyMW: validateToolRequest("npm install")
+    Note right of Orchestrator: Tool Dispatch Boundary
+    Orchestrator->>PolicyMW: validateToolRequest("npm install")
     PolicyMW->>PolicyMW: Check package allowlist
-    PolicyMW-->>Gateway: Approved OR Rejected
+    PolicyMW-->>Orchestrator: Approved OR Rejected
   end
   
   alt Package Allowed
-    Gateway->>CredentialVault: retrieve("npm_token")
-    CredentialVault-->>Gateway: Token (runtime memory only)
+    Orchestrator->>CredentialVault: retrieve("npm_token")
+    CredentialVault-->>Orchestrator: Token (runtime memory only)
     
     rect rgb(255, 240, 245)
-      Note right of Gateway: Egress Configuration Boundary
-      Gateway->>EgressGW: POST /api/v1/allowlist/add ["registry.npmjs.org"]
-      EgressGW-->>Gateway: Confirmed
+      Note right of Orchestrator: Egress Configuration Boundary
+      Orchestrator->>EgressGW: POST /api/v1/allowlist/add ["registry.npmjs.org"]
+      EgressGW-->>Orchestrator: Confirmed
     end
     
-    Gateway->>Checkpointer: Log tool invocation (PRE)
-    Checkpointer-->>Gateway: Recorded
+    Orchestrator->>Checkpointer: Log tool invocation (PRE)
+    Checkpointer-->>Orchestrator: Recorded
     
-    Gateway->>Sandbox: invoke(command="npm install", env={}, timeout=300s)
+    Orchestrator->>Sandbox: invoke(command="npm install", env={}, timeout=300s)
     
     rect rgb(240, 248, 255)
       Note right of Sandbox: Isolation Boundary
@@ -453,53 +453,53 @@ sequenceDiagram
     EgressGW-->>Bash: Tunnel established
     
     Bashes-->>Sandbox: stdout/stderr streams
-    Sandbox-->>Gateway: Exit code, output
+    Sandbox-->>Orchestrator: Exit code, output
     
-    Gateway->>Checkpointer: Log tool completion (POST, exitCode)
-    Checkpointer-->>Gateway: Recorded
+    Orchestrator->>Checkpointer: Log tool completion (POST, exitCode)
+    Checkpointer-->>Orchestrator: Recorded
     
-    Gateway->>EgressGW: POST /api/v1/allowlist/remove ["registry.npmjs.org"]
-    EgressGW-->>Gateway: Confirmed (reset to baseline)
+    Orchestrator->>EgressGW: POST /api/v1/allowlist/remove ["registry.npmjs.org"]
+    EgressGW-->>Orchestrator: Confirmed (reset to baseline)
     
-    Gateway->>Agent: Tool result
+    Orchestrator->>Agent: Tool result
     
   else Package Not Allowed
-    Gateway->>Agent: Tool error: "Package not in allowlist"
+    Orchestrator->>Agent: Tool error: "Package not in allowlist"
   end
   
   %% Error Paths
   rect rgb(255, 200, 200)
-    Note over PolicyMW,Gateway: ERROR: Package not in allowlist
-    PolicyMW-->>Gateway: Rejected: Package not allowed
-    Gateway->>Agent: Error: "npm install not permitted"
+    Note over PolicyMW,Orchestrator: ERROR: Package not in allowlist
+    PolicyMW-->>Orchestrator: Rejected: Package not allowed
+    Orchestrator->>Agent: Error: "npm install not permitted"
   end
   
   rect rgb(255, 200, 200)
-    Note over CredentialVault,Gateway: ERROR: Credential unavailable
-    CredentialVault-->>Gateway: Error: Credential not found
-    Gateway->>Agent: Error: "npm token not configured"
+    Note over CredentialVault,Orchestrator: ERROR: Credential unavailable
+    CredentialVault-->>Orchestrator: Error: Credential not found
+    Orchestrator->>Agent: Error: "npm token not configured"
   end
   
   rect rgb(255, 200, 200)
-    Note over Gateway,EgressGW: ERROR: Gateway unavailable
-    Gateway->>EgressGW: POST /api/v1/allowlist/add
-    EgressGW-->>Gateway: Error: Connection refused
-    Gateway->>Agent: Error: "Network proxy unavailable"
+    Note over Orchestrator,EgressGW: ERROR: Egress Gateway unavailable
+    Orchestrator->>EgressGW: POST /api/v1/allowlist/add
+    EgressGW-->>Orchestrator: Error: Connection refused
+    Orchestrator->>Agent: Error: "Network proxy unavailable"
   end
   
   rect rgb(255, 200, 200)
-    Note over Sandbox,Gateway: ERROR: Sandbox execution failure
-    Sandbox-->>Gateway: Error: Command timeout (300s)
-    Gateway->>Checkpointer: Log timeout
-    Gateway->>Agent: Error: "Command timed out"
+    Note over Sandbox,Orchestrator: ERROR: Sandbox execution failure
+    Sandbox-->>Orchestrator: Error: Command timeout (300s)
+    Orchestrator->>Checkpointer: Log timeout
+    Orchestrator->>Agent: Error: "Command timed out"
   end
   
   rect rgb(255, 200, 200)
     Note over EgressGW,Bash: ERROR: Domain not allowed
     EgressGW-->>Bash: Error: Domain not in allowlist
     Bashes-->>Sandbox: Connection rejected
-    Sandbox-->>Gateway: Exit code 1
-    Gateway->>Agent: Error: "Connection to registry rejected"
+    Sandbox-->>Orchestrator: Exit code 1
+    Orchestrator->>Agent: Error: "Connection to registry rejected"
   end
 ```
 
@@ -513,18 +513,18 @@ sequenceDiagram
 sequenceDiagram
   autonumber
   participant Agent as Agent
-  participant Gateway as Gateway
+  participant Orchestrator as Orchestrator
   participant BrowserMW as Browser Middleware
   participant AgentBrowser as Vercel Agent Browser
   participant EgressGW as Egress Gateway
   participant Checkpointer as Checkpointer
   participant DomainAllowlist as Domain Allowlist
 
-  Agent->>Gateway: Tool call: browser.navigate("https://docs.example.com")
+  Agent->>Orchestrator: Tool call: browser.navigate("https://docs.example.com")
   
   rect rgb(240, 248, 255)
-    Note right of Gateway: Tool Validation Boundary
-    Gateway->>BrowserMW: validateNavigation("docs.example.com")
+    Note right of Orchestrator: Tool Validation Boundary
+    Orchestrator->>BrowserMW: validateNavigation("docs.example.com")
     BrowserMW->>DomainAllowlist: Check if allowed
     DomainAllowlist-->>BrowserMW: ALLOWED or DENIED
   end
@@ -543,12 +543,12 @@ sequenceDiagram
     EgressGW-->>AgentBrowser: Tunnel established
     
     AgentBrowser-->>BrowserMW: Session created
-    BrowserMW-->>Gateway: Confirmed
+    BrowserMW-->>Orchestrator: Confirmed
     
-    Gateway->>Checkpointer: Log browser session start
-    Checkpointer-->>Gateway: Recorded
+    Orchestrator->>Checkpointer: Log browser session start
+    Checkpointer-->>Orchestrator: Recorded
     
-    Gateway->>AgentBrowser: navigate("https://docs.example.com")
+    Orchestrator->>AgentBrowser: navigate("https://docs.example.com")
     
     Note over AgentBrowser,Target: All browser traffic routes through Egress Gateway
     AgentBrowser->>EgressGW: CONNECT docs.example.com
@@ -560,25 +560,25 @@ sequenceDiagram
     BrowserMW->>Checkpointer: Log navigation completion
     Checkpointer-->>BrowserMW: Recorded
     
-    BrowserMW-->>Gateway: Snapshot
-    Gateway-->>Agent: Tool result
+    BrowserMW-->>Orchestrator: Snapshot
+    Orchestrator-->>Agent: Tool result
     
   else Domain Denied
-    Gateway->>EgressGW: POST /api/v1/logs (blocked attempt)
-    EgressGW-->>Gateway: Recorded
-    Gateway->>Agent: Tool error: "Domain not in allowlist"
+    Orchestrator->>EgressGW: POST /api/v1/logs (blocked attempt)
+    EgressGW-->>Orchestrator: Recorded
+    Orchestrator->>Agent: Tool error: "Domain not in allowlist"
   end
   
-  Note over AgentBrowser,Gateway: Session isolation ensures no cross-thread state leakage
-  AgentBrowser->>Gateway: closeSession()
-  Gateway->>Checkpointer: Log session closure
+  Note over AgentBrowser,Orchestrator: Session isolation ensures no cross-thread state leakage
+  AgentBrowser->>Orchestrator: closeSession()
+  Orchestrator->>Checkpointer: Log session closure
   
   %% Error Paths
   rect rgb(255, 200, 200)
     Note over BrowserMW,DomainAllowlist: ERROR: Domain not in allowlist
     DomainAllowlist-->>BrowserMW: DENIED
-    BrowserMW-->>Gateway: Error: Domain not permitted
-    Gateway->>Agent: Error: "docs.example.com not allowed"
+    BrowserMW-->>Orchestrator: Error: Domain not permitted
+    Orchestrator->>Agent: Error: "docs.example.com not allowed"
   end
   
   rect rgb(255, 200, 200)
@@ -586,24 +586,24 @@ sequenceDiagram
     AgentBrowser->>EgressGW: CONNECT docs.example.com
     EgressGW-->>AgentBrowser: Error: Connection failed
     AgentBrowser-->>BrowserMW: Error: Tunnel failed
-    BrowserMW-->>Gateway: Error: "Cannot reach docs.example.com"
-    Gateway->>Agent: Error: "Navigation failed"
+    BrowserMW-->>Orchestrator: Error: "Cannot reach docs.example.com"
+    Orchestrator->>Agent: Error: "Navigation failed"
   end
   
   rect rgb(255, 200, 200)
-    Note over AgentBrowser,Gateway: ERROR: Browser session failure
+    Note over AgentBrowser,Orchestrator: ERROR: Browser session failure
     AgentBrowser-->>BrowserMW: Error: Profile creation failed
-    BrowserMW-->>Gateway: Error: "Browser unavailable"
-    Gateway->>Agent: Error: "Browser tool failed"
+    BrowserMW-->>Orchestrator: Error: "Browser unavailable"
+    Orchestrator->>Agent: Error: "Browser tool failed"
   end
   
   rect rgb(255, 200, 200)
-    Note over EgressGW,Gateway: ERROR: Egress Gateway unavailable
+    Note over EgressGW,Orchestrator: ERROR: Egress Gateway unavailable
     AgentBrowser->>EgressGW: CONNECT docs.example.com
-    EgressGW-->>AgentBrowser: Error: Gateway not responding
+    EgressGW-->>AgentBrowser: Error: Egress Gateway not responding
     AgentBrowser-->>BrowserMW: Error: Proxy unreachable
-    BrowserMW-->>Gateway: Error: "Network proxy unavailable"
-    Gateway->>Agent: Error: "Browser navigation failed"
+    BrowserMW-->>Orchestrator: Error: "Network proxy unavailable"
+    Orchestrator->>Agent: Error: "Browser navigation failed"
   end
 ```
 
