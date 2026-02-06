@@ -1,4 +1,4 @@
-# Architecture.md: Logical System Blueprint for RealClaw
+# Architecture.md: Logical System Blueprint for OpenKraken
 
 > **Implementation Reference:** This document describes architectural decisions. Concrete technology versions and specifications are documented in [TechSpec.md](TechSpec.md). All technology selections referenced herein are specified in TechSpec v1.6.0.
 
@@ -6,27 +6,27 @@
 
 ### Problem Context: What We're Responding To
 
-RealClaw is architected as a direct response to the failures of "OpenClaw" (née Clawdbot → Moltbot), a prior agent implementation that demonstrated the fundamental unsafety of dominant agent architectures. Every design decision in this document traces to a specific failure mode observed in OpenClaw:
+OpenKraken is architected as a direct response to the failures of "OpenClaw" (née Clawdbot → Moltbot), a prior agent implementation that demonstrated the fundamental unsafety of dominant agent architectures. Every design decision in this document traces to a specific failure mode observed in OpenClaw:
 
-- **Probabilistic Safety Failure:** OpenClaw relied on `AGENTS.md` directives—system prompt rules telling the LLM "don't do dangerous things." A single prompt injection through any connected messaging channel yielded full shell access. RealClaw enforces safety at the sandbox and tool level, not the prompt level, using Anthropic's Sandbox Runtime for deterministic isolation.
+- **Probabilistic Safety Failure:** OpenClaw relied on `AGENTS.md` directives—system prompt rules telling the LLM "don't do dangerous things." A single prompt injection through any connected messaging channel yielded full shell access. OpenKraken enforces safety at the sandbox and tool level, not the prompt level, using Anthropic's Sandbox Runtime for deterministic isolation.
 
-- **Localhost Trust / No Auth by Default:** OpenClaw auto-trusted connections from `127.0.0.1`. Behind any reverse proxy, all external traffic appeared local. Shodan found 1,800+ exposed instances. RealClaw binds to `127.0.0.1` or Tailscale only, with no implicit trust model. Telegram webhooks require cryptographic signature verification.
+- **Localhost Trust / No Auth by Default:** OpenClaw auto-trusted connections from `127.0.0.1`. Behind any reverse proxy, all external traffic appeared local. Shodan found 1,800+ exposed instances. OpenKraken binds to `127.0.0.1` or Tailscale only, with no implicit trust model. Telegram webhooks require cryptographic signature verification.
 
-- **Flat Credential Storage:** API keys, OAuth tokens, and bot tokens stored in plaintext on the local filesystem, fully accessible to the agent. RealClaw stores credentials in OS-level vaults (Keychain, secret-service) and never exposes them to the sandbox context.
+- **Flat Credential Storage:** API keys, OAuth tokens, and bot tokens stored in plaintext on the local filesystem, fully accessible to the agent. OpenKraken stores credentials in OS-level vaults (Keychain, secret-service) and never exposes them to the sandbox context.
 
-- **Unaudited Memory Writes:** OpenClaw's Markdown-based memory was readable and writable by the agent with no gating. A prompt injection could silently rewrite the agent's long-term memory. RealClaw removes the agent from the memory write path entirely—memory extraction and consolidation are handled by middleware, not agent-initiated tool calls.
+- **Unaudited Memory Writes:** OpenClaw's Markdown-based memory was readable and writable by the agent with no gating. A prompt injection could silently rewrite the agent's long-term memory. OpenKraken removes the agent from the memory write path entirely—memory extraction and consolidation are handled by middleware, not agent-initiated tool calls.
 
-- **Uncontrolled Egress:** The agent could compose and send messages to any connected channel without content validation, rate limiting, or approval gates. RealClaw gates all outbound delivery through a single auditable egress chokepoint with structured JSON errors and comprehensive request logging.
+- **Uncontrolled Egress:** The agent could compose and send messages to any connected channel without content validation, rate limiting, or approval gates. OpenKraken gates all outbound delivery through a single auditable egress chokepoint with structured JSON errors and comprehensive request logging.
 
-- **No Supply Chain Integrity:** 300+ contributors, a skills/plugin ecosystem pulling arbitrary code, no hermetic builds, no hash verification. RealClaw pins and hashes everything via Nix and analyzes skill scripts before execution.
+- **No Supply Chain Integrity:** 300+ contributors, a skills/plugin ecosystem pulling arbitrary code, no hermetic builds, no hash verification. OpenKraken pins and hashes everything via Nix and analyzes skill scripts before execution.
 
-- **No Network Isolation:** The agent inherited the host's full network access. RealClaw defaults to offline and whitelists explicitly via egress proxy. The Anthropic Sandbox Runtime ensures all network traffic routes through the proxy.
+- **No Network Isolation:** The agent inherited the host's full network access. OpenKraken defaults to offline and whitelists explicitly via egress proxy. The Anthropic Sandbox Runtime ensures all network traffic routes through the proxy.
 
-- **Custom Security Infrastructure:** Building custom sandboxing implementations led to gaps and inconsistencies. RealClaw leverages Anthropic's production-tested Sandbox Runtime for consistent cross-platform isolation.
+- **Custom Security Infrastructure:** Building custom sandboxing implementations led to gaps and inconsistencies. OpenKraken leverages Anthropic's production-tested Sandbox Runtime for consistent cross-platform isolation.
 
 ### Scope Definition: What This Project Builds
 
-RealClaw is a **personal AI agent runtime** with the following bounded capabilities. Items outside these boundaries require explicit architectural extension.
+OpenKraken is a **personal AI agent runtime** with the following bounded capabilities. Items outside these boundaries require explicit architectural extension.
 
 **Primary Capabilities:**
 - **Conversational Interaction:** Bidirectional messaging via Telegram (primary) and MCP-connected services (secondary)
@@ -52,7 +52,7 @@ RealClaw is a **personal AI agent runtime** with the following bounded capabilit
 
 Four architectural entities appear throughout this document, each with distinct technology stacks, lifecycles, and trust boundaries. See TechSpec.md Section 1 for specific version bindings.
 
-**Project** — The framework itself, authored and maintained by the RealClaw team. The Project defines platform skills, default policies, security constraints, and the "Constitution" (`SOUL.md`, `SAFETY.md`). The Project is the authority on _how_ the system works.
+**Project** — The framework itself, authored and maintained by the OpenKraken team. The Project defines platform skills, default policies, security constraints, and the "Constitution" (`SOUL.md`, `SAFETY.md`). The Project is the authority on _how_ the system works.
 
 **Owner** — The person who installs and runs an instance. The Owner provisions credentials, configures integrations, uploads personal skills, and interacts with the Agent. In a single-tenant system, the Owner is the only human in the loop.
 
@@ -106,18 +106,18 @@ These philosophical commitments shape every architectural decision. Deviations r
 
 ### Open Responses Compliance and Competitive Positioning
 
-RealClaw implements the **Open Responses API** as its primary interface contract, positioning it as an Open Responses Provider in the emerging ecosystem. This strategic decision provides several advantages:
+OpenKraken implements the **Open Responses API** as its primary interface contract, positioning it as an Open Responses Provider in the emerging ecosystem. This strategic decision provides several advantages:
 
-- **Ecosystem Compatibility:** Any Open Responses-compatible client can consume RealClaw, including HuggingFace Inference Providers and NVIDIA-backed integrations
-- **Client-Agnostic Positioning:** Unlike proprietary agent frameworks, RealClaw's API contract is standardized and portable
+- **Ecosystem Compatibility:** Any Open Responses-compatible client can consume OpenKraken, including HuggingFace Inference Providers and NVIDIA-backed integrations
+- **Client-Agnostic Positioning:** Unlike proprietary agent frameworks, OpenKraken's API contract is standardized and portable
 - **Future-Proofing:** The Open Responses specification is backed by major AI providers and community contributors, reducing API fragmentation risk
-- **Extension Mechanism:** RealClaw-specific features are exposed through the spec's extension prefix (`realclaw:*`) while maintaining base compliance
+- **Extension Mechanism:** OpenKraken-specific features are exposed through the spec's extension prefix (`openkraken:*`) while maintaining base compliance
 
 The implementation follows the Open Responses specification with semantic streaming events, typed item models, and structured error responses. See [TechSpec.md Section 4](TechSpec.md#4-api-contract) for complete API documentation.
 
 ### The Pattern: Layered Modular Monolith with Strict Boundary Enforcement
 
-RealClaw adopts a **Layered Modular Monolith** architecture that enforces strict boundaries between concern domains while maintaining deployment simplicity appropriate for single-tenant operation. This pattern was selected over microservices or serverless alternatives for three compelling reasons rooted in the PRD's non-functional constraints.
+OpenKraken adopts a **Layered Modular Monolith** architecture that enforces strict boundaries between concern domains while maintaining deployment simplicity appropriate for single-tenant operation. This pattern was selected over microservices or serverless alternatives for three compelling reasons rooted in the PRD's non-functional constraints.
 
 **First**, the single-tenant deployment model eliminates the operational complexity that justifies microservices decomposition. The system serves exactly one Owner per instance with no user isolation requirements, meaning the throughput and scaling concerns that drive microservice adoption are irrelevant. A modular monolith provides the same separation of concerns without the distributed systems overhead of inter-service communication, distributed transactions, and independent deployment pipelines.
 
@@ -141,7 +141,7 @@ The performance constraint of "sandbox invocation within 100ms" further favors m
 
 ## 2. System Containers (C4 Level 2)
 
-The following containers constitute the deployable units of the RealClaw system. Each container has explicit responsibilities, well-defined boundaries, and documented communication protocols. Containers are organized by their architectural layer, with clear indication of which layer owns each component.
+The following containers constitute the deployable units of the OpenKraken system. Each container has explicit responsibilities, well-defined boundaries, and documented communication protocols. Containers are organized by their architectural layer, with clear indication of which layer owns each component.
 
 ### Layer -1: Platform Manager
 
@@ -235,11 +235,11 @@ The following containers constitute the deployable units of the RealClaw system.
 
 ```mermaid
 C4Container
-  title Container Diagram for RealClaw Runtime
+  title Container Diagram for OpenKraken Runtime
 
   Person_Ext(Owner, "Owner", "Single human provisioning, configuring, and operating the instance")
 
-  System_Boundary(realclaw_runtime, "RealClaw Runtime") {
+  System_Boundary(openkraken_runtime, "OpenKraken Runtime") {
     Container(gateway, "Gateway", "Bun/TypeScript", "Central orchestration: agent loop, tool dispatch, policy enforcement")
     ContainerDb(checkpointer, "Checkpointer", "SQLite + LangGraph", "State persistence: conversation, checkpoints, writes")
     ContainerDb(structured_log, "Structured Logger", "SQLite", "Audit trail: operations, errors, durations")
@@ -617,7 +617,7 @@ sequenceDiagram
 
 ### 5.1 Authentication and Authorization
 
-The RealClaw architecture implements a layered authentication and authorization model that reflects the single-tenant deployment context while maintaining strict security boundaries. Authentication establishes identity at system boundaries; authorization enforces capability boundaries at every layer.
+The OpenKraken architecture implements a layered authentication and authorization model that reflects the single-tenant deployment context while maintaining strict security boundaries. Authentication establishes identity at system boundaries; authorization enforces capability boundaries at every layer.
 
 **Telegram Webhook Authentication**: The Telegram Adapter receives updates via webhooks and cryptographically verifies each request using Telegram's secret token mechanism. Requests without valid signatures are rejected before any processing occurs. This prevents spoofing attacks where malicious actors attempt to inject messages into the conversation.
 
@@ -633,7 +633,7 @@ The RealClaw architecture implements a layered authentication and authorization 
 
 ### 5.2 Observability
 
-The observability strategy in RealClaw addresses three distinct needs: operational visibility for system health monitoring, debugging support for troubleshooting Agent behavior, and security auditing for compliance and incident response.
+The observability strategy in OpenKraken addresses three distinct needs: operational visibility for system health monitoring, debugging support for troubleshooting Agent behavior, and security auditing for compliance and incident response.
 
 **Structured Logging Architecture**: The Structured Logger captures all Agent operations with a canonical schema designed for queryability and retention management. Each log entry contains: timestamp in ISO8601 format with millisecond precision, requestId as a UUID that traces related operations, operationType from an enumerated set (tool_call, model_invoke, agent_turn, middleware_enter, middleware_exit), targetResource identifying the tool name or model identifier, arguments containing sanitized input (credentials and PII replaced with `[REDACTED]`), result containing output or error, durationMs for timing, and correlationId for tracing operations across middleware boundaries.
 
@@ -661,7 +661,7 @@ The architecture implements a comprehensive error handling strategy that ensures
 
 ### High-Priority Risks
 
-**Sandbox Runtime Maturity**: The Anthropic Sandbox Runtime (`@anthropic-ai/sandbox-runtime`) is currently version 0.0.35 and labeled "Beta Research Preview." While the project is actively maintained, the `0.x.y` versioning indicates potential breaking changes before 1.0.0. RealClaw pins to specific versions and monitors changelogs, but the dependency on an evolving runtime creates upgrade risk. A breaking change in the sandbox API could require significant Gateway adaptation.
+**Sandbox Runtime Maturity**: The Anthropic Sandbox Runtime (`@anthropic-ai/sandbox-runtime`) is currently version 0.0.35 and labeled "Beta Research Preview." While the project is actively maintained, the `0.x.y` versioning indicates potential breaking changes before 1.0.0. OpenKraken pins to specific versions and monitors changelogs, but the dependency on an evolving runtime creates upgrade risk. A breaking change in the sandbox API could require significant Gateway adaptation.
 
 **Egress Gateway Single Point of Failure**: The Egress Gateway is a mandatory chokepoint for all sandbox network traffic. If the Gateway crashes or becomes unresponsive, no sandboxed operation requiring network access can proceed. The current architecture does not include Gateway redundancy appropriate for high-availability requirements.
 

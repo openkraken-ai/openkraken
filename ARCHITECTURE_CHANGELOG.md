@@ -58,7 +58,7 @@ This version represents a significant architectural evolution following investig
 
 **Configuration Format**
 * Specified YAML as the unified configuration format for the system.
-* Located at platform-appropriate paths (Linux: `/etc/realclaw/config.yaml`, macOS: `~/Library/Application Support/realclaw/config.yaml`).
+* Located at platform-appropriate paths (Linux: `/etc/openkraken/config.yaml`, macOS: `~/Library/Application Support/openkraken/config.yaml`).
 
 **Multi-User Clarification**
 * Explicitly stated that multi-user scenarios are out of scope.

@@ -1,6 +1,6 @@
 # AGENTS.md: Project Context for AI Collaborators
 
-You are working on a project called **RealClaw**—a deterministic, security-first agentic runtime. This document provides context to help you understand what we're building, where we are in the process, and how to contribute effectively. Read this before making architectural decisions or writing code.
+You are working on a project called **OpenKraken**—a deterministic, security-first agentic runtime. This document provides context to help you understand what we're building, where we are in the process, and how to contribute effectively. Read this before making architectural decisions or writing code.
 
 ## Project Status: Planning Phase (Measure Thrice)
 
@@ -17,7 +17,7 @@ The architecture document (ARCHITECTURE.md) is a living document that evolves as
 
 ## The Core Mission
 
-RealClaw is a personal AI agent runtime designed for single-tenant, owner-operated deployment. The fundamental goal is **deterministic safety**: preventing the agent from breaking rules through architectural enforcement, not through prompts that hope the agent will behave.
+OpenKraken is a personal AI agent runtime designed for single-tenant, owner-operated deployment. The fundamental goal is **deterministic safety**: preventing the agent from breaking rules through architectural enforcement, not through prompts that hope the agent will behave.
 
 We reject the "probabilistic safety" model that pervades agent frameworks—trusting the AI to follow rules through clever prompting. We build systems where the agent physically cannot violate constraints, regardless of how it is prompted or what inputs it receives.
 

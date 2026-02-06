@@ -402,7 +402,7 @@ The architecture supports both Linux and macOS through clear abstractions that h
 
 The system delegates platform-specific sandboxing to the Anthropic Sandbox Runtime, which provides a unified configuration interface while using optimal native mechanisms for each platform. On Linux, the runtime uses `bubblewrap` for filesystem and network isolation with bind mounts for directory permissions. On macOS, the runtime uses `sandbox-exec` with dynamically generated Seatbelt profiles for filesystem restrictions and proxy-based network isolation.
 
-**Runtime Maturity Note:** The Anthropic Sandbox Runtime (`@anthropic-ai/sandbox-runtime`) is currently at version 0.0.35 and is labeled as a "Beta Research Preview." The project is actively maintained with regular CI/CD runs but uses `0.x.y` versioning indicating potential breaking changes before 1.0.0. RealClaw pins to a specific version and monitors the project's changelog for breaking changes. Defense-in-depth measures (egress proxy, credential isolation, content scanning) ensure that sandbox failures do not result in credential exposure or unauthorized network access.
+**Runtime Maturity Note:** The Anthropic Sandbox Runtime (`@anthropic-ai/sandbox-runtime`) is currently at version 0.0.35 and is labeled as a "Beta Research Preview." The project is actively maintained with regular CI/CD runs but uses `0.x.y` versioning indicating potential breaking changes before 1.0.0. OpenKraken pins to a specific version and monitors the project's changelog for breaking changes. Defense-in-depth measures (egress proxy, credential isolation, content scanning) ensure that sandbox failures do not result in credential exposure or unauthorized network access.
 
 ### Platform Path Semantics
 
@@ -672,7 +672,7 @@ The Agent sees a filesystem rooted at `/sandbox/` containing four zones: skills 
 
 ## 10.1 Constitutional Documents Framework
 
-RealClaw implements a three-tier constitutional hierarchy that defines the Agent's identity, boundaries, and operational context. These documents are never materialized in the sandbox filesystem — they are injected directly into the Agent's system prompt by the Gateway at runtime. This design prevents exfiltration of the "Constitution" via file copy operations and ensures the Agent cannot reason about or manipulate its own constraints.
+OpenKraken implements a three-tier constitutional hierarchy that defines the Agent's identity, boundaries, and operational context. These documents are never materialized in the sandbox filesystem — they are injected directly into the Agent's system prompt by the Gateway at runtime. This design prevents exfiltration of the "Constitution" via file copy operations and ensures the Agent cannot reason about or manipulate its own constraints.
 
 ### The Constitutional Hierarchy (Priority Order)
 
@@ -729,7 +729,7 @@ The SAFETY.md document helps the Agent understand why certain constraints exist,
 
 ### AGENTS.md: Owner Configuration (Following the AGENTS.md Standard)
 
-RealClaw follows the AGENTS.md standard (https://agents.md/) — an open format for guiding AI agents, stewarded by the Agentic AI Foundation under the Linux Foundation. This document provides operational context specific to the Owner's deployment. The AGENTS.md standard is widely adopted across the AI coding agent ecosystem with support from OpenAI Codex, Google Jules, Cursor, Aider, and over 60,000 open-source projects.
+OpenKraken follows the AGENTS.md standard (https://agents.md/) — an open format for guiding AI agents, stewarded by the Agentic AI Foundation under the Linux Foundation. This document provides operational context specific to the Owner's deployment. The AGENTS.md standard is widely adopted across the AI coding agent ecosystem with support from OpenAI Codex, Google Jules, Cursor, Aider, and over 60,000 open-source projects.
 
 **Expected AGENTS.md Sections:**
 - **Dev Environment Tips:** Commands and conventions specific to this deployment
@@ -737,7 +737,7 @@ RealClaw follows the AGENTS.md standard (https://agents.md/) — an open format 
 - **Operational Notes:** Common issues and their resolutions
 - **Configuration Guidelines:** How to customize the Agent's behavior
 
-**Nesting Support:** In a monorepo context, AGENTS.md files can be placed in subdirectories for specialized configurations. RealClaw follows this pattern where applicable.
+**Nesting Support:** In a monorepo context, AGENTS.md files can be placed in subdirectories for specialized configurations. OpenKraken follows this pattern where applicable.
 
 ### Document Injection Mechanism
 
@@ -758,7 +758,7 @@ This ensures that the Agent's immutable identity (SOUL.md) is never overridden b
 
 ## 10.2 Operational Concerns and Best Practices
 
-RealClaw is designed for single-tenant, owner-operated deployment. While the architecture document focuses on foundational design rather than operational procedures, the following best practices inform the implementation and should be documented in the operational handbook.
+OpenKraken is designed for single-tenant, owner-operated deployment. While the architecture document focuses on foundational design rather than operational procedures, the following best practices inform the implementation and should be documented in the operational handbook.
 
 ### Health Checks and Readiness Monitoring
 

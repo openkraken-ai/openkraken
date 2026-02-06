@@ -1,4 +1,4 @@
-# TechSpec.md: RealClaw Technical Specification
+# TechSpec.md: OpenKraken Technical Specification
 
 **Document Version:** 1.0.0  
 **Generated:** 2026-02-04  
@@ -9,7 +9,7 @@
 
 ## 1. Stack Specification
 
-This section defines the concrete technology stack for RealClaw, specifying exact versions to ensure reproducibility and prevent supply chain attacks. All dependencies are pinned to specific versions; deviations require explicit architectural review and ADR documentation.
+This section defines the concrete technology stack for OpenKraken, specifying exact versions to ensure reproducibility and prevent supply chain attacks. All dependencies are pinned to specific versions; deviations require explicit architectural review and ADR documentation.
 
 ### 1.1 Core Runtime and Language
 
@@ -84,7 +84,7 @@ The Orchestrator runs on Bun 1.3.8 rather than Node.js. Bun provides native SQLi
 The architecture defines five distinct persistence requirements: LangGraph checkpoints, message logs, semantic memory, audit logs, and proxy access logs. Each could theoretically use different database files. However, unified persistence simplifies backup operations (single file), reduces operational complexity, enables cross-table queries (correlating audit events with messages), and ensures ACID guarantees across related data.
 
 **Decision:**
-All persistent state uses a single SQLite database file (`realclaw.db`) with multiple tables. Write-Ahead Logging (WAL) mode is enabled via `PRAGMA journal_mode = WAL`. Tables include: `checkpoints`, `writes` (LangGraph state), `threads`, `messages` (conversation history), `memories`, `memories_embeddings` (semantic memory), `audit_events` (security events), and `proxy_logs` (network access logs). WAL mode enables concurrent reads while maintaining durability.
+All persistent state uses a single SQLite database file (`openkraken.db`) with multiple tables. Write-Ahead Logging (WAL) mode is enabled via `PRAGMA journal_mode = WAL`. Tables include: `checkpoints`, `writes` (LangGraph state), `threads`, `messages` (conversation history), `memories`, `memories_embeddings` (semantic memory), `audit_events` (security events), and `proxy_logs` (network access logs). WAL mode enables concurrent reads while maintaining durability.
 
 **Consequences:**
 - **Positive:** Single backup/restore mechanism using Bun's `db.serialize()` API. ACID transactions across all tables. WAL mode prevents writer starvation during read-heavy workloads. Cross-table queries enable correlation of audit events with conversation context. Bun's native `bun:sqlite` module eliminates external driver dependencies.
@@ -114,7 +114,7 @@ The Egress Gateway operates in a chained architecture with the Sandbox Runtime's
 Agent state must survive Orchestrator restarts without data loss. LangGraph provides multiple checkpointer implementations (Memory, SQLite, Redis). The standard `SqliteCheckpointer` depends on `better-sqlite3`, which requires N-API FFI. Bun's JavaScriptCore runtime does not support N-API, making `better-sqlite3` incompatible (Bun issue #10655).
 
 **Decision:**
-The Orchestrator uses SkrOYC's `bun-sqlite-checkpointer`—a custom Bun-native implementation using `bun:sqlite` directly, avoiding FFI entirely. The checkpointer stores state in the `realclaw.db` database using the `checkpoints` and `writes` tables. WAL mode ensures concurrent access.
+The Orchestrator uses SkrOYC's `bun-sqlite-checkpointer`—a custom Bun-native implementation using `bun:sqlite` directly, avoiding FFI entirely. The checkpointer stores state in the `openkraken.db` database using the `checkpoints` and `writes` tables. WAL mode ensures concurrent access.
 
 **Consequences:**
 - **Positive:** Zero FFI dependency. Full compatibility with Bun's JavaScriptCore runtime. Zero additional infrastructure. State survives restarts automatically. LangGraph handles checkpoint serialization/deserialization. Supports state rollback for debugging.
@@ -131,12 +131,12 @@ Credentials must never be exposed to the Agent or written to persistent storage.
 **Decision:**
 Credentials retrieved from OS-level vaults at Orchestrator startup. The Orchestrator implements a `CredentialVault` abstraction with platform-specific implementations: macOS uses Keychain Services API, Linux uses secret-service API (compatible with GNOME Keyring, KWallet, pass). Credentials cached in memory for process duration, never written to logs or filesystem.
 
-**Environment Variable Fallback:** When `REALCLAW_ENV=development` is explicitly set, the CredentialVault falls back to environment variables. This is intended for local development only. A WARNING is logged on every credential retrieval when using env var fallback.
+**Environment Variable Fallback:** When `OPENKRAKEN_ENV=development` is explicitly set, the CredentialVault falls back to environment variables. This is intended for local development only. A WARNING is logged on every credential retrieval when using env var fallback.
 
 **Consequences:**
 - **Positive:** Credentials protected by platform security mechanisms in production. No plaintext credential storage. Credential rotation supported via re-reading from vault. Dev-mode fallback enables rapid local iteration.
 - **Negative:** Platform vault complexity. macOS Keychain requires appropriate access groups. Linux secret-service requires D-Bus session bus. Initial credential provisioning requires Owner action.
-- **Mitigation:** Provide CLI commands for credential provisioning (`realclaw credentials set`). Document platform-specific setup requirements. Log warnings when using env var fallback. Enforce vault-only in production by default.
+- **Mitigation:** Provide CLI commands for credential provisioning (`openkraken credentials set`). Document platform-specific setup requirements. Log warnings when using env var fallback. Enforce vault-only in production by default.
 
 ---
 
@@ -146,7 +146,7 @@ This section defines the physical database schema using Mermaid ERD syntax. All 
 
 ### 3.1 Checkpoints Tables
 
-Stores LangGraph agent state persistence within `realclaw.db`. Two-table schema compatible with custom bun-sqlite-checkpointer, using BLOB serialization and composite primary keys.
+Stores LangGraph agent state persistence within `openkraken.db`. Two-table schema compatible with custom bun-sqlite-checkpointer, using BLOB serialization and composite primary keys.
 
 ```mermaid
 erDiagram
@@ -237,7 +237,7 @@ PRAGMA journal_mode=WAL;
 
 ### 3.2 Message Log Tables
 
-Stores cross-session conversation history for context injection and audit purposes within `realclaw.db`.
+Stores cross-session conversation history for context injection and audit purposes within `openkraken.db`.
 
 ```mermaid
 erDiagram
@@ -267,7 +267,7 @@ erDiagram
 - `thread_id`: The thread ID IS the date (YYYY-MM-DD format). New day = new thread context, eliminating the separate date column.
 - `role`: Constrained to "user", "assistant", "system", "tool" values.
 - `content_type`: Supports "text", "image", "file", "tool_call", "tool_result".
-- `content`: Encrypted using AES-256-GCM before storage in `realclaw.db`. Decrypted on retrieval.
+- `content`: Encrypted using AES-256-GCM before storage in `openkraken.db`. Decrypted on retrieval.
 - `metadata`: JSON object storing attachments (filename, MIME type, size), tool outputs, and delivery status.
 - `token_count`: Estimated via tokenizer. Used for context window management.
 - **Index:** `(thread_id, created_at)` on `messages` for chronological retrieval.
@@ -275,7 +275,7 @@ erDiagram
 
 ### 3.3 Semantic Memory Tables
 
-Stores long-term semantic memories for the RMM Memory middleware integration within `realclaw.db`. Sensitive content and metadata fields are encrypted using AES-256-GCM before storage.
+Stores long-term semantic memories for the RMM Memory middleware integration within `openkraken.db`. Sensitive content and metadata fields are encrypted using AES-256-GCM before storage.
 
 ```mermaid
 erDiagram
@@ -298,7 +298,7 @@ erDiagram
 
 ### 3.4 Audit Log Tables
 
-Stores security-relevant events for compliance and debugging within `realclaw.db`.
+Stores security-relevant events for compliance and debugging within `openkraken.db`.
 
 ```mermaid
 erDiagram
@@ -337,7 +337,7 @@ erDiagram
 
 ### 3.5 Proxy Access Log Tables
 
-Stores network egress requests for security auditing within `realclaw.db`.
+Stores network egress requests for security auditing within `openkraken.db`.
 
 ```mermaid
 erDiagram
@@ -388,10 +388,10 @@ erDiagram
 
 ## 4. API Contract
 
-RealClaw implements the **Open Responses API** as its primary interface contract. This positions RealClaw as an Open Responses Provider, enabling ecosystem compatibility while maintaining its unique deterministic, sandboxed execution model. Telegram and other input sources are implemented as adapters that convert platform-specific protocols to Open Responses input items.
+OpenKraken implements the **Open Responses API** as its primary interface contract. This positions OpenKraken as an Open Responses Provider, enabling ecosystem compatibility while maintaining its unique deterministic, sandboxed execution model. Telegram and other input sources are implemented as adapters that convert platform-specific protocols to Open Responses input items.
 
 **Open Responses Alignment:**
-- RealClaw is an **Open Responses Provider** - any Open Responses-compatible client can consume it
+- OpenKraken is an **Open Responses Provider** - any Open Responses-compatible client can consume it
 - The agent loop implements the **agentic loop** pattern (reasoning → tool call → result → continue)
 - State management uses **thread_id** and **previous_response_id** mapping to LangGraph checkpoints
 - Streaming follows the **semantic event model** (not raw text deltas)
@@ -411,10 +411,10 @@ RealClaw implements the **Open Responses API** as its primary interface contract
 ```yaml
 openapi: 3.0.3
 info:
-  title: RealClaw Open Responses API
+  title: OpenKraken Open Responses API
   version: 1.0.0
-  description: Open Responses Provider API for RealClaw agent runtime
-  x-realclaw-version: "1.0.0"
+  description: Open Responses Provider API for OpenKraken agent runtime
+  x-openkraken-version: "1.0.0"
 
 paths:
   /v1/responses:
@@ -480,7 +480,7 @@ paths:
                             type: boolean
                             description: Enforce strict parameter matching
                     required: [name, type]
-                  description: Available tools. RealClaw provides built-in tools (file, terminal, browser, etc.).
+                  description: Available tools. OpenKraken provides built-in tools (file, terminal, browser, etc.).
                 tool_choice:
                   type: string
                   enum: [auto, none, required]
@@ -514,8 +514,8 @@ paths:
                   type: boolean
                   default: true
                   description: Stream response as SSE events.
-                # RealClaw Provider-Specific Extensions
-                realclaw:
+                # OpenKraken Provider-Specific Extensions
+                openkraken:
                   type: object
                   properties:
                     sandbox:
@@ -667,8 +667,8 @@ components:
                   type: boolean
                   default: true
                   description: Stream response as SSE events.
-                # RealClaw Provider-Specific Extensions
-                realclaw:
+                # OpenKraken Provider-Specific Extensions
+                openkraken:
                   type: object
                   properties:
                     sandbox:
@@ -760,7 +760,7 @@ components:
 
 #### 4.1.2 Streaming Events (SSE)
 
-RealClaw streams events following the Open Responses semantic event model:
+OpenKraken streams events following the Open Responses semantic event model:
 
 ```yaml
 components:
@@ -804,9 +804,9 @@ components:
         - response.tool_call.done
         # State
         - response.state
-        # RealClaw-Specific Events (colon-prefixed per spec)
-        - realclaw:sandbox.started
-        - realclaw:checkpoint.created
+        # OpenKraken-Specific Events (colon-prefixed per spec)
+        - openkraken:sandbox.started
+        - openkraken:checkpoint.created
 ```
 
 **Event Sequence Numbers:**
@@ -815,18 +815,18 @@ All events include a `sequence_number` field for ordering. Sequence numbers star
 **Terminal Event:**
 Streaming responses end with a `[DONE]` literal string (no JSON payload) per Open Responses specification.
 
-**RealClaw-Specific Extensions:**
-RealClaw extends the Open Responses protocol with custom events prefixed with `realclaw:`:
-- `realclaw:sandbox.started`: Emitted when sandbox initialization completes
-- `realclaw:checkpoint.created`: Emitted when state checkpoint is persisted
+**OpenKraken-Specific Extensions:**
+OpenKraken extends the Open Responses protocol with custom events prefixed with `openkraken:`:
+- `openkraken:sandbox.started`: Emitted when sandbox initialization completes
+- `openkraken:checkpoint.created`: Emitted when state checkpoint is persisted
 
 **Output Item Status Machine:**
 Output items transition through states:
 - `in_progress`: Item being constructed
 - `completed`: Item fully formed
 - `incomplete`: Response truncated or interrupted
-        - realclaw.sandbox.terminated
-        - realclaw.checkpoint.created
+        - openkraken.sandbox.terminated
+        - openkraken.checkpoint.created
 ```
 
 **Example SSE Stream:**
@@ -846,7 +846,7 @@ data: {"tool_call_id": "tool_1", "function": {"name": "read_file", "arguments": 
 event: response.tool_call.result
 data: {"tool_call_id": "tool_1", "content": "file contents..."}
 
-event: realclaw:checkpoint.created
+event: openkraken:checkpoint.created
 data: {"checkpoint_id": "cp_abc123", "thread_id": "thread_telegram_123"}
 
 event: response.completed
@@ -855,7 +855,7 @@ data: {"response_id": "resp_abc123", "status": "completed"}
 
 #### 4.1.3 Error Response Schema
 
-RealClaw returns errors following the Open Responses error format:
+OpenKraken returns errors following the Open Responses error format:
 
 ```yaml
 components:
@@ -887,9 +887,9 @@ ErrorTypes:
   - permission_error
   - rate_limit_error
   - service_unavailable_error
-  - realclaw_sandbox_error
-  - realclaw_policy_violation
-  - realclaw_checkpointer_error
+  - openkraken_sandbox_error
+  - openkraken_policy_violation
+  - openkraken_checkpointer_error
 ```
 
 **Common Error Codes:**
@@ -900,18 +900,18 @@ ErrorTypes:
 | `permission_error` | Policy violation or access denied |
 | `rate_limit_error` | Request rate limit exceeded |
 | `service_unavailable_error` | Backend service unavailable |
-| `realclaw_sandbox_error` | Sandbox initialization or execution failed |
-| `realclaw_policy_violation` | Content policy violation detected |
-| `realclaw_checkpointer_error` | State persistence failed |
+| `openkraken_sandbox_error` | Sandbox initialization or execution |
+| `openkraken_policy_violation` | Content policy violation detected |
+| `openkraken_checkpointer_error` | State persistence failed |
 
 #### 4.1.4 Tool Definitions (Open Responses Format)
 
-RealClaw exposes its capabilities as Open Responses tools:
+OpenKraken exposes its capabilities as Open Responses tools:
 
 ```yaml
 components:
   schemas:
-    RealClawTool:
+    OpenKrakenTool:
       type: object
       properties:
         name:
@@ -951,7 +951,7 @@ components:
               default: true
 ```
 
-**RealClaw Built-in Tools:**
+**OpenKraken Built-in Tools:**
 ```yaml
 tools:
   - name: read_file
@@ -1044,7 +1044,7 @@ tools:
 
 ### 4.2 Input Adapters
 
-RealClaw separates input sources from the API layer. Telegram, future web interfaces, and other inputs are adapters that convert platform-specific protocols to Open Responses input items.
+OpenKraken separates input sources from the API layer. Telegram, future web interfaces, and other inputs are adapters that convert platform-specific protocols to Open Responses input items.
 
 #### 4.2.1 Telegram Adapter
 
@@ -1106,7 +1106,7 @@ paths:
 
 #### 4.2.2 Future Input Adapters
 
-RealClaw's architecture supports additional input adapters:
+OpenKraken's architecture supports additional input adapters:
 
 - **Web UI Adapter:** Browser-based chat interface → Open Responses input
 - **MCP Adapter:** MCP protocol → Open Responses input (existing)
@@ -1234,7 +1234,7 @@ paths:
 The following directory structure enforces Clean Architecture principles. Business logic is isolated from infrastructure concerns. The structure supports horizontal scaling of components while maintaining clear boundaries.
 
 ```
-realclaw/
+openkraken/
 ├── README.md
 ├── AGENTS.md
 ├── PRD.md
@@ -1247,8 +1247,8 @@ realclaw/
 │   ├── flake.nix
 │   ├── flake.lock
 │   └── nixos-modules/
-│       ├── realclaw.nix
-│       └── realclaw-darwin.nix
+│       ├── openkraken.nix
+│       └── openkraken-darwin.nix
 └── src/
     ├── main.ts                    # Application entry point
     ├── orchestrator/              # Bun-based Orchestrator
@@ -1367,7 +1367,7 @@ realclaw/
     │
     └── storage/                   # Runtime data (managed by Nix)
         ├── data/
-        │   └── realclaw.db       # Unified SQLite database (checkpoints, messages, memories, audit, proxy)
+        │   └── openkraken.db       # Unified SQLite database (checkpoints, messages, memories, audit, proxy)
         ├── cache/
         │   ├── browser/
         │   │   └── (isolated profiles per session)
@@ -1817,26 +1817,26 @@ The Orchestrator reads configuration from environment variables set by the Platf
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `REALCLAW_ENV` | No | `production` | Runtime environment: `production` (vault-only credentials) or `development` (env var fallback with WARNING logs) |
-| `REALCLAW_HOME` | Yes | - | Platform-appropriate data directory |
-| `REALCLAW_CONFIG` | No | `$REALCLAW_HOME/config.yaml` | Configuration file path |
-| `REALCLAW_LOG_LEVEL` | No | `INFO` | Logging verbosity |
-| `REALCLAW_SANDBOX_PATH` | No | Platform default | Sandbox binary location |
-| `REALCLAW_GATEWAY_URL` | No | `http://127.0.0.1:3001` | Egress gateway URL |
-| `REALCLAW_TELEGRAM_TOKEN` | Yes* | - | Telegram bot token (Keychain/macOS, secret-service/Linux) |
-| `REALCLAW_ANTHROPIC_API_KEY` | Yes* | - | Anthropic API key (Keychain/secret-service) |
-| `REALCLAW_VERCEL_API_KEY` | No | - | Vercel Agent Browser API key |
-| `REALCLAW_EXA_API_KEY` | No | - | Exa API key for web search |
-| `REALCLAW_MCP_SERVERS` | No | - | JSON array of MCP server configurations |
+| `OPENKRAKEN_ENV` | No | `production` | Runtime environment: `production` (vault-only credentials) or `development` (env var fallback with WARNING logs) |
+| `OPENKRAKEN_HOME` | Yes | - | Platform-appropriate data directory |
+| `OPENKRAKEN_CONFIG` | No | `$OPENKRAKEN_HOME/config.yaml` | Configuration file path |
+| `OPENKRAKEN_LOG_LEVEL` | No | `INFO` | Logging verbosity |
+| `OPENKRAKEN_SANDBOX_PATH` | No | Platform default | Sandbox binary location |
+| `OPENKRAKEN_GATEWAY_URL` | No | `http://127.0.0.1:3001` | Egress gateway URL |
+| `OPENKRAKEN_TELEGRAM_TOKEN` | Yes* | - | Telegram bot token (Keychain/macOS, secret-service/Linux) |
+| `OPENKRAKEN_ANTHROPIC_API_KEY` | Yes* | - | Anthropic API key (Keychain/secret-service) |
+| `OPENKRAKEN_VERCEL_API_KEY` | No | - | Vercel Agent Browser API key |
+| `OPENKRAKEN_EXA_API_KEY` | No | - | Exa API key for web search |
+| `OPENKRAKEN_MCP_SERVERS` | No | - | JSON array of MCP server configurations |
 
 *Required for respective integrations. May be empty if integration not configured.
 
 ### 6.2 Configuration File Schema
 
-The Orchestrator reads configuration from a YAML file at `$REALCLAW_CONFIG`.
+The Orchestrator reads configuration from a YAML file at `$OPENKRAKEN_CONFIG`.
 
 ```yaml
-# RealClaw Configuration Schema v1.0
+# OpenKraken Configuration Schema v1.0
 version: "1.0"
 
 orchestrator:
@@ -1931,12 +1931,12 @@ observability:
     exportIntervalSeconds: 15
 
 storage:
-  directory: "${REALCLAW_HOME}/data"
+  directory: "${OPENKRAKEN_HOME}/data"
   backup:
     enabled: true
     schedule: "0 3 * * *"  # Daily at 3 AM
     retentionDays: 7
-    # Single database file backup (realclaw.db contains all tables)
+    # Single database file backup (openkraken.db contains all tables)
 ```
 
 ## 7. Performance Requirements
@@ -2028,7 +2028,7 @@ The Platform Manager uses Nix Flakes for reproducible builds across Linux and ma
 
 ```nix
 {
-  description = "RealClaw - Deterministic Security-First Agentic Runtime";
+  description = "OpenKraken - Deterministic Security-First Agentic Runtime";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
@@ -2045,14 +2045,14 @@ The Platform Manager uses Nix Flakes for reproducible builds across Linux and ma
         };
       in
       {
-        packages.realclaw-orchestrator = pkgs.callPackage ./nix/package.nix { };
-        packages.realclaw-gateway = pkgs.callPackage ./nix/gateway-package.nix { };
-        packages.default = self.packages.${system}.realclaw-orchestrator;
+        packages.openkraken-orchestrator = pkgs.callPackage ./nix/package.nix { };
+        packages.openkraken-gateway = pkgs.callPackage ./nix/gateway-package.nix { };
+        packages.default = self.packages.${system}.openkraken-orchestrator;
 
         devShells.default = pkgs.callPackage ./nix/shell.nix { };
 
-        nixosModules.realclaw = import ./nix/nixos-modules/realclaw.nix;
-        darwinModules.realclaw = import ./nix/darwin-modules/realclaw.nix;
+        nixosModules.openkraken = import ./nix/nixos-modules/openkraken.nix;
+        darwinModules.openkraken = import ./nix/darwin-modules/openkraken.nix;
       }
     );
 }
@@ -2063,14 +2063,14 @@ The Platform Manager uses Nix Flakes for reproducible builds across Linux and ma
 **Linux (systemd):**
 ```ini
 [Unit]
-Description=RealClaw Orchestrator
+Description=OpenKraken Orchestrator
 After=network.target
 
 [Service]
 Type=simple
-User=realclaw
-Environment=REALCLAW_HOME=/var/lib/realclaw
-ExecStart=/nix/store/realclaw-orchestrator/bin/realclaw
+User=openkraken
+Environment=OPENKRAKEN_HOME=/var/lib/openkraken
+ExecStart=/nix/store/openkraken-orchestrator/bin/openkraken
 Restart=always
 RestartSec=10
 
@@ -2085,15 +2085,15 @@ WantedBy=multi-user.target
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.realclaw.orchestrator</string>
+  <string>com.openkraken.orchestrator</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/nix/store/realclaw-orchestrator/bin/realclaw</string>
+    <string>/nix/store/openkraken-orchestrator/bin/openkraken</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>REALCLAW_HOME</key>
-    <string>/Users/owner/Library/Application Support/RealClaw</string>
+    <key>OPENKRAKEN_HOME</key>
+    <string>/Users/owner/Library/Application Support/OpenKraken</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>
