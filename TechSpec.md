@@ -24,7 +24,7 @@ This section defines the concrete technology stack for RealClaw, specifying exac
 
 | Component | Version | Justification |
 |-----------|---------|---------------|
-| **LangChain.js** | 1.2.17 (bindings) / 1.1.19 (core) | Stable v1 API with TypeScript bindings. Provides canonical `createAgent()` entry point. Extensive middleware ecosystem. Production-ready with active maintenance. Core library (@langchain/core) at 1.1.19 provides base abstractions. |
+| **LangChain.js** | 1.2.18 (bindings) / 1.1.19 (core) | Stable v1 API with TypeScript bindings. Provides canonical `createAgent()` entry point. Extensive middleware ecosystem. Production-ready with active maintenance. Core library (@langchain/core) at 1.1.19 provides base abstractions. Uses SkrOYC's custom bun-sqlite-checkpointer for LangGraph state persistence (Bun-native, avoiding better-sqlite3 FFI issues). |
 | **LangGraph.js** | 1.1.2 | Stateful workflow management. Enables checkpoint persistence and state rollback. Used as peer dependency by LangChain bindings. |
 | **@langchain/mcp-adapters** | 1.1.2 | Model Context Protocol integration. Handles connection lifecycle and capability negotiation transparently. |
 
@@ -33,20 +33,21 @@ This section defines the concrete technology stack for RealClaw, specifying exac
 | Component | Version | Justification |
 |-----------|---------|---------------|
 | **grammY** | 1.39.3 | Supports Telegram Bot API 9.3 (December 2025 release). Type-safe Telegram protocol handling with webhook verification built-in. |
-| **@anthropic-ai/sandbox-runtime** | 0.0.35 | Cross-platform process isolation using bubblewrap (Linux) and sandbox-exec (macOS). Unified configuration interface across platforms. Beta Research Preview—pins to specific version. |
-| **Vercel Agent Browser** | 0.9.0 | Headless browser automation with CDP protocol support. Isolated profiles per session with proxy enforcement. |
+| **@anthropic-ai/sandbox-runtime** | 0.0.34 | Cross-platform process isolation using bubblewrap (Linux) and sandbox-exec (macOS). Unified configuration interface across platforms. Beta Research Preview—pins to specific version. Configured for chained proxy architecture (httpProxyPort/socksProxyPoint) to route traffic through Egress Gateway. |
+| **Vercel Agent Browser** | 0.9.1 | Headless browser automation with CDP protocol support. Isolated profiles per session with proxy enforcement. |
 
 ### 1.4 Data Persistence
 
 | Component | Version | Justification |
 |-----------|---------|---------------|
 | **SQLite** | 3.x (bundled with Bun runtime) | Native SQLite via Bun.sqlite module. Write-Ahead Logging (WAL) mode for concurrent access. Zero-configuration persistence. |
+| **Encryption** | AES-256-GCM (application-level) | Application-level encryption for sensitive memory fields. SQLCipher is incompatible with Bun's embedded SQLite. Memory content and metadata columns are encrypted before INSERT and decrypted after SELECT using Node.js crypto module (Bun-compatible). Filesystem-level encryption (LUKS/FileVault) provides defense-in-depth.
 
 ### 1.5 Infrastructure and Build
 
 | Component | Version | Justification |
 |-----------|---------|---------------|
-| **Nix** | 2.31.3 (latest stable) | Reproducible builds via Nix Flakes. Cross-platform package management. |
+| **Nix** | 2.33.2 (latest stable) | Reproducible builds via Nix Flakes. Cross-platform package management. |
 | **nixpkgs** | 25.11 (stable channel) | Declarative system configuration. Generates systemd units (Linux) and launchd plists (macOS). |
 | **Egress Gateway** | Go 1.25.6 | Systems programming language for network proxy. Selected for faster implementation velocity, simpler concurrency (goroutines), and mature HTTP CONNECT proxy ecosystem. |
 
@@ -75,54 +76,54 @@ The Orchestrator runs on Bun 1.3.8 rather than Node.js. Bun provides native SQLi
 - **Negative:** ~5% of npm packages lack Bun native support, requiring Node.js compatibility layer. Some packages may exhibit unexpected behavior in Bun's JavaScriptCore runtime. Team must monitor Bun ecosystem maturity.
 - **Mitigation:** Runtime includes automatic Node.js compatibility detection. Packages with known incompatibilities documented in `BUN_COMPAT.md`. CI/CD validates all package installations on Bun before deployment.
 
-### ADR-002: SQLite with WAL Mode for All Persistent State
+### ADR-002: Unified SQLite Database for All Persistent State
 
-**Title:** Unified SQLite Persistence Strategy
+**Title:** Single Database File with Multiple Tables
 
 **Context:**
-The architecture defines five distinct persistence requirements: LangGraph checkpoints, message logs, semantic memory, audit logs, and proxy access logs. Each could theoretically use different storage backends. However, unified persistence simplifies backup operations, reduces operational complexity, and ensures ACID guarantees across related data.
+The architecture defines five distinct persistence requirements: LangGraph checkpoints, message logs, semantic memory, audit logs, and proxy access logs. Each could theoretically use different database files. However, unified persistence simplifies backup operations (single file), reduces operational complexity, enables cross-table queries (correlating audit events with messages), and ensures ACID guarantees across related data.
 
 **Decision:**
-All persistent state uses SQLite databases with Write-Ahead Logging (WAL) mode enabled via `PRAGMA journal_mode = WAL`. Each data type maps to a dedicated database file for isolation: `checkpoints.db` (agent state), `messages.db` (conversation history), `memory.db` (semantic memories), `audit.db` (security events), and `proxy.db` (network access logs). WAL mode enables concurrent reads while maintaining durability.
+All persistent state uses a single SQLite database file (`realclaw.db`) with multiple tables. Write-Ahead Logging (WAL) mode is enabled via `PRAGMA journal_mode = WAL`. Tables include: `checkpoints`, `writes` (LangGraph state), `threads`, `messages` (conversation history), `memories`, `memories_embeddings` (semantic memory), `audit_events` (security events), and `proxy_logs` (network access logs). WAL mode enables concurrent reads while maintaining durability.
 
 **Consequences:**
-- **Positive:** Single backup/restore mechanism for all data using Bun's `db.serialize()` API. ACID transactions across related tables within each database. WAL mode prevents writer starvation during read-heavy workloads. Bun's native module eliminates external driver dependencies.
-- **Negative:** SQLite's write throughput limits apply (typically 60-100 MB/s sequential). Synchronous API means blocking calls (acceptable for local I/O). Database file corruption possible on system crashes (mitigated by WAL mode and regular integrity checks).
+- **Positive:** Single backup/restore mechanism using Bun's `db.serialize()` API. ACID transactions across all tables. WAL mode prevents writer starvation during read-heavy workloads. Cross-table queries enable correlation of audit events with conversation context. Bun's native `bun:sqlite` module eliminates external driver dependencies.
+- **Negative:** Database file corruption possible on system crashes (mitigated by WAL mode and regular integrity checks). Single file means entire state affected by corruption.
 - **Mitigation:** Daily automated backups using Bun's `db.serialize()` to Buffer then file write. 7-day retention with compressed archives. Integrity checks during backup using `PRAGMA integrity_check`. Owner recovery commands available. Monitor database size and implement cleanup policies for audit and proxy logs.
 
-### ADR-003: Egress Gateway Implementation Language
+### ADR-003: Chained Egress Proxy Architecture
 
-**Title:** Go 1.25.6 for Egress Gateway
-
-**Context:**
-The Egress Gateway requires systems programming for HTTP CONNECT proxy implementation with high throughput and low latency. Both Go 1.25.6 and Rust 1.93.0 provide suitable runtime characteristics. Go offers simpler concurrency (goroutines) and mature HTTP proxy libraries. Rust provides memory safety guarantees and potentially superior performance but requires more complex error handling.
-
-**Decision:**
-**Go 1.25.6.** The Egress Gateway is implemented as a Go binary. Go is selected for faster implementation velocity, simpler concurrency model via goroutines, mature HTTP CONNECT proxy ecosystem (e.g., golang.org/x/net/proxy), and existing team expertise. Performance is sufficient for single-tenant personal agent workloads.
-
-**Consequences:**
-- **Positive:** Faster implementation. Simpler error handling. Mature HTTP proxy libraries. Easier debugging with standard Go tools.
-- **Negative:** No memory safety guarantees at compile time (mitigated by Go's GC and race detector). Lower performance ceiling than Rust (acceptable for single-tenant workload).
-- **Mitigation:** Comprehensive test coverage including race conditions. Static analysis with golangci-lint. Memory profiling in development.
-
-### ADR-004: LangGraph SqliteCheckpointer for State Persistence
-
-**Title:** LangGraph SqliteCheckpointer for Durable Agent State
+**Title:** Go Egress Gateway in Chained Configuration with Sandbox Runtime Proxy
 
 **Context:**
-Agent state must survive Orchestrator restarts without data loss. LangGraph provides multiple checkpointer implementations (Memory, SQLite, Redis). Memory checkpointer loses state on restart. Redis requires external infrastructure. SQLite provides durable persistence without additional dependencies.
+The Egress Gateway requires systems programming for HTTP CONNECT proxy implementation with high throughput and low latency. The Anthropic Sandbox Runtime includes built-in HTTP and SOCKS5 proxy servers with domain allowlisting. Both components provide network filtering capabilities, creating potential for architectural overlap or redundancy.
 
 **Decision:**
-The Orchestrator uses LangGraph's `SqliteCheckpointer` for all agent state persistence. The checkpointer stores state in `checkpoints.db` using a two-table schema: `checkpoints` (state snapshots) and `writes` (intermediate state modifications). WAL mode ensures concurrent access during normal operation.
+The Egress Gateway operates in a chained architecture with the Sandbox Runtime's built-in proxy. The Sandbox is configured with `httpProxyPort` and `socksProxyPort` pointing to the Go Egress Gateway. All sandbox traffic routes through the Go proxy, which enforces the domain allowlist and logs connection attempts to SQLite. This provides defense-in-depth: the Sandbox handles platform-specific network isolation (Linux namespaces, macOS Seatbelt), while the Go proxy provides structured audit logging and dynamic allowlist management API.
 
 **Consequences:**
-- **Positive:** Zero additional infrastructure. State survives restarts automatically. LangGraph handles checkpoint serialization/deserialization. Supports state rollback for debugging.
-- **Negative:** Checkpoint size grows with conversation history. Requires periodic cleanup or truncation. SqliteCheckpointer may not support all LangGraph advanced features (verified compatible with v1.1.3).
-- **Mitigation:** Implement checkpoint size limits (configurable, default 10MB). Provide manual checkpoint cleanup commands. Monitor checkpoint growth rate.
+- **Positive:** Defense-in-depth with two independent enforcement layers. Sandbox handles hard platform-specific isolation. Go proxy provides audit logging to SQLite, structured JSON errors, and dynamic allowlist management API. Clear separation of concerns.
+- **Negative:** Two proxy hops add negligible latency for single-tenant workloads. Slightly more complex configuration. Requires both components to be healthy.
+- **Mitigation:** Monitor both proxy health endpoints. Graceful degradation if Go proxy unavailable (sandbox rejects all egress). Configuration validation at startup.
+
+### ADR-004: Custom Bun-Native Checkpointer Implementation
+
+**Title:** SkrOYC's bun-sqlite-checkpointer for LangGraph State Persistence
+
+**Context:**
+Agent state must survive Orchestrator restarts without data loss. LangGraph provides multiple checkpointer implementations (Memory, SQLite, Redis). The standard `SqliteCheckpointer` depends on `better-sqlite3`, which requires N-API FFI. Bun's JavaScriptCore runtime does not support N-API, making `better-sqlite3` incompatible (Bun issue #10655).
+
+**Decision:**
+The Orchestrator uses SkrOYC's `bun-sqlite-checkpointer`—a custom Bun-native implementation using `bun:sqlite` directly, avoiding FFI entirely. The checkpointer stores state in the `realclaw.db` database using the `checkpoints` and `writes` tables. WAL mode ensures concurrent access.
+
+**Consequences:**
+- **Positive:** Zero FFI dependency. Full compatibility with Bun's JavaScriptCore runtime. Zero additional infrastructure. State survives restarts automatically. LangGraph handles checkpoint serialization/deserialization. Supports state rollback for debugging.
+- **Negative:** Custom implementation requires maintenance as LangGraph evolves. Checkpoint size grows with conversation history.
+- **Mitigation:** Monitor LangGraph releases for checkpointer API changes. Implement checkpoint size limits (configurable, default 10MB). Provide manual checkpoint cleanup commands.
 
 ### ADR-005: OS-Level Credential Vaults
 
-**Title:** Credential Storage in Platform-Native Vaults
+**Title:** Credential Storage in Platform-Native Vaults with Dev-Mode Fallback
 
 **Context:**
 Credentials must never be exposed to the Agent or written to persistent storage. OpenClaw stored API keys in plaintext files, enabling credential exfiltration through prompt injection. The architecture requires runtime credential retrieval from secure storage.
@@ -130,10 +131,12 @@ Credentials must never be exposed to the Agent or written to persistent storage.
 **Decision:**
 Credentials retrieved from OS-level vaults at Orchestrator startup. The Orchestrator implements a `CredentialVault` abstraction with platform-specific implementations: macOS uses Keychain Services API, Linux uses secret-service API (compatible with GNOME Keyring, KWallet, pass). Credentials cached in memory for process duration, never written to logs or filesystem.
 
+**Environment Variable Fallback:** When `REALCLAW_ENV=development` is explicitly set, the CredentialVault falls back to environment variables. This is intended for local development only. A WARNING is logged on every credential retrieval when using env var fallback.
+
 **Consequences:**
-- **Positive:** Credentials protected by platform security mechanisms. No plaintext credential storage. Credential rotation supported via re-reading from vault.
+- **Positive:** Credentials protected by platform security mechanisms in production. No plaintext credential storage. Credential rotation supported via re-reading from vault. Dev-mode fallback enables rapid local iteration.
 - **Negative:** Platform vault complexity. macOS Keychain requires appropriate access groups. Linux secret-service requires D-Bus session bus. Initial credential provisioning requires Owner action.
-- **Mitigation:** Provide CLI commands for credential provisioning (`realclaw credentials set`). Support environment variable fallback for development. Document platform-specific setup requirements.
+- **Mitigation:** Provide CLI commands for credential provisioning (`realclaw credentials set`). Document platform-specific setup requirements. Log warnings when using env var fallback. Enforce vault-only in production by default.
 
 ---
 
@@ -141,9 +144,9 @@ Credentials retrieved from OS-level vaults at Orchestrator startup. The Orchestr
 
 This section defines the physical database schema using Mermaid ERD syntax. All tables use SQLite-compatible types. Primary keys, foreign keys, and critical indices are explicitly defined. Database schema implements the persistence layer defined in [Architecture.md Section 5.3](Architecture.md#53-persistence-layer).
 
-### 3.1 Checkpoints Database (`checkpoints.db`)
+### 3.1 Checkpoints Tables
 
-Stores LangGraph agent state persistence. Two-table schema compatible with LangGraph SqliteCheckpointer specification, using BLOB serialization and composite primary keys.
+Stores LangGraph agent state persistence within `realclaw.db`. Two-table schema compatible with custom bun-sqlite-checkpointer, using BLOB serialization and composite primary keys.
 
 ```mermaid
 erDiagram
@@ -232,26 +235,25 @@ CREATE TABLE writes (
 PRAGMA journal_mode=WAL;
 ```
 
-### 3.2 Message Log Database (`messages.db`)
+### 3.2 Message Log Tables
 
-Stores cross-session conversation history for context injection and audit purposes.
+Stores cross-session conversation history for context injection and audit purposes within `realclaw.db`.
 
 ```mermaid
 erDiagram
     messages {
         text id PK "Message unique identifier (UUID as TEXT)"
-        text thread_id FK "Conversation thread (UUID as TEXT)"
+        text thread_id FK "Conversation thread (YYYY-MM-DD date as ID)"
         text role PK "Message role (user/assistant/system/tool)"
         text content_type "Content type (text/image/file)"
-        text content "Message content"
+        blob content "Encrypted message content (AES-256-GCM)"
         text metadata "JSON metadata as TEXT"
         integer created_at "Unix timestamp"
         integer token_count "Estimated token count"
     }
     
     threads {
-        text id PK "Thread unique identifier (UUID as TEXT)"
-        text date PK "Session date (YYYY-MM-DD)"
+        text id PK "Thread identifier IS the date (YYYY-MM-DD format)"
         text channel "Channel source (telegram/mcp)"
         integer started_at "Session start timestamp"
         integer last_message_at "Last activity timestamp"
@@ -262,38 +264,41 @@ erDiagram
 ```
 
 **Schema Notes:**
-- `thread_id`: Composite with `date` for day-bound sessions. New day = new thread context.
+- `thread_id`: The thread ID IS the date (YYYY-MM-DD format). New day = new thread context, eliminating the separate date column.
 - `role`: Constrained to "user", "assistant", "system", "tool" values.
 - `content_type`: Supports "text", "image", "file", "tool_call", "tool_result".
+- `content`: Encrypted using AES-256-GCM before storage in `realclaw.db`. Decrypted on retrieval.
 - `metadata`: JSON object storing attachments (filename, MIME type, size), tool outputs, and delivery status.
 - `token_count`: Estimated via tokenizer. Used for context window management.
 - **Index:** `(thread_id, created_at)` on `messages` for chronological retrieval.
-- **Index:** `(date, channel)` on `threads` for session querying.
 - **Constraint:** `FOREIGN KEY (thread_id) REFERENCES threads(id)` for referential integrity.
 
-### 3.3 Semantic Memory Database (`memory.db`)
+### 3.3 Semantic Memory Tables
 
-Stores long-term semantic memories for the RMM Memory middleware integration. The middleware handles embedding generation, retrieval, and decay. This database provides persistent storage for the middleware's state.
+Stores long-term semantic memories for the RMM Memory middleware integration within `realclaw.db`. Sensitive content and metadata fields are encrypted using AES-256-GCM before storage.
 
 ```mermaid
 erDiagram
     memories {
         text id PK "Memory unique identifier"
-        text content "Memory text content"
-        text metadata "Middleware-specific metadata (JSON)"
+        blob content "Encrypted memory content (AES-256-GCM ciphertext)"
+        blob metadata "Encrypted metadata (AES-256-GCM ciphertext)"
         integer created_at "Creation timestamp"
         integer last_accessed_at "Last retrieval timestamp"
+        text embedding "Vector embedding reference (stored separately)"
     }
 ```
 
 **Notes:**
 - Database structure matches RMM Memory middleware requirements
+- `content` and `metadata` fields are encrypted using AES-256-GCM before INSERT, decrypted after SELECT
+- Encryption key derived from master key stored in OS-level vault
 - Middleware handles embedding generation, similarity search, and memory decay
 - Integration interface defined by middleware API
 
-### 3.4 Audit Log Database (`audit.db`)
+### 3.4 Audit Log Tables
 
-Stores security-relevant events for compliance and debugging.
+Stores security-relevant events for compliance and debugging within `realclaw.db`.
 
 ```mermaid
 erDiagram
@@ -330,9 +335,9 @@ erDiagram
 - **Index:** `(request_id)` for request tracing.
 - **Retention:** 30-day rolling retention with automatic archival.
 
-### 3.5 Proxy Access Log Database (`proxy.db`)
+### 3.5 Proxy Access Log Tables
 
-Stores network egress requests for security auditing.
+Stores network egress requests for security auditing within `realclaw.db`.
 
 ```mermaid
 erDiagram
@@ -431,16 +436,15 @@ paths:
                   type: array
                   items:
                     type: object
-                    properties:
-                      type:
-                        type: string
-                        enum: [message]
-                      role:
-                        type: string
-                        enum: [user, assistant, system, developer]
-                      content:
-                        type: string
-                  description: Input items (messages). Telegram adapter converts updates to this format.
+                    discriminator:
+                      propertyName: type
+                      mapping:
+                        message: "#/components/schemas/MessageItem"
+                        function_call: "#/components/schemas/FunctionCallItem"
+                        function_call_output: "#/components/schemas/FunctionCallOutputItem"
+                        reasoning: "#/components/schemas/ReasoningItem"
+                        item_reference: "#/components/schemas/ItemReferenceItem"
+                  description: Input items (messages, function calls, etc.). Telegram adapter converts updates to this format.
                 previous_response_id:
                   type: string
                   format: uuid
@@ -472,13 +476,21 @@ paths:
                           parameters:
                             type: object
                             description: JSON Schema for parameters
+                          strict:
+                            type: boolean
+                            description: Enforce strict parameter matching
                     required: [name, type]
                   description: Available tools. RealClaw provides built-in tools (file, terminal, browser, etc.).
                 tool_choice:
                   type: string
-                  enum: [auto, none, any]
+                  enum: [auto, none, required]
                   default: auto
                   description: Controls which tools the model may use.
+                truncation:
+                  type: string
+                  enum: [auto, disabled]
+                  default: auto
+                  description: Context truncation strategy.
                 max_tool_calls:
                   type: integer
                   minimum: 1
@@ -493,6 +505,164 @@ paths:
                   minimum: 0
                   maximum: 2
                   description: Sampling temperature.
+                service_tier:
+                  type: string
+                  enum: [standard, premium]
+                  default: standard
+                  description: Service tier for resource allocation.
+                stream:
+                  type: boolean
+                  default: true
+                  description: Stream response as SSE events.
+                # RealClaw Provider-Specific Extensions
+                realclaw:
+                  type: object
+                  properties:
+                    sandbox:
+                      type: object
+                      properties:
+                        enabled:
+                          type: boolean
+                          default: true
+                        network_isolation:
+                          type: string
+                          enum: [strict, relaxed, none]
+                          default: strict
+                        filesystem_zones:
+                          type: object
+                          properties:
+                            skills:
+                              type: string
+                              default: "/sandbox/skills"
+                            inputs:
+                              type: string
+                              default: "/sandbox/inputs"
+                            work:
+                              type: string
+                              default: "/sandbox/work"
+                            outputs:
+                              type: string
+                              default: "/sandbox/outputs"
+                    determinism:
+                      type: object
+                      properties:
+                        seed:
+                          type: integer
+                          description: Random seed for reproducible execution.
+                        checkpoint_before_tools:
+                          type: boolean
+                          default: true
+                          description: Checkpoint state before each tool call.
+                    session:
+                      type: object
+                      properties:
+                        channel:
+                          type: string
+                          enum: [telegram, debug, api]
+                          default: api
+                        channel_id:
+                          type: string
+                          description: Channel-specific identifier (e.g., Telegram chat_id).
+              required: [input]
+
+components:
+  schemas:
+    MessageItem:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [message]
+        role:
+          type: string
+          enum: [user, assistant, system, developer]
+        content:
+          type: array
+          items:
+            type: object
+            discriminator:
+              propertyName: type
+              mapping:
+                input_text: "#/components/schemas/InputTextContent"
+                input_image: "#/components/schemas/InputImageContent"
+                input_file: "#/components/schemas/InputFileContent"
+    InputTextContent:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [input_text]
+        text:
+          type: string
+    InputImageContent:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [input_image]
+        image_url:
+          type: string
+          format: uri
+    InputFileContent:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [input_file]
+        file_url:
+          type: string
+          format: uri
+        filename:
+          type: string
+        mime_type:
+          type: string
+    FunctionCallItem:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [function_call]
+        name:
+          type: string
+        arguments:
+          type: string
+        function:
+          type: object
+          properties:
+            name:
+              type: string
+    FunctionCallOutputItem:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [function_call_output]
+        name:
+          type: string
+        content:
+          type: string
+        output_type:
+          type: string
+          enum: [string, object, error]
+    ReasoningItem:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [reasoning]
+        content:
+          type: string
+        summary:
+          type: string
+    ItemReferenceItem:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [item_reference]
+        id:
+          type: string
+```
                 stream:
                   type: boolean
                   default: true
@@ -604,6 +774,9 @@ components:
         data:
           type: string
           description: JSON-serialized event data
+        sequence_number:
+          type: integer
+          description: Event sequence number for ordering
     EventTypes:
       type: string
       enum:
@@ -611,23 +784,47 @@ components:
         - response.started
         - response.completed
         - response.failed
-        # Reasoning
+        - response.incomplete
+        # Output Items
+        - response.output_item.added
+        - response.output_item.done
+        # Content Parts
+        - response.content_part.started
+        - response.content_part.done
+        # Text Delta
+        - response.output_text.delta
+        # Reasoning (extended thinking)
         - response.reasoning.start
         - response.reasoning.delta
-        - response.reasoning.summary_text
-        # Messages
-        - response.message.start
-        - response.message.delta
-        - response.message.completed
+        - response.reasoning.done
         # Tool Calls
-        - response.tool_call.start
+        - response.tool_call.started
         - response.tool_call.arguments.delta
         - response.tool_call.result
-        - response.tool_call.completed
+        - response.tool_call.done
         # State
         - response.state
-        # RealClaw-Specific
-        - realclaw.sandbox.started
+        # RealClaw-Specific Events (colon-prefixed per spec)
+        - realclaw:sandbox.started
+        - realclaw:checkpoint.created
+```
+
+**Event Sequence Numbers:**
+All events include a `sequence_number` field for ordering. Sequence numbers start at 0 and increment by 1 for each event.
+
+**Terminal Event:**
+Streaming responses end with a `[DONE]` literal string (no JSON payload) per Open Responses specification.
+
+**RealClaw-Specific Extensions:**
+RealClaw extends the Open Responses protocol with custom events prefixed with `realclaw:`:
+- `realclaw:sandbox.started`: Emitted when sandbox initialization completes
+- `realclaw:checkpoint.created`: Emitted when state checkpoint is persisted
+
+**Output Item Status Machine:**
+Output items transition through states:
+- `in_progress`: Item being constructed
+- `completed`: Item fully formed
+- `incomplete`: Response truncated or interrupted
         - realclaw.sandbox.terminated
         - realclaw.checkpoint.created
 ```
@@ -649,14 +846,65 @@ data: {"tool_call_id": "tool_1", "function": {"name": "read_file", "arguments": 
 event: response.tool_call.result
 data: {"tool_call_id": "tool_1", "content": "file contents..."}
 
-event: realclaw.checkpoint.created
+event: realclaw:checkpoint.created
 data: {"checkpoint_id": "cp_abc123", "thread_id": "thread_telegram_123"}
 
 event: response.completed
 data: {"response_id": "resp_abc123", "status": "completed"}
 ```
 
-#### 4.1.3 Tool Definitions (Open Responses Format)
+#### 4.1.3 Error Response Schema
+
+RealClaw returns errors following the Open Responses error format:
+
+```yaml
+components:
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            message:
+              type: string
+              description: Human-readable error message
+            type:
+              type: string
+              description: Error type classification
+            code:
+              type: string
+              description: Machine-readable error code
+            param:
+              type: string
+              description: Parameter that caused the error
+          required: [message]
+      required: [error]
+
+ErrorTypes:
+  - invalid_request_error
+  - authentication_error
+  - permission_error
+  - rate_limit_error
+  - service_unavailable_error
+  - realclaw_sandbox_error
+  - realclaw_policy_violation
+  - realclaw_checkpointer_error
+```
+
+**Common Error Codes:**
+| Code | Description |
+|------|-------------|
+| `invalid_request_error` | Malformed request or invalid parameters |
+| `authentication_error` | Credential retrieval failed |
+| `permission_error` | Policy violation or access denied |
+| `rate_limit_error` | Request rate limit exceeded |
+| `service_unavailable_error` | Backend service unavailable |
+| `realclaw_sandbox_error` | Sandbox initialization or execution failed |
+| `realclaw_policy_violation` | Content policy violation detected |
+| `realclaw_checkpointer_error` | State persistence failed |
+
+#### 4.1.4 Tool Definitions (Open Responses Format)
 
 RealClaw exposes its capabilities as Open Responses tools:
 
@@ -1119,11 +1367,7 @@ realclaw/
     │
     └── storage/                   # Runtime data (managed by Nix)
         ├── data/
-        │   ├── checkpoints.db
-        │   ├── messages.db
-        │   ├── memory.db
-        │   ├── audit.db
-        │   └── proxy.db
+        │   └── realclaw.db       # Unified SQLite database (checkpoints, messages, memories, audit, proxy)
         ├── cache/
         │   ├── browser/
         │   │   └── (isolated profiles per session)
@@ -1220,6 +1464,72 @@ Contains HTTP handlers, webhook processors, and external protocol implementation
 
 **Bun Native SQLite API:**
 The Orchestrator uses Bun's native `bun:sqlite` module for all database operations. This module provides a synchronous, typesafe SQLite interface with full WAL mode support.
+
+**Application-Level Encryption (AES-256-GCM):**
+Sensitive fields in `messages` and `memories` tables are encrypted using AES-256-GCM before storage and decrypted after retrieval. SQLCipher is incompatible with Bun's embedded SQLite, so encryption is implemented at the application layer.
+
+```typescript
+import { createCipheriv, createDecipheriv, randomBytes, createHash } from "node:crypto";
+
+// Master key derived from OS-level vault
+const MASTER_KEY = await credentialVault.retrieve("memory-encryption-key");
+
+interface EncryptedPayload {
+  ciphertext: Buffer;
+  iv: Buffer;
+  tag: Buffer;
+}
+
+function encrypt(plaintext: string): EncryptedPayload {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", MASTER_KEY, iv);
+  
+  let encrypted = cipher.update(plaintext, "utf8");
+  encrypted = Buffer.concat([encrypted, cipher.final()]);
+  const tag = cipher.getAuthTag();
+  
+  return {
+    ciphertext: encrypted,
+    iv,
+    tag,
+  };
+}
+
+function decrypt(payload: EncryptedPayload): string {
+  const decipher = createDecipheriv("aes-256-gcm", MASTER_KEY, payload.iv);
+  decipher.setAuthTag(payload.tag);
+  
+  let decrypted = decipher.update(payload.ciphertext);
+  decrypted = Buffer.concat([decrypted, decipher.final()]);
+  
+  return decrypted.toString("utf8");
+}
+
+// Usage in repository
+class EncryptedMemoryRepository implements MemoryRepository {
+  create(memory: Memory): Memory {
+    const encrypted = encrypt(memory.content);
+    this.db.run(
+      "INSERT INTO memories (id, content, metadata, created_at) VALUES (?, ?, ?, ?)",
+      [memory.id, JSON.stringify(encrypted), memory.metadata, Date.now()]
+    );
+    return memory;
+  }
+  
+  findById(id: string): Memory | null {
+    const row = this.db.query("SELECT * FROM memories WHERE id = ?").get(id);
+    if (!row) return null;
+    
+    const encrypted = JSON.parse(row.content);
+    return {
+      id: row.id,
+      content: decrypt(encrypted),
+      metadata: row.metadata,
+      created_at: row.created_at,
+    };
+  }
+}
+```
 
 ```typescript
 import { Database, Statement, constants, SQLiteError } from "bun:sqlite";
@@ -1353,7 +1663,7 @@ Middleware executes in the order defined below. Later middleware operates on the
 | Order | Tier | Middleware | Purpose | Input Contract | Output Contract |
 |-------|------|-----------|---------|----------------|-----------------|
 | 1 | **Policy** | Policy Middleware | Security boundary enforcement | Raw user input | Validated input or rejection |
-| 2 | **Policy** | Content Scanning | Credential/PII detection | Validated input | Clean input or block |
+| 2 | **Policy** | PII Middleware | Credential/PII detection via LangChain piiMiddleware | Validated input | Clean input or block |
 | 3 | **Policy** | Rate Limiting | Request throttling | Clean input | Rate token or proceed |
 | 4 | **Capabilities** | Cron Middleware | Scheduled task detection | Proceed signal | Task context or proceed |
 | 5 | **Capabilities** | Web Search Middleware | Web capability injection | Proceed signal | web_search tools available |
@@ -1361,7 +1671,7 @@ Middleware executes in the order defined below. Later middleware operates on the
 | 7 | **Capabilities** | Memory Middleware | Memory retrieval/injection | Proceed signal | Context with memories |
 | 8 | **Capabilities** | MCP Adapter Middleware | MCP server access | Proceed signal | MCP tools available |
 | 9 | **Capabilities** | Skill Loader Middleware | Skill manifests injection | Proceed signal | Skill tools available |
-| 10 | **Capabilities** | Sub-Agent Middleware | Task delegation | Proceed signal | Sub-agent tools available |
+| 10 | **Capabilities** | Sub-Agent Middleware | Task delegation via createSubAgentMiddleware() pattern | Proceed signal | Sub-agent tools available |
 | 11 | **Operational** | Summarization Middleware | Context compression | Full context | Compressed context |
 | 12 | **Operational** | Human-in-the-Loop Middleware | Owner approval requests | Proceed signal | Approval or block |
 
@@ -1507,6 +1817,7 @@ The Orchestrator reads configuration from environment variables set by the Platf
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
+| `REALCLAW_ENV` | No | `production` | Runtime environment: `production` (vault-only credentials) or `development` (env var fallback with WARNING logs) |
 | `REALCLAW_HOME` | Yes | - | Platform-appropriate data directory |
 | `REALCLAW_CONFIG` | No | `$REALCLAW_HOME/config.yaml` | Configuration file path |
 | `REALCLAW_LOG_LEVEL` | No | `INFO` | Logging verbosity |
@@ -1625,6 +1936,7 @@ storage:
     enabled: true
     schedule: "0 3 * * *"  # Daily at 3 AM
     retentionDays: 7
+    # Single database file backup (realclaw.db contains all tables)
 ```
 
 ## 7. Performance Requirements

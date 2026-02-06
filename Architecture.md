@@ -104,6 +104,17 @@ These philosophical commitments shape every architectural decision. Deviations r
 
 17. **Credential Isolation:** Credentials are stored in OS-level vaults (Keychain on macOS, secret-service on Linux) and never exposed to the Agent or written to persistent storage beyond runtime memory.
 
+### Open Responses Compliance and Competitive Positioning
+
+RealClaw implements the **Open Responses API** as its primary interface contract, positioning it as an Open Responses Provider in the emerging ecosystem. This strategic decision provides several advantages:
+
+- **Ecosystem Compatibility:** Any Open Responses-compatible client can consume RealClaw, including HuggingFace Inference Providers and NVIDIA-backed integrations
+- **Client-Agnostic Positioning:** Unlike proprietary agent frameworks, RealClaw's API contract is standardized and portable
+- **Future-Proofing:** The Open Responses specification is backed by major AI providers and community contributors, reducing API fragmentation risk
+- **Extension Mechanism:** RealClaw-specific features are exposed through the spec's extension prefix (`realclaw:*`) while maintaining base compliance
+
+The implementation follows the Open Responses specification with semantic streaming events, typed item models, and structured error responses. See [TechSpec.md Section 4](TechSpec.md#4-api-contract) for complete API documentation.
+
 ### The Pattern: Layered Modular Monolith with Strict Boundary Enforcement
 
 RealClaw adopts a **Layered Modular Monolith** architecture that enforces strict boundaries between concern domains while maintaining deployment simplicity appropriate for single-tenant operation. This pattern was selected over microservices or serverless alternatives for three compelling reasons rooted in the PRD's non-functional constraints.
@@ -140,13 +151,37 @@ The following containers constitute the deployable units of the RealClaw system.
 
 **Credential Vault**: Platform-specific abstraction layer — Provides unified interface to OS-level credential storage, exposing `store(service, secret)`, `retrieve(service)`, and `rotate(service)` methods. On macOS, this layer integrates with Keychain Services API; on Linux, it interfaces with secret-service API (GNOME Keyring, KWallet, or pass). Credentials never leave runtime memory; the vault abstraction prevents any code path from writing secrets to filesystem, logs, or network connections.
 
-**Egress Gateway**: Go binary implementing HTTP CONNECT proxy with domain allowlisting — Operates as independent system service bound to localhost only. Enforces strict allowlist-only network policy for all sandbox egress, logs every connection attempt with complete context (timestamp, destination, disposition, bytes transferred), and returns structured JSON errors for denied requests. Communicates with Gateway via HTTP over Unix domain socket.
+**Egress Gateway**: Go binary implementing HTTP CONNECT proxy with domain allowlisting — Operates in a chained architecture with the Sandbox Runtime. The Sandbox Runtime's built-in proxy (HTTP/SOCKS5) routes all traffic to the Go Egress Gateway via `httpProxyPort`/`socksProxyPort` configuration. This provides defense-in-depth: the Sandbox handles platform-specific network isolation (Linux namespaces, macOS Seatbelt), while the Go proxy provides audit logging to SQLite, dynamic allowlist management API, and structured JSON error responses. The Sandbox enforces that ALL traffic must route through the proxy chain, while the Go Gateway enforces the actual domain allowlist and logs every connection attempt with complete context (timestamp, destination, disposition, bytes transferred).
 
 ### Layer 1: The Sandbox
 
 **Sandbox Runtime**: Anthropic Sandbox Runtime (`@anthropic-ai/sandbox-runtime`) — Provides filesystem isolation through OS-native mechanisms (bubblewrap on Linux, sandbox-exec on macOS) and network isolation that routes all traffic through Egress Gateway. The Agent operates inside this boundary with no awareness of its existence. Sandbox configuration is platform-agnostic; the runtime handles translation to optimal native mechanisms.
 
 > **Platform Implementation:** On Linux, uses bubblewrap with seccomp filters. On macOS, uses sandbox-exec (Seatbelt) profiles. See [TechSpec.md Section 1.3](TechSpec.md#13-protocol-and-integration-libraries) for runtime version and [Section 7.3](TechSpec.md#73-sandboxing-guarantees) for platform-specific guarantees.
+
+### Layer 2: Middleware Stack
+
+**Middleware Components**: LangChain middleware extensions that intercept, modify, or respond to Agent operations. The middleware stack is organized into three tiers: Policy (foundational security enforcement), Capabilities (tool and context injection), and Operational (cross-cutting concerns like summarization and human-in-the-loop). Middleware executes in defined order, with later middleware operating on outputs of earlier middleware.
+
+**Policy Middleware**: Foundational tier enforcing security boundaries — Validates terminal package requests against allowlist, gates delivery through PII scanning, and enforces configured rate limits.
+
+**Cron Middleware**: Detects scheduled task triggers and invokes Agent with scheduled context — Registers with host timer system and ensures at-least-once execution semantics.
+
+**Web Search Middleware**: Provides web search tools through Gateway-mediated HTTP calls, routing requests through Egress Gateway for policy enforcement.
+
+**Browser Middleware**: Provides browser automation tools, managing isolated browser profiles per session and routing traffic through Egress Gateway.
+
+**Memory Middleware**: Manages three-tier recall system — Retrieves relevant memories before model calls using embedding-based retrieval and consolidates memories after agent completion.
+
+**Skill Loader Middleware**: Injects skill manifests into Agent context based on task — Reads skill folders and loads SKILL.md content.
+
+**Sub-Agent Middleware**: Enables task delegation through `createSubAgentMiddleware()` pattern — Spawns subordinate agent loops for complex task decomposition.
+
+**Human-in-the-Loop Middleware**: Interrupts on configured operations for Owner approval via Telegram inline keyboards.
+
+**Summarization Middleware**: Compresses older messages when context exceeds token thresholds to prevent context overflow.
+
+> **Middleware Implementation:** See [TechSpec.md Section 5.5](TechSpec.md#55-middleware-composition-order) for composition order and [TechSpec.md Section 5.6](TechSpec.md#56-callback-execution-order) for callback execution order.
 
 ### Layer 3: The Gateway
 
@@ -162,9 +197,9 @@ The following containers constitute the deployable units of the RealClaw system.
 
 > **Version:** @langchain/mcp-adapters 1.1.2. See [TechSpec.md Section 1.2](TechSpec.md#12-agent-orchestration-framework).
 
-**Checkpointer**: SQLite with WAL mode and LangGraph integration — Persists agent state across Gateway restarts using `SqliteCheckpointer`. Maintains checkpoint tables for conversation state and writes tables for metadata.
+**Checkpointer**: Custom Bun-native SQLite checkpointer — Persists agent state across Gateway restarts using SkrOYC's bun-sqlite-checkpointer. A custom implementation using `bun:sqlite` directly, avoiding the `better-sqlite3` FFI incompatibility with Bun's JavaScriptCore runtime. Maintains checkpoint tables for conversation state and writes tables for metadata.
 
-> **Technology:** SQLite 3.x with Write-Ahead Logging mode. See [TechSpec.md Section 3](TechSpec.md#3-database-schema) for schema specifications.
+> **Technology:** SQLite 3.x with Write-Ahead Logging mode via `bun:sqlite`. See [TechSpec.md Section 3](TechSpec.md#3-database-schema) for schema specifications and ADR-004 for implementation rationale.
 
 **Structured Logger**: SQLite-based logging subsystem with automatic rotation — Captures all Agent operations including tool invocations, model calls, and middleware execution.
 
@@ -211,7 +246,7 @@ C4Container
     Container(egress_gateway, "Egress Gateway", "Go Binary", "HTTP CONNECT proxy with domain allowlisting")
     Container(sandbox, "Sandbox Runtime", "Anthropic Sandbox Runtime", "Process isolation via bubblewrap/seatbelt")
     Container(credential_vault, "Credential Vault", "Platform Abstraction", "OS-level vaults: Keychain/secret-service")
-    ContainerDb(memory_bank, "Memory Bank", "SQLite", "Semantic memories with embeddings")
+    ContainerDb(memory_bank, "Memory Bank", "SQLite + AES-256-GCM", "Semantic memories with application-level encryption")
     
     Container(telegram_adapter, "Telegram Adapter", "grammY", "Primary channel: webhook handling, response delivery")
     Container(mcp_adapter, "MCP Adapter", "@langchain/mcp-adapters", "Secondary channels: Slack, Discord, email, calendar")
@@ -259,8 +294,8 @@ C4Container
   Rel(gateway, memory_bank, "Stores/retrieves memories via")
 
   Rel(sandbox, egress_gateway, "Routes all traffic through")
-  Rel(sandbox, llm_provider, "Calls for intelligence")
-  Rel(sandbox, exa_api, "Searches web via")
+  Rel(gateway, llm_provider, "Calls for intelligence")
+  Rel(gateway, exa_api, "Searches web via")
 
   Rel(gateway, mcp_adapter, "Connects to MCP servers")
   Rel(mcp_adapter, mcp_servers, "Integrates with external services")
@@ -286,7 +321,7 @@ sequenceDiagram
   participant Agent as Agent
   participant Checkpointer as Checkpointer
   participant LLM as LLM Provider
-  participant Scanner as Content Scanner
+  participant PIIMW as PII Middleware
   participant Adapter2 as Telegram Adapter
 
   Note over Owner,LLM: Interactive conversation requires multiple round-trips
@@ -323,12 +358,12 @@ sequenceDiagram
   MCPAdapter-->>LLM: Calendar data
   LLM-->>Agent: Analysis complete
   Agent->>Gateway: Final response
-  Gateway->>Scanner: scan(response.content)
+  Gateway->>PIIMW: scan(response.content)
   
   rect rgb(255, 240, 245)
-    Note right of Scanner: Content Security Boundary
-    Scanner->>Scanner: Detect credentials, PII, violations
-    Scanner-->>Gateway: Clean bill of health OR reject
+    Note right of PIIMW: Content Security Boundary
+    PIIMW->>PIIMW: Detect credentials, PII, violations via LangChain piiMiddleware
+    PIIMW-->>Gateway: Clean bill of health OR reject
   end
   
   Gateway->>Checkpointer: Save checkpoint (state, messages)
@@ -349,8 +384,8 @@ sequenceDiagram
   end
   
   rect rgb(255, 200, 200)
-    Note over Scanner,Gateway: ERROR: Content policy violation
-    Scanner-->>Gateway: Reject: Policy violation
+    Note over PIIMW,Gateway: ERROR: Content policy violation
+    PIIMW-->>Gateway: Reject: Policy violation
     Gateway->>Adapter2: SendResponse("Content blocked by policy")
   end
   
@@ -362,7 +397,7 @@ sequenceDiagram
   end
 ```
 
-**Flow Analysis**: This sequence reveals several architectural commitments. The Policy Middleware sits at the entry point, meaning every conversation passes through security validation before Agent invocation. The Memory Middleware operates invisibly to the Agent—the Agent receives consolidated context but has no awareness of memory operations. The Content Scanner sits in the response path, ensuring no credential leak or policy violation reaches the Owner. Each checkpoint write blocks until confirmed, ensuring session continuity is not compromised by write failures.
+**Flow Analysis**: This sequence reveals several architectural commitments. The Policy Middleware sits at the entry point, meaning every conversation passes through security validation before Agent invocation. The Memory Middleware operates invisibly to the Agent—the Agent receives consolidated context but has no awareness of memory operations. The PII Middleware sits in the response path, ensuring no credential leak or policy violation reaches the Owner. Each checkpoint write blocks until confirmed, ensuring session continuity is not compromised by write failures.
 
 > **Error Handling:** All external dependencies (LLM, MCP, Checkpointer) implement retry with exponential backoff and circuit breaker patterns. See [TechSpec.md Section 4.1](TechSpec.md#41-gateway-http-api) for error response schemas.
 
@@ -408,7 +443,7 @@ sequenceDiagram
       Note right of Sandbox: Isolation Boundary
       Sandbox->>Sandbox: Configure bubblewrap/seatbelt
       Sandbox->>Sandbox: Mount zones: skills(ro), inputs(ro), work(rw), outputs(rw)
-      Sandbox->>Sandbox: Route proxy: HTTP_PROXY, HTTPS_PROXY
+      Sandbox->>Sandbox: Route proxy: HTTP_PROXY->Go Gateway (via httpProxyPort)
       Sandbox->>Bash: exec("npm install")
     end
     
@@ -468,7 +503,7 @@ sequenceDiagram
   end
 ```
 
-**Flow Analysis**: This flow exposes the defense-in-depth strategy. The package allowlist is checked before any resource allocation. The credential is retrieved from the vault and exists only in runtime memory—never written to environment variables. The Egress Gateway allowlist is explicitly modified to add the npm registry, used for the command duration, then removed. The Sandbox applies filesystem zones that prevent the command from accessing anything outside `/sandbox/work/`. Every action is logged before and after execution, enabling complete audit trails.
+**Flow Analysis**: This flow exposes the defense-in-depth strategy. The package allowlist is checked before any resource allocation. The credential is retrieved from the vault and exists only in runtime memory—never written to environment variables. The Egress Gateway allowlist is explicitly modified to add the npm registry, used for the command duration, then removed. The Sandbox applies filesystem zones that prevent the command from accessing anything outside `/sandbox/work/`. In the chained proxy architecture, the Sandbox Runtime's built-in HTTP/SOCKS5 proxy routes all traffic through the Go Egress Gateway, which enforces the domain allowlist and logs every connection attempt. Every action is logged before and after execution, enabling complete audit trails.
 
 > **Cross-Platform Implementation:** Linux uses bubblewrap with `--bind` mounts. macOS uses sandbox-exec (Seatbelt) profiles. See [TechSpec.md Section 7.3](TechSpec.md#73-sandboxing-guarantees) for platform-specific isolation details.
 
@@ -638,7 +673,7 @@ The architecture implements a comprehensive error handling strategy that ensures
 
 **MCP Adapter State Management**: The MCP adapter maintains persistent connections to MCP servers. If an MCP server crashes, the adapter may hold stale connection state until connection timeout. The architecture does not implement proactive health checking of MCP connections.
 
-**Cross-Platform Substrate Differences**: The architecture claims "identical Agent capability semantics" across Linux and macOS, but the underlying mechanisms differ significantly (bubblewrap bind mounts vs. Seatbelt profiles). Edge cases around symlink handling and violation detection differ between platforms.
+**Cross-Platform Substrate Differences**: The architecture claims "identical Agent capability semantics" across Linux and macOS, but the underlying mechanisms differ significantly (bubblewrap bind mounts vs. Seatbelt profiles). Edge cases around symlink handling and violation detection differ between platforms. Additionally, Apple's sandbox-exec (Seatbelt) mechanism is deprecated and receives minimal maintenance. Future macOS versions may remove or further restrict Seatbelt capabilities. The architecture should monitor alternative isolation mechanisms for macOS (e.g., Docker Desktop's hypervisor framework, nsjail via Homebrew) as potential migration paths.
 
 > **Platform-Specific Implementation Details:**
 > - **Linux:** Uses bubblewrap with `--bind` mounts for filesystem zones. Seccomp filters restrict syscalls. Network isolation via network namespace with proxy routing.
