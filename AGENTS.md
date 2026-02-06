@@ -111,13 +111,13 @@ If you are implementing credential handling, you are implementing against an int
 
 ## Key Files and Their Purposes
 
-**ARCHITECTURE.md** (this project's technical blueprint)
+**Architecture.md** (this project's technical blueprint)
 
 The authoritative source for architectural decisions. Read this before proposing changes. It describes what we are building, why we are building it that way, and what constraints shape our choices.
 
-**ARCHITECTURE_CHANGELOG.md** (evolution of the architecture)
+**CHANGELOG.md** (recent evolution of the architecture)
 
-Records every change to the architecture document with context. Useful for understanding why decisions were made and when. The version number (currently v0.11.0) indicates the architecture's maturity.
+Records recent architectural changes with context. Useful for understanding why decisions were made and when. The version number (currently v0.13.0) indicates the architecture's maturity.
 
 **SOUL.md** (planned: Agent identity and values)
 
@@ -177,4 +177,4 @@ The goal is that future instances of you arrive with enough context to be immedi
 
 ---
 
-This document was created during the v0.11.0 architecture revision to capture project context and guidance for AI collaborators. Read it, update it, and use it to ensure your work aligns with the project's mission and principles.
+This document was created during the v0.13.0 architecture revision to capture project context and guidance for AI collaborators. Read it, update it, and use it to ensure your work aligns with the project's mission and principles.
