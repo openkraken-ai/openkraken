@@ -29,9 +29,9 @@ These commitments have been made after investigation and debate. They represent 
 
 We delegate process isolation to Anthropic's production-tested Sandbox Runtime rather than building custom sandboxing. On Linux, this uses bubblewrap. On macOS, it uses sandbox-exec (Seatbelt). The runtime provides a unified configuration interface while handling platform-specific details internally.
 
-**Second Commitment: Bun for the Gateway Runtime**
+**Second Commitment: Bun for the Orchestrator Runtime**
 
-The Gateway runs on Bun, not Node.js. This decision was made after evaluating Bun's maturity, Node.js compatibility (~95% API coverage), and performance characteristics. If you encounter Bun compatibility issues with a required package, this is a significant finding worth documenting.
+The Orchestrator runs on Bun, not Node.js. This decision was made after evaluating Bun's maturity, Node.js compatibility (~95% API coverage), and performance characteristics. If you encounter Bun compatibility issues with a required package, this is a significant finding worth documenting.
 
 **Third Commitment: LangChain.js for Agent Orchestration**
 
@@ -63,7 +63,7 @@ Understanding scope boundaries helps you recognize when a request is out of scop
 
 Understanding who does what helps you understand constraints.
 
-**Project:** The framework authors (us). Defines platform skills, default policies, security constraints, and the Constitution (SOUL.md, SAFETY.md). The Project is the authority on how the system works.
+**Project:** The framework authors (us). Defines platform skills, default policies, and security constraints. The Project defines the Constitution (SOUL.md, SAFETY.md)—development concerns that evolve continuously and define the Agent's identity and safety constraints. The Project is the authority on how the system works.
 
 **Owner:** The person running an instance. Provisions credentials, configures integrations, uploads personal skills, interacts with the Agent. In a single-tenant system, the Owner is the only human in the loop.
 
@@ -75,7 +75,7 @@ These philosophies shape every decision. When you are unsure whether a proposed 
 
 **Trust the Sandbox, Not the Model.** Safety is enforced by the sandbox and tool-level validation, not by the System Prompt.
 
-**Build on Proven Foundations.** Integrate battle-tested solutions for security-critical infrastructure. Implement custom logic only for gateway-specific concerns.
+**Build on Proven Foundations.** Integrate battle-tested solutions for security-critical infrastructure. Implement custom logic only for Orchestrator-specific concerns.
 
 **Everything is Middleware.** Agent capabilities—scheduling, web search, sub-agent orchestration, memory, skills, MCP integration, observability—are implemented as composable LangChain extensions. No privileged internal mechanisms exist that custom extensions cannot replicate.
 
@@ -95,13 +95,13 @@ Middleware provides active modification of the agent's execution flow. It can tr
 
 When you are adding new capabilities, consider whether they belong as callbacks (passive observation) or middleware (active modification).
 
-**Platform Abstraction is the Gateway's Job**
+**Platform Abstraction is the Orchestrator's Job**
 
 The architecture claims the sandbox presents "identical filesystem semantics" across Linux and macOS. This is true from the Owner's perspective, but the mechanisms differ. Bubblewrap on Linux operates on literal paths without glob support. Seatbelt profiles on macOS support glob patterns.
 
-The Gateway normalizes all paths to canonical format before sandbox configuration. It performs path validation against allowed zones and resolves paths to absolute, literal form. This ensures the sandbox receives consistent instructions regardless of platform.
+The Orchestrator normalizes all paths to canonical format before sandbox configuration. It performs path validation against allowed zones and resolves paths to absolute, literal form. This ensures the sandbox receives consistent instructions regardless of platform.
 
-If you are adding platform-specific behavior, consider whether it should be handled by the Gateway (platform abstraction layer) or whether it belongs in platform-specific configuration files.
+If you are adding platform-specific behavior, consider whether it should be handled by the Orchestrator (platform abstraction layer) or whether it belongs in platform-specific configuration files.
 
 **CredentialVault is an Abstraction, Not a Concrete Implementation**
 
@@ -111,16 +111,14 @@ If you are implementing credential handling, you are implementing against an int
 
 ### Architectural Layers
 
-OpenKraken's architecture is organized into six layers (defined in CHANGELOG.md v0.13.0):
+OpenKraken's architecture is organized into layers. See ARCHITECTURE.md Section 2 for the authoritative layer definitions and C4 container diagram.
 
-**Layer -1: Platform Manager** — Nix-based provisioning and deployment automation
-**Layer 0: Host** — The host system (Linux or macOS) where OpenKraken runs
-**Layer 1: Sandbox Runtime** — Anthropic Sandbox Runtime providing isolation
-**Layer 2: Middleware Stack** — LangChain middleware extensions
-**Layer 3: The Orchestrator** — Bun/TypeScript orchestration layer
-**Layer 4: Owner Interfaces** — CLI, Web UI, and communication channels
-
-When you see references to "Layer 3" or "Layer 2" in Architecture.md or CHANGELOG.md, they refer to this layered architecture.
+**Quick Reference:**
+- **Layer -1:** Platform Manager — Nix-based provisioning and deployment automation
+- **Layer 0:** Host — The host system (Linux or macOS)
+- **Layer 1:** Sandbox — Anthropic Sandbox Runtime (Agent runs inside)
+- **Layer 2:** Middleware Stack — LangChain middleware extensions
+- **Layer 3:** Orchestrator — Bun/TypeScript orchestration layer
 
 > **For details:** See Architecture.md Section "Architectural Entities" and "Container Components"
 
@@ -153,13 +151,13 @@ The authoritative source for architectural decisions. Read this before proposing
 
 Records recent architectural changes with context. Useful for understanding why decisions were made and when. The version number (currently v0.13.0) indicates the architecture's maturity.
 
-**SOUL.md** (planned: Agent identity and values)
+**SOUL.md** (development concern: Agent identity and values)
 
-Will define the Agent's core identity, values, and behavioral guidelines. This file is injected directly into the Agent's system prompt at runtime. It is never materialized in the sandbox filesystem.
+Defines the Agent's core identity, values, and behavioral guidelines. This file is injected directly into the Agent's system prompt at runtime. It is never materialized in the sandbox filesystem. SOUL.md evolves continuously as a development concern.
 
-**SAFETY.md** (planned: Safety constraints)
+**SAFETY.md** (development concern: Safety constraints)
 
-Will define the specific safety constraints that govern Agent behavior. Works in conjunction with SOUL.md to define what the Agent can and cannot do.
+Defines the specific safety constraints that govern Agent behavior. Works in conjunction with SOUL.md to define what the Agent can and cannot do. SAFETY.md evolves continuously as a development concern.
 
 **AGENTS.md** (this file: guidance for AI collaborators)
 

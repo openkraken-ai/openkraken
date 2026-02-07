@@ -600,7 +600,7 @@ erDiagram
         integer timestamp "Unix timestamp (ISO8601 stored as TEXT)"
         text event_type "Event classification"
         text severity "Log severity (INFO/WARN/ERROR/SECURITY)"
-        text source_component "Origin (orchestrator/sandbox/gateway)"
+        text source_component "Origin (orchestrator/sandbox/egress_gateway)"
         text request_id FK "Associated request/correlation ID (UUID as TEXT)"
         text event_data "Event-specific payload (JSON as TEXT)"
         text context "Request context (JSON as TEXT)"
@@ -619,7 +619,7 @@ erDiagram
 ```
 
 **Schema Notes:**
-- `event_type`: Constrained vocabulary: "authentication", "authorization", "configuration_change", "session_lifecycle", "tool_invocation", "model_call", "policy_violation", "sandbox_event", "gateway_event".
+- `event_type`: Constrained vocabulary: "authentication", "authorization", "configuration_change", "session_lifecycle", "tool_invocation", "model_call", "policy_violation", "sandbox_event", "egress_gateway_event".
 - `severity`: "INFO" (normal operations), "WARN" (anomalies), "ERROR" (failures), "SECURITY" (security-relevant).
 - `request_id`: UUID for cross-component request tracing.
 - `event_data`: Structured JSON with event-specific fields (e.g., tool name, arguments, result).
@@ -2730,7 +2730,7 @@ sandbox:
     enabled: true
     cacheUrl: "https://cache.nixos.org"
 
-gateway:
+egressGateway:
   http:
     enabled: true
     port: 8080
@@ -2861,7 +2861,7 @@ This section defines measurable SLAs for system performance. These benchmarks gu
 | **Policy middleware validation** | < 5ms | < 15ms | Time to evaluate request against policies |
 | **Memory retrieval (top-k=5)** | < 20ms | < 50ms | Vector similarity search + content fetch |
 | **Checkpointer write** | < 10ms | < 30ms | SQLite WAL append operation |
-| **Gateway HTTP API response** | < 10ms | < 50ms | End-to-end request handling (health endpoints) |
+| **Egress Gateway HTTP API response** | < 10ms | < 50ms | End-to-end request handling (health endpoints) |
 | **Telegram webhook processing** | < 100ms | < 200ms | From signature verification to acknowledgment |
 
 ### 7.2 Throughput Requirements

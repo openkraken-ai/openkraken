@@ -90,7 +90,7 @@ These philosophical commitments shape every architectural decision. Deviations r
 
 10. **Everything is Middleware:** Agent capabilities—scheduling, web search, sub-agent orchestration, memory, skills, MCP integration, observability—are implemented as composable LangChain middleware. No privileged internal mechanisms exist that custom middleware cannot replicate.
 
-11. **Build on Proven Foundations:** Where the ecosystem provides battle-tested solutions for security-critical infrastructure (sandboxing, observability, protocol implementations), we integrate them rather than reinventing. Custom implementation is reserved for gateway-specific concerns.
+11. **Build on Proven Foundations:** Where the ecosystem provides battle-tested solutions for security-critical infrastructure (sandboxing, observability, protocol implementations), we integrate them rather than reinventing. Custom implementation is reserved for Orchestrator-specific concerns.
 
 12. **Nix-Native, Nix-Invisible:** The system leverages Nix for reproducibility, package management, and cross-platform configuration. However, Nix internals are never exposed to the Agent—packages simply become available when requested, with no awareness of the underlying mechanism.
 
@@ -144,6 +144,16 @@ The performance constraint of "sandbox invocation within 100ms" further favors m
 ## 2. System Containers (C4 Level 2)
 
 The following containers constitute the deployable units of the OpenKraken system. Each container has explicit responsibilities, well-defined boundaries, and documented communication protocols. Containers are organized by their architectural layer, with clear indication of which layer owns each component.
+
+### Terminology Reference
+
+| Term | Definition | Implementation |
+|------|------------|----------------|
+| **Orchestrator** | Central orchestration layer managing Agent, LangChain/LangGraph, adapters | Bun/TypeScript runtime |
+| **Egress Gateway** | Network proxy with domain allowlisting | Go binary (separate process) |
+| **Sandbox** | Process isolation for Agent execution | Anthropic Sandbox Runtime |
+| **Middleware** | LangChain extensions for capabilities and policies | LangChain.js v1 |
+| **Checkpointer** | State persistence for session continuity | SQLite + bun-sqlite-checkpointer |
 
 ### Layer -1: Platform Manager
 
@@ -395,7 +405,7 @@ sequenceDiagram
     Note over Orchestrator,LLM: ERROR: LLM provider unavailable
     Orchestrator-->>Agent: Error: Service temporarily unavailable
     Agent-->>Orchestrator: Fallback response
-    Gateway->>Adapter2: SendResponse("Service unavailable")
+    Orchestrator->>Adapter2: SendResponse("Service unavailable")
   end
 ```
 
@@ -446,7 +456,7 @@ sequenceDiagram
       Sandbox->>Sandbox: Configure bubblewrap/seatbelt
       Sandbox->>Sandbox: Mount zones: skills(ro), inputs(ro), work(rw), outputs(rw)
       Sandbox->>Sandbox: Provision Nix dependencies from skill metadata
-      Sandbox->>Sandbox: Route proxy: HTTP_PROXY->Go Gateway (via httpProxyPort)
+      Sandbox->>Sandbox: Route proxy: HTTP_PROXY->Go Egress Gateway (via httpProxyPort)
       Sandbox->>Bash: exec("npm install")
     end
     
@@ -628,7 +638,7 @@ The OpenKraken architecture implements a layered authentication and authorizatio
 
 **Agent Authorization Model**: The Agent operates under a capability-based authorization system where capabilities are granted by middleware rather than inherited from the Owner's identity. When the Agent attempts to invoke a tool, the Policy Middleware validates the request against configured policies. This separation means the Agent's effective permissions are a subset of the Owner's permissions, never a superset.
 
-**Credential Access Authorization**: Credentials stored in the vault are accessed by the Gateway only when required for external service calls. The Agent has no direct credential access—any tool requiring credentials must be dispatched through the Gateway, which retrieves the credential from the vault, injects it into the appropriate context, and ensures the credential is never exposed to the Agent.
+**Credential Access Authorization**: Credentials stored in the vault are accessed by the Orchestrator only when required for external service calls. The Agent has no direct credential access—any tool requiring credentials must be dispatched through the Orchestrator, which retrieves the credential from the vault, injects it into the appropriate context, and ensures the credential is never exposed to the Agent.
 
 **Egress Gateway Authorization**: The Orchestrator communicates with the Egress Gateway over a Unix domain socket with two complementary authentication layers.
 
@@ -648,7 +658,7 @@ The observability strategy in OpenKraken addresses three distinct needs: operati
 
 **Distributed Tracing Implementation**: The custom OpenTelemetry callback handler creates traces that follow operations from initial request through complete response delivery. Each trace consists of spans representing discrete operations: HTTP request handling, middleware processing, model invocations, tool calls, and response composition. The handler supports multiple export backends: OTLP collectors for enterprise environments, LangSmith for development debugging, and SQLite retention for audit purposes.
 
-**Health and Metrics Endpoints**: The Gateway exposes standardized endpoints for operational monitoring. The `/health` endpoint returns HTTP 200 indicating the process is running. The `/ready` endpoint performs dependency checks (SQLite connectivity, MCP server availability, Egress Gateway responsiveness) and returns 200 only when all dependencies are healthy. The `/metrics` endpoint serves Prometheus-compatible metrics including HTTP request counts, tool invocation counts, and proxy dispositions.
+**Health and Metrics Endpoints**: The Orchestrator exposes standardized endpoints for operational monitoring. The `/health` endpoint returns HTTP 200 indicating the process is running. The `/ready` endpoint performs dependency checks (SQLite connectivity, MCP server availability, Egress Gateway responsiveness) and returns 200 only when all dependencies are healthy. The `/metrics` endpoint serves Prometheus-compatible metrics including HTTP request counts, tool invocation counts, and proxy dispositions.
 
 > **Logging Schema:** See [TechSpec.md Section 3.4](TechSpec.md#34-audit-log-database-auditdb) for audit log schema and [TechSpec.md Section 3.5](TechSpec.md#35-proxy-access-log-database-proxydb) for proxy access log schema.
 
@@ -765,7 +775,7 @@ The Nix packages are provisioned before sandbox invocation, ensuring reproducibl
 
 ### High-Priority Risks
 
-**Sandbox Runtime Maturity**: The Anthropic Sandbox Runtime (`@anthropic-ai/sandbox-runtime`) is currently version 0.0.35 and labeled "Beta Research Preview." While the project is actively maintained, the `0.x.y` versioning indicates potential breaking changes before 1.0.0. OpenKraken pins to specific versions and monitors changelogs, but the dependency on an evolving runtime creates upgrade risk. A breaking change in the sandbox API could require significant Gateway adaptation.
+**Sandbox Runtime Maturity**: The Anthropic Sandbox Runtime (`@anthropic-ai/sandbox-runtime`) is currently version 0.0.35 and labeled "Beta Research Preview." While the project is actively maintained, the `0.x.y` versioning indicates potential breaking changes before 1.0.0. OpenKraken pins to specific versions and monitors changelogs, but the dependency on an evolving runtime creates upgrade risk. A breaking change in the sandbox API could require significant Orchestrator adaptation.
 
 **Egress Gateway Single Point of Failure**: The Egress Gateway is a mandatory chokepoint for all sandbox network traffic. If the Gateway crashes or becomes unresponsive, no sandboxed operation requiring network access can proceed. The current architecture does not include Gateway redundancy appropriate for high-availability requirements.
 
@@ -803,8 +813,8 @@ The Nix packages are provisioned before sandbox invocation, ensuring reproducibl
 | Decision | Rationale | Implications |
 |----------|-----------|--------------|
 | Modular Monolith over Microservices | Single-tenant deployment eliminates distributed systems benefits; monolithic deployment simplifies credential enforcement and tracing | No horizontal scaling capability; component boundaries must be maintained through discipline |
-| Bun Runtime for Gateway | High performance, Node.js compatibility (~95% API coverage), mature ecosystem for TypeScript development | Smaller ecosystem than Node.js; some packages may require compatibility work |
-| Go for Egress Gateway | Strong stdlib for networking and HTTP proxy implementation; simple deployment model; battle-tested reliability | Requires Go toolchain in build environment; separate language from Gateway |
+| Bun Runtime for Orchestrator | High performance, Node.js compatibility (~95% API coverage), mature ecosystem for TypeScript development | Smaller ecosystem than Node.js; some packages may require compatibility work |
+| Go for Egress Gateway | Strong stdlib for networking and HTTP proxy implementation; simple deployment model; battle-tested reliability | Requires Go toolchain in build environment; separate language from Orchestrator |
 | SQLite for All Persistence | WAL mode provides durability and concurrency; single backend simplifies backup and recovery | Write-heavy workloads may require optimization; not appropriate for high-throughput scenarios |
 | Egress Gateway as Separate Process | Separate trust boundary enables defense-in-depth; independent lifecycle prevents cascade failures | Adds latency to all network operations; requires process supervision |
 | Unix Domain Socket for RPC | Provides authentication through filesystem permissions; avoids network exposure | Communication limited to same host; socket file must be protected |
