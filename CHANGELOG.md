@@ -4,6 +4,57 @@ This document records recent architectural evolution. For full historical change
 
 ---
 
+### v0.14.0 — 2026-02-07
+
+**Skill Ingestion Pipeline and Vercel Skills Integration**
+
+This version adds comprehensive skill ingestion pipeline architecture, integrating the Vercel skills CLI while applying OpenKraken's security model. The Agent discovers and activates skills autonomously per AgentSkills.io progressive disclosure.
+
+**Skill Ingestion Pipeline**
+* Added Section 5.4 to Architecture.md detailing the complete ingestion pipeline:
+  * Source Resolution: Integrated Vercel skills CLI (bundled via Nix) supports GitHub shorthand, full URLs, direct tree paths
+  * Structure Validation: Deterministic checks against AgentSkills.io specification
+  * LLM Security Analysis: Configurable model (default: Claude Haiku 4.5) analyzes skills for prompt injection, network calls, credential access
+  * Owner Approval: Explicit Owner decisions with full analysis reports
+  * Dependency Resolution: Nix packages provisioned from `metadata.x-openkraken.dependencies`
+  * Activation: Skills moved to active directory with manifest exposed to Agent
+
+**Tiered Trust Model**
+* Three tiers defined: System (bundled, project-audited), Owner (uploaded, auto-approve for instruction-only), Community (external, always requires approval)
+* Auto-update scope: Only approved skills within configured version bounds
+* Provenance: All skill operations logged with source URL, timestamp, and analysis report reference
+
+**Dependency Declaration via Metadata**
+* Skills declare dependencies using `metadata.x-openkraken.dependencies` field per AgentSkills.io extensibility
+* Example: `metadata.x-openkraken.dependencies.nix: ["ffmpeg", "imagemagick", "jq"]`
+* Nix packages pre-provisioned before sandbox invocation, eliminating runtime package installation
+
+**Vercel Skills CLI Integration**
+* CLI bundled as Nix package (not `npx`) for reproducibility
+* Added `cli/skills/` directory structure to project layout
+* Commands: add, list, remove, update, check
+* Supports all Vercel resolution patterns while applying security pipeline
+
+**Database Schema Extensions**
+* Added Section 3.7 Skill Pipeline Schema to TechSpec.md:
+  * `skills` table: skill metadata, version, tier, source, provenance
+  * `skill_analysis_reports` table: security analysis findings, risk level, recommendation
+  * `skill_audit_log` table: lifecycle actions with actor and details
+
+**Middleware Updates**
+* Skill Loader Middleware updated: Exposes manifests to Agent via system prompt, manages version tracking and auto-updates
+* Agent discovers skills from manifest and activates them autonomously (not middleware-driven activation)
+
+**Configuration Schema**
+* Added `skills` section to TechSpec.md configuration:
+  * `enabled`, `defaultTier`, `autoApproveOwnerInstructionOnly`, `autoUpdate`, `analysisModel`, `sources`
+  * Default source: `https://github.com/vercel-labs/skills` (community tier)
+
+**Error Handling Extensions**
+* Added skill-related degradation modes: ingestion failure (staging), analysis failure (deny-by-default), dependency failure (blocked activation), version drift (auto-update with notification)
+
+---
+
 ### v0.13.0 — 2026-02-03
 
 **Architectural Evolution: Nix Platform Layer, IPC/RPC Communication, and Terminology Disambiguation**

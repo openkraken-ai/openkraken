@@ -49,6 +49,7 @@ This section defines the concrete technology stack for OpenKraken, specifying ex
 | **Nix** | 2.33.2 (latest stable) | Reproducible builds via Nix Flakes. Cross-platform package management. |
 | **nixpkgs** | 25.11 (stable channel) | Declarative system configuration. Generates systemd units (Linux) and launchd plists (macOS). |
 | **Egress Gateway** | Go 1.25.6 | Systems programming language for network proxy. Selected for faster implementation velocity, simpler concurrency (goroutines), and mature HTTP CONNECT proxy ecosystem. |
+| **Vercel Skills CLI** | Bundled via Nix | Integrated Agent Skills CLI implementation. Bundled as Nix package for reproducibility (not `npx`). Enables access to curated skills ecosystem while applying OpenKraken's security pipeline. |
 
 ### 1.6 Dependency Management Strategy
 
@@ -627,6 +628,60 @@ erDiagram
 - **Index:** `(request_id)` for request tracing.
 - **Retention:** 30-day rolling retention with automatic archival.
 
+### 3.4.1 Skill Audit and Analysis Tables
+
+Stores skill lifecycle events, provenance metadata, and security analysis reports within `openkraken.db`.
+
+```mermaid
+erDiagram
+    skills {
+        text id PK "Skill identifier (UUID as TEXT)"
+        text name "Skill name (from SKILL.md frontmatter)"
+        text description "Skill description"
+        text version "Current version (e.g., '1.2.3')"
+        text source "Source URL/repository"
+        text tier "Skill tier (system/owner/community)"
+        text directory "Relative path to skill directory"
+        text metadata_json "Additional metadata (JSON)"
+        integer approved_at "Approval timestamp"
+        text approved_by "Owner ID who approved"
+        integer auto_updated_at "Auto-update timestamp"
+        integer created_at "Skill addition timestamp"
+        integer updated_at "Last modification timestamp"
+    }
+    
+    skill_analysis_reports {
+        text id PK "Report identifier (UUID as TEXT)"
+        text skill_id FK "Reference to skills.id"
+        integer analysis_version "Report schema version"
+        text overall_risk "Risk level (low/medium/high/critical)"
+        text findings "JSON array of findings"
+        text recommendation "Decision (approve/review/reject)"
+        text llm_model "LLM model used for analysis"
+        integer created_at "Analysis timestamp"
+    }
+    
+    skill_audit_log {
+        text id PK "Audit entry identifier (UUID as TEXT)"
+        text skill_id FK "Reference to skills.id"
+        text action "Action type (ingest/approve/reject/update/remove)"
+        text performed_by "Actor (system/owner)"
+        text details "Action details (JSON)"
+        integer timestamp "Unix timestamp"
+    }
+
+    skills ||--o{ skill_analysis_reports : "analyzed_by"
+    skills ||--o{ skill_audit_log : "tracked_in"
+```
+
+**Schema Notes:**
+- `skills.tier`: Constrained to "system", "owner", or "community"
+- `skill_analysis_reports.findings`: JSON array of `{severity, category, location, description, evidence}`
+- `skill_audit_log.action`: Constrained vocabulary: "ingest", "approve", "reject", "update", "remove"
+- **Index:** `(skills.name, skills.tier)` for skill lookup
+- **Index:** `(skill_audit_log.timestamp)` for chronological queries
+- **Index:** `(skill_analysis_reports.skill_id)` for report history
+
 ### 3.5 Proxy Access Log Tables
 
 Stores network egress requests for security auditing within `openkraken.db`.
@@ -815,6 +870,60 @@ async function main() {
 ```
 
 ---
+
+### 3.7 Skill Pipeline Schema
+
+Stores skill lifecycle events, provenance metadata, and security analysis reports within `openkraken.db`.
+
+```mermaid
+erDiagram
+    skills {
+        text id PK "Skill identifier (UUID as TEXT)"
+        text name "Skill name (from SKILL.md frontmatter)"
+        text description "Skill description"
+        text version "Current version (e.g., '1.2.3')"
+        text source "Source URL/repository"
+        text tier "Skill tier (system/owner/community)"
+        text directory "Relative path to skill directory"
+        text metadata_json "Additional metadata (JSON)"
+        integer approved_at "Approval timestamp"
+        text approved_by "Owner ID who approved"
+        integer auto_updated_at "Auto-update timestamp"
+        integer created_at "Skill addition timestamp"
+        integer updated_at "Last modification timestamp"
+    }
+    
+    skill_analysis_reports {
+        text id PK "Report identifier (UUID as TEXT)"
+        text skill_id FK "Reference to skills.id"
+        integer analysis_version "Report schema version"
+        text overall_risk "Risk level (low/medium/high/critical)"
+        text findings "JSON array of findings"
+        text recommendation "Decision (approve/review/reject)"
+        text llm_model "LLM model used for analysis"
+        integer created_at "Analysis timestamp"
+    }
+    
+    skill_audit_log {
+        text id PK "Audit entry identifier (UUID as TEXT)"
+        text skill_id FK "Reference to skills.id"
+        text action "Action type (ingest/approve/reject/update/remove)"
+        text performed_by "Actor (system/owner)"
+        text details "Action details (JSON)"
+        integer timestamp "Unix timestamp"
+    }
+
+    skills ||--o{ skill_analysis_reports : "analyzed_by"
+    skills ||--o{ skill_audit_log : "tracked_in"
+```
+
+**Schema Notes:**
+- `skills.tier`: Constrained to "system", "owner", or "community"
+- `skill_analysis_reports.findings`: JSON array of `{severity, category, location, description, evidence}`
+- `skill_audit_log.action`: Constrained vocabulary: "ingest", "approve", "reject", "update", "remove"
+- **Index:** `(skills.name, skills.tier)` for skill lookup
+- **Index:** `(skill_audit_log.timestamp)` for chronological queries
+- **Index:** `(skill_analysis_reports.skill_id)` for report history
 
 ## 4. API Contract
 
@@ -1795,6 +1904,26 @@ openkraken/
     │       ├── SKILL.md
     │       └── scripts/
     │
+    ├── cli/                       # Integrated CLI tools
+    │   └── skills/                # Vercel skills CLI integration (bundled via Nix)
+    │       ├── src/
+    │       │   ├── cli.ts         # CLI entry point
+    │       │   ├── commands/      # Command implementations
+    │       │   │   ├── add.ts
+    │       │   │   ├── list.ts
+    │       │   │   ├── remove.ts
+    │       │   │   ├── update.ts
+    │       │   │   └── check.ts
+    │       │   ├── pipeline/      # Ingestion pipeline stages
+    │       │   │   ├── validation.ts
+    │       │   │   ├── analysis.ts
+    │       │   │   └── approval.ts
+    │       │   └── sources/       # Source resolution
+    │       │       ├── github.ts
+    │       │       └── index.ts
+    │       ├── package.json        # Bundled dependencies
+    │       └── skills-cli.nix     # Nix derivation
+    │
     └── storage/                   # Runtime data (managed by Nix)
         ├── data/
         │   └── openkraken.db       # Unified SQLite database (checkpoints, messages, memories, audit, proxy)
@@ -2100,7 +2229,7 @@ Middleware executes in the order defined below. Later middleware operates on the
 | 6 | **Capabilities** | Browser Middleware | Browser automation tools | Proceed signal | browser tools available |
 | 7 | **Capabilities** | Memory Middleware | Memory retrieval/injection | Proceed signal | Context with memories |
 | 8 | **Capabilities** | MCP Adapter Middleware | MCP server access | Proceed signal | MCP tools available |
-| 9 | **Capabilities** | Skill Loader Middleware | Skill manifests injection | Proceed signal | Skill tools available |
+| 9 | **Capabilities** | Skill Loader Middleware | Skill manifest injection, version tracking, auto-update within approved bounds | Proceed signal | Skill tools available, skill_version metadata |
 | 10 | **Capabilities** | Sub-Agent Middleware | Task delegation via createSubAgentMiddleware() pattern | Proceed signal | Sub-agent tools available |
 | 11 | **Operational** | Summarization Middleware | Context compression | Full context | Compressed context |
 | 12 | **Operational** | Human-in-the-Loop Middleware | Owner approval requests | Proceed signal | Approval or block |
@@ -2640,6 +2769,22 @@ middleware:
       - "skill:install"
     approvalTimeoutMinutes: 30
 
+skills:
+  enabled: true
+  defaultTier: "owner"  # Default tier for imported skills (owner/community)
+  autoApproveOwnerInstructionOnly: true  # Skip approval for Owner-tier instruction-only skills
+  autoUpdate: true  # Auto-update approved skills within version bounds
+  analysisModel: "claude-haiku-4-5-2026-02-01"  # Configurable LLM for security analysis
+  sources:
+    - url: "https://github.com/vercel-labs/skills"
+      tier: "community"
+      autoApprove: false
+      # allowedSkills: []  # Optional whitelist of specific skills
+
+# NOTE: Skills zone includes Nix dependencies provisioned from skill metadata.
+# Skills declaring dependencies via metadata.x-openkraken.dependencies have
+# those packages pre-installed before sandbox invocation.
+
 observability:
   logging:
     enabled: true
@@ -2771,6 +2916,7 @@ The Platform Manager uses Nix Flakes for reproducible builds across Linux and ma
       {
         packages.openkraken-orchestrator = pkgs.callPackage ./nix/package.nix { };
         packages.openkraken-gateway = pkgs.callPackage ./nix/gateway-package.nix { };
+        packages.openkraken-skills-cli = pkgs.callPackage ./cli/skills/skills-cli.nix { };
         packages.default = self.packages.${system}.openkraken-orchestrator;
 
         devShells.default = pkgs.callPackage ./nix/shell.nix { };

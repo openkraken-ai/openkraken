@@ -78,7 +78,7 @@ These philosophical commitments shape every architectural decision. Deviations r
 
 4.  **Capability-Based Security:** Blacklists fail. We use strict whitelisting for network egress and file access.
 
-5.  **Supply Chain Integrity:** System packages resolve from nixpkgs. Language-specific Skill dependencies are converted at ingestion time from standard lockfiles into Nix derivations. Native package managers are never invoked at runtime.
+5.  **Supply Chain Integrity:** System packages resolve from nixpkgs. Language-specific Skill dependencies are converted at ingestion time from standard lockfiles into Nix derivations. Native package managers are never invoked at runtime. Skills declare dependencies via `metadata.x-openkraken.dependencies` for Nix provisioning. The integrated Vercel skills CLI (bundled via Nix) enables access to the curated ecosystem while applying OpenKraken's security pipeline.
 
 6.  **Gated Egress:** Network access from sandboxed processes passes through an egress proxy with domain allowlisting. Direct internet access is blocked. The proxy enforces structured policies and logs all access for security auditing.
 
@@ -173,7 +173,7 @@ The following containers constitute the deployable units of the OpenKraken syste
 
 **Memory Middleware**: Manages three-tier recall system — Retrieves relevant memories before model calls using embedding-based retrieval and consolidates memories after agent completion.
 
-**Skill Loader Middleware**: Injects skill manifests into Agent context based on task — Reads skill folders and loads SKILL.md content.
+**Skill Loader Middleware**: Exposes skill manifests to the Agent via system prompt. The Agent discovers available skills from the manifest and activates them autonomously based on task relevance. Manages skill lifecycle including version tracking, auto-updates within approved bounds, and provenance metadata storage.
 
 **Sub-Agent Middleware**: Enables task delegation through `createSubAgentMiddleware()` pattern — Spawns subordinate agent loops for complex task decomposition.
 
@@ -443,6 +443,7 @@ sequenceDiagram
       Note right of Sandbox: Isolation Boundary
       Sandbox->>Sandbox: Configure bubblewrap/seatbelt
       Sandbox->>Sandbox: Mount zones: skills(ro), inputs(ro), work(rw), outputs(rw)
+      Sandbox->>Sandbox: Provision Nix dependencies from skill metadata
       Sandbox->>Sandbox: Route proxy: HTTP_PROXY->Go Gateway (via httpProxyPort)
       Sandbox->>Bash: exec("npm install")
     end
@@ -653,7 +654,92 @@ The architecture implements a comprehensive error handling strategy that ensures
 
 **Circuit Breaker Integration**: The architecture implements circuit breakers for external services to prevent cascade failures during extended outages. When a service fails repeatedly (5 failures in a 60-second window), the circuit opens and subsequent requests fail immediately with a service-unavailable error.
 
+**Skill-Related Degradation:**
+- Skill ingestion failure: Skill remains in staging, Owner notified, Agent unaffected
+- LLM analysis failure: Fallback to deny-by-default, require manual Owner review
+- Dependency resolution failure: Skill marked as "requires dependencies", blocked from activation
+- Version drift (approved version vs. latest): Auto-update triggers for approved skills with notification
+- Vercel CLI unavailable: Bundled Nix package provides offline fallback for cached sources
+
 > **Error Response Schema:** See [TechSpec.md Section 4.1](TechSpec.md#41-gateway-http-api) for standardized error response formats.
+
+---
+
+### 5.4 Skill Ingestion Pipeline
+
+The Skill Ingestion Pipeline manages the lifecycle of skills from external sources through security validation to activation. This pipeline ensures that only approved, analyzed, and provisioned skills become available to the Agent.
+
+**Pipeline Overview:**
+
+The pipeline implements the following stages for all non-system skills:
+
+1. **Source Resolution**: Skills are fetched from configured sources using the integrated Vercel skills CLI (bundled via Nix). Supported sources include GitHub shorthand (`owner/repo`), full GitHub URLs, direct tree paths, and Owner-specified repositories. The CLI resolves sources and retrieves skill metadata.
+
+2. **Structure Validation**: The skill directory is validated against the AgentSkills.io specification. Required `SKILL.md` with valid YAML frontmatter is verified. File structure depth, script permissions, and hidden files are checked deterministically.
+
+3. **LLM Security Analysis**: Skills undergo security analysis using a configurable LLM model (default: Claude Haiku 4.5). Instruction-only skills are analyzed for prompt injection patterns. Executable skills undergo additional static analysis for network calls, credential access, file path traversal, and encoded payloads.
+
+4. **Owner Approval**: Skills require explicit Owner approval unless auto-approve conditions are met. Owner-tier instruction-only skills with low risk may auto-approve (configurable). Community-tier and executable skills always require Owner approval. The full analysis report is presented for decision.
+
+5. **Dependency Resolution**: Skills declaring dependencies via `metadata.x-openkraken.dependencies` trigger Nix provisioning. Nix packages are resolved from nixpkgs and made available in the sandbox. This ensures native package managers are never invoked at runtime.
+
+6. **Activation**: Approved skills are moved to the active skills directory. The Skill Loader Middleware exposes the skill manifest to the Agent via system prompt. The Agent autonomously discovers and activates skills based on task relevance.
+
+**Tiered Trust Model:**
+
+| Tier | Source | Approval Required | Auto-Update | Analysis |
+|------|--------|-------------------|-------------|----------|
+| **System** | Bundled with project | None | None | Project-audited |
+| **Owner** | Uploaded by Owner | Yes (unless instruction-only + low risk) | Approved versions only | Required for executable |
+| **Community** | External repositories | Yes | Approved versions only | Required for all |
+
+**Skill Discovery and Activation:**
+
+Skills follow the AgentSkills.io progressive disclosure model:
+1. At startup, the Skill Loader Middleware scans skill directories and extracts `name` + `description` from each SKILL.md frontmatter
+2. The `<available_skills>` block is injected into the Agent's system prompt using the `skills-ref to-prompt` pattern
+3. The Agent autonomously decides when to activate a skill based on task relevance
+4. When activated, the Agent loads the full SKILL.md body and executes accordingly
+5. If the skill has scripts, the Agent invokes them via `execute_terminal` with sandbox enforcement
+
+**Version Tracking and Auto-Update:**
+
+- Each skill stores its current version from SKILL.md frontmatter
+- The pipeline tracks approved version bounds (major.minor.patch)
+- When a source skill updates, the pipeline detects the version change
+- Auto-update triggers only for already-approved skills within configured bounds
+- Owner is notified of auto-updates with version change details
+- Manual review is required for new skills or major version changes
+
+**Provenance and Audit:**
+
+All skill operations are logged to the audit table:
+- `skill_id`: Unique identifier
+- `skill_name`: Human-readable name
+- `skill_version`: Current version
+- `skill_source`: Source URL/repository
+- `skill_tier`: system/owner/community
+- `skill_action`: ingest/approve/update/remove
+- `analysis_report_id`: Reference to security analysis
+
+**Dependencies via Metadata:**
+
+Skills declare dependencies using the `metadata.x-openkraken.dependencies` field:
+
+```yaml
+---
+name: video-processor
+description: Extract audio and tables from video files
+metadata:
+  author: example-org
+  version: "1.0.0"
+  x-openkraken:
+    dependencies:
+      nix: ["ffmpeg", "imagemagick", "jq"]
+---
+```
+
+The Nix packages are provisioned before sandbox invocation, ensuring reproducible execution without runtime package installation.
 
 ---
 
