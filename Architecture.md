@@ -104,6 +104,8 @@ These philosophical commitments shape every architectural decision. Deviations r
 
 17. **Credential Isolation:** Credentials are stored in OS-level vaults (Keychain on macOS, secret-service on Linux) and never exposed to the Agent or written to persistent storage beyond runtime memory.
 
+18. **Day-Bounded Sessions:** A session, thread, and day are synonymous in OpenKraken. Each calendar day (YYYY-MM-DD) constitutes a single session with a single thread ID matching the date. At day boundary (midnight, Owner's configured timezone), the Orchestrator begins a new session. The Sandbox work and outputs zones are cleared at session boundaries. Previous sessions remain accessible in the Checkpointer for memory retrieval and audit purposes, but the Agent begins each day with a clean working environment.
+
 ### Open Responses Compliance and Competitive Positioning
 
 OpenKraken implements the **Open Responses API** as its primary interface contract, positioning it as an Open Responses Provider in the emerging ecosystem. This strategic decision provides several advantages:
@@ -171,13 +173,13 @@ The following containers constitute the deployable units of the OpenKraken syste
 
 **Browser Middleware**: Provides browser automation tools, managing isolated browser profiles per session and routing traffic through Egress Gateway.
 
-**Memory Middleware**: Manages three-tier recall system — Retrieves relevant memories before model calls using embedding-based retrieval and consolidates memories after agent completion.
+**Memory Middleware**: Manages three-tier recall system — Retrieves relevant memories before model calls using embedding-based retrieval and consolidates memories after agent completion. The Memory Middleware is a plug-and-play component developed independently by the Owner. The Orchestrator provides the middleware interface contract and SQLite storage schema; the consolidation algorithm, decay strategy, and retrieval heuristics are encapsulated within the middleware implementation and are not defined by this architecture.
 
 **Skill Loader Middleware**: Exposes skill manifests to the Agent via system prompt. The Agent discovers available skills from the manifest and activates them autonomously based on task relevance. Manages skill lifecycle including version tracking, auto-updates within approved bounds, and provenance metadata storage.
 
-**Sub-Agent Middleware**: Enables task delegation through `createSubAgentMiddleware()` pattern — Spawns subordinate agent loops for complex task decomposition.
+**Sub-Agent Middleware**: Enables task delegation through `createSubAgentMiddleware()` pattern — Spawns subordinate agent loops for complex task decomposition. Sub-agents inherit the parent agent's sandbox boundaries, egress allowlist, and policy constraints. Delegation is limited to one level: sub-agents cannot spawn further sub-agents. This constraint prevents unbounded resource consumption and simplifies audit tracing.
 
-**Human-in-the-Loop Middleware**: Interrupts on configured operations for Owner approval via Telegram inline keyboards.
+**Human-in-the-Loop Middleware**: Interrupts on configured operations for Owner approval via Telegram inline keyboards. When an approval is pending, the agent's execution state is persisted in the Checkpointer and the agent loop suspends. There is no timeout — the Checkpointer maintains the suspended state indefinitely until the Owner approves or rejects the operation. LangGraph's checkpoint mechanism preserves complete execution state across Orchestrator restarts.
 
 **Summarization Middleware**: Compresses older messages when context exceeds token thresholds to prevent context overflow.
 
@@ -219,11 +221,11 @@ The following containers constitute the deployable units of the OpenKraken syste
 
 > **Browser Technology:** Vercel Agent Browser 0.9.0 with CDP protocol support. See [TechSpec.md Section 1.3](TechSpec.md#13-protocol-and-integration-libraries).
 
-**Memory Middleware**: Manages three-tier recall system — Retrieves relevant memories before model calls using embedding-based retrieval and consolidates memories after agent completion.
+**Memory Middleware**: Manages three-tier recall system — Retrieves relevant memories before model calls using embedding-based retrieval and consolidates memories after agent completion. The Memory Middleware is a plug-and-play component developed independently by the Owner. The Orchestrator provides the middleware interface contract and SQLite storage schema; the consolidation algorithm, decay strategy, and retrieval heuristics are encapsulated within the middleware implementation and are not defined by this architecture.
 
 **Skill Loader Middleware**: Injects skill manifests into Agent context based on task — Reads skill folders and loads SKILL.md content.
 
-**Human-in-the-Loop Middleware**: Interrupts on configured operations for Owner approval via Telegram inline keyboards.
+**Human-in-the-Loop Middleware**: Interrupts on configured operations for Owner approval via Telegram inline keyboards. When an approval is pending, the agent's execution state is persisted in the Checkpointer and the agent loop suspends. There is no timeout — the Checkpointer maintains the suspended state indefinitely until the Owner approves or rejects the operation. LangGraph's checkpoint mechanism preserves complete execution state across Orchestrator restarts.
 
 **Summarization Middleware**: Compresses older messages when context exceeds token thresholds to prevent context overflow.
 
@@ -628,7 +630,13 @@ The OpenKraken architecture implements a layered authentication and authorizatio
 
 **Credential Access Authorization**: Credentials stored in the vault are accessed by the Gateway only when required for external service calls. The Agent has no direct credential access—any tool requiring credentials must be dispatched through the Gateway, which retrieves the credential from the vault, injects it into the appropriate context, and ensures the credential is never exposed to the Agent.
 
-**Egress Gateway Authorization**: The Gateway communicates with the Egress Gateway over a Unix domain socket with restricted permissions (typically `gateway:gateway` ownership with `0600` permissions). The socket accepts only local connections from processes with appropriate credentials. Additionally, the Gateway's management API requires authenticated requests using an internal token.
+**Egress Gateway Authorization**: The Orchestrator communicates with the Egress Gateway over a Unix domain socket with two complementary authentication layers.
+
+*Layer 1 — Filesystem Permissions (Transport):* The socket is created by the Egress Gateway at `/run/openkraken/egress.sock` (Linux) or `$OPENKRAKEN_HOME/egress.sock` (macOS) with `openkraken:openkraken` ownership and `0660` permissions. Only processes running as the `openkraken` user or group can connect. This is the primary authentication boundary.
+
+*Layer 2 — HMAC-SHA256 Request Signing (Application):* All Orchestrator requests to the Egress Gateway management API include an HMAC-SHA256 signature for defense-in-depth. A 256-bit shared secret is generated during `openkraken init` and stored in the OS-level vault under `openkraken-egress-hmac-key`. Both processes read this secret at startup and cache it in memory. Each request includes `X-OpenKraken-Timestamp` (unix epoch seconds) and `X-OpenKraken-Signature` (HMAC-SHA256 of timestamp + method + path + body). The Egress Gateway validates that the timestamp is within ±30 seconds of current time (preventing replay attacks) and that the signature matches. Requests failing either check receive HTTP 401.
+
+This design provides equivalent authentication guarantees to mTLS for same-host IPC without certificate management overhead. The HMAC signing binds authentication to specific request content, ensuring intercepted signatures cannot be reused for different operations.
 
 > **Credential Technology:** macOS uses Keychain Services API, Linux uses secret-service API (GNOME Keyring, KWallet, or pass). See [TechSpec.md Section 1.5](TechSpec.md#15-infrastructure-and-build) for Egress Gateway implementation and [TechSpec.md Section 7.2](TechSpec.md#72-credential-handling) for credential handling details.
 
@@ -643,6 +651,16 @@ The observability strategy in OpenKraken addresses three distinct needs: operati
 **Health and Metrics Endpoints**: The Gateway exposes standardized endpoints for operational monitoring. The `/health` endpoint returns HTTP 200 indicating the process is running. The `/ready` endpoint performs dependency checks (SQLite connectivity, MCP server availability, Egress Gateway responsiveness) and returns 200 only when all dependencies are healthy. The `/metrics` endpoint serves Prometheus-compatible metrics including HTTP request counts, tool invocation counts, and proxy dispositions.
 
 > **Logging Schema:** See [TechSpec.md Section 3.4](TechSpec.md#34-audit-log-database-auditdb) for audit log schema and [TechSpec.md Section 3.5](TechSpec.md#35-proxy-access-log-database-proxydb) for proxy access log schema.
+
+**Operational Alerting**: The Orchestrator includes an Alert Emitter — a system health component that evaluates infrastructure conditions on a configurable interval (default: 60 seconds) and delivers alerts to the Owner through the existing Telegram Adapter. This is a cross-cutting system concern, not an agent lifecycle or middleware component. The Agent has no awareness of the Alert Emitter.
+
+The Alert Emitter evaluates conditions against internal metrics and system state: database size approaching limits (WARN at configurable threshold, default 8GB), database integrity check failures (CRITICAL), Egress Gateway health (ERROR after 3 consecutive failures, INFO on recovery), backup success or failure (configurable), LLM provider error rates (WARN above threshold), credential vault accessibility (CRITICAL), checkpoint storage growth (WARN), scheduled task failures (ERROR), and skill auto-updates (INFO).
+
+To prevent alert fatigue, identical alerts are suppressed for a configurable cooldown period (default: 30 minutes). Recovery alerts reset the suppression window for corresponding failure alerts. INFO-level alerts (backup success, skill updates) are individually configurable by the Owner. All alerts are logged to the audit log regardless of Telegram delivery status.
+
+This design avoids external monitoring infrastructure (Prometheus + Grafana + PagerDuty) that is disproportionate for a single-tenant personal runtime. The Owner already has Telegram as a first-class channel; alerting flows through it. Prometheus metrics remain available at `/metrics` for Owners who choose to integrate external monitoring.
+
+> **Alert Configuration:** See [TechSpec.md Section 6.2](TechSpec.md#62-configuration-file-schema) for alerting configuration schema.
 
 ### 5.3 Error Handling and Degradation
 
@@ -757,7 +775,7 @@ The Nix packages are provisioned before sandbox invocation, ensuring reproducibl
 
 **SQLite Concurrency Boundaries**: While the Checkpointer uses WAL mode for concurrent access, SQLite's single-writer model means heavy write loads (frequent checkpointing during rapid tool invocations) can create write starvation. The architecture does not currently implement write batching or prioritization.
 
-**MCP Adapter State Management**: The MCP adapter maintains persistent connections to MCP servers. If an MCP server crashes, the adapter may hold stale connection state until connection timeout. The architecture does not implement proactive health checking of MCP connections.
+**MCP Adapter State Management**: The MCP adapter maintains persistent connections to MCP servers via `@langchain/mcp-adapters`, which owns connection lifecycle management, reconnection logic, and health checking. If an MCP server crashes, recovery behavior is determined by the LangChain MCP connector implementation. OpenKraken monitors MCP connection status through the Orchestrator's readiness endpoint (`/ready`) and emits alerts via the Alert Emitter when MCP servers become unreachable.
 
 **Cross-Platform Substrate Differences**: The architecture claims "identical Agent capability semantics" across Linux and macOS, but the underlying mechanisms differ significantly (bubblewrap bind mounts vs. Seatbelt profiles). Edge cases around symlink handling and violation detection differ between platforms. Additionally, Apple's sandbox-exec (Seatbelt) mechanism is deprecated and receives minimal maintenance. Future macOS versions may remove or further restrict Seatbelt capabilities. The architecture should monitor alternative isolation mechanisms for macOS (e.g., Docker Desktop's hypervisor framework, nsjail via Homebrew) as potential migration paths.
 
@@ -775,6 +793,8 @@ The Nix packages are provisioned before sandbox invocation, ensuring reproducibl
 **Limited Integration Testing**: The current test coverage focuses on unit tests for individual components. Integration tests covering end-to-end flows are sparse, risking undetected component interaction failures.
 
 **Documentation-Implementation Drift**: Without automated verification that implementation matches architecture, the document becomes a historical record rather than a specification.
+
+**Schema Upgrade Path**: Database schema migrations are forward-only (TechSpec.md §3.6). LangGraph checkpoint compatibility is managed through the checkpoint `v` field (currently `v: 4`), which LangGraph uses to handle deserialization across versions. The Orchestrator validates checkpoint version compatibility at startup and refuses to load checkpoints from incompatible future versions. Schema migrations are applied before the Orchestrator accepts requests, ensuring the database is always at the expected version.
 
 ---
 
@@ -799,3 +819,4 @@ The Nix packages are provisioned before sandbox invocation, ensuring reproducibl
 > - LLM Provider selection (Anthropic, OpenAI, etc.)
 >
 > These implementation decisions are deferred to the third agent (Tech Lead) per role boundaries defined in AGENTS.md.
+

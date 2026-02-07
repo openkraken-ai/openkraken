@@ -825,7 +825,8 @@ Future enhancement: Consider migration rollback if rollback patterns become crit
 
 #### Migration Testing
 
-Each migration includes inline test assertions:```sql
+Each migration includes inline test assertions:
+```sql
 -- 006_framework_decisions.sql
 -- Migration: Add framework decision tracking tables
 
@@ -1868,11 +1869,12 @@ openkraken/
     │   │       ├── memories.ts
     │   │       ├── audit.ts
     │   │       └── proxy.ts
-    │   ├── observability/         # Logging and metrics
+    │   ├── observability/         # Logging, metrics, and alerting
     │   │   ├── index.ts
     │   │   ├── logger.ts
     │   │   ├── tracer.ts
-    │   │   └── metrics.ts
+    │   │   ├── metrics.ts
+    │   │   └── alerting.ts         # Alert Emitter: system health → Telegram
     │   └── gateway/               # Egress gateway client
     │       ├── index.ts
     │       ├── client.ts          # HTTP client for gateway
@@ -2684,6 +2686,16 @@ The Orchestrator reads configuration from environment variables set by the Platf
 
 *Required for respective integrations. May be empty if integration not configured.
 
+**Vault-Stored Credentials (provisioned via `openkraken init`):**
+
+| Vault Identifier | Purpose | Rotation Command |
+|------------------|---------|-----------------|
+| `openkraken-master-key` | AES-256-GCM encryption master key for messages and memories | `openkraken credentials rotate-master-key` |
+| `openkraken-egress-hmac-key` | HMAC-SHA256 shared secret for Egress Gateway request signing | `openkraken credentials rotate-egress-key` |
+| `openkraken-api-token` | Bearer token for CLI and Web UI authentication | `openkraken credentials rotate-api-token` |
+
+These credentials are never exposed as environment variables in production. They are read from the OS-level vault at Orchestrator startup and cached in process memory. In development mode (`OPENKRAKEN_ENV=development`), only integration API keys fall back to environment variables — vault-stored system credentials have no env var fallback.
+
 ### 6.2 Configuration File Schema
 
 The Orchestrator reads configuration from a YAML file at `$OPENKRAKEN_CONFIG`.
@@ -2767,7 +2779,7 @@ middleware:
       - "file:delete"
       - "terminal:exec"
       - "skill:install"
-    approvalTimeoutMinutes: 30
+    # No timeout — Checkpointer maintains suspended state indefinitely until Owner responds
 
 skills:
   enabled: true
@@ -2806,6 +2818,34 @@ storage:
     schedule: "0 3 * * *"  # Daily at 3 AM
     retentionDays: 7
     # Single database file backup (openkraken.db contains all tables)
+
+alerting:
+  enabled: true
+  evaluationIntervalSeconds: 60
+  channel: telegram  # Delivered through existing Telegram Adapter
+  suppressionMinutes: 30  # Deduplicate identical alerts
+  conditions:
+    databaseSize:
+      enabled: true
+      warnThresholdGb: 8
+    databaseIntegrity:
+      enabled: true
+    backupNotifications:
+      onSuccess: false  # Suppress routine success messages
+      onFailure: true
+    egressGatewayHealth:
+      enabled: true
+      consecutiveFailures: 3
+    llmProviderErrors:
+      enabled: true
+      windowMinutes: 5
+      threshold: 5
+    credentialVaultHealth:
+      enabled: true
+    scheduledTaskFailure:
+      enabled: true
+    skillAutoUpdate:
+      enabled: true
 ```
 
 ## 7. Performance Requirements
@@ -2866,15 +2906,20 @@ All benchmarks produce structured output stored in `audit.db` for trend analysis
 | Credential leakage in logs | Content scanning callback handler inspects all output. Structured logging scrubs sensitive fields. |
 | Session hijacking | Unix domain socket authentication via process ID verification. Local-only network binding. |
 | Supply chain attacks | Pin all dependencies in package.json. Hash verification via Nix. Skill script LLM pre-analysis. |
+| Egress Gateway management API abuse | Filesystem permissions (0660) on Unix socket + HMAC-SHA256 request signing with ±30s timestamp window. |
+| Unauthorized CLI/API access | Vault-stored bearer token with constant-time comparison. Local-only binding (127.0.0.1). |
+| Encryption key compromise | Master key in OS-level vault, never on disk. HKDF-derived subkeys per domain. Recovery code is Owner's offline responsibility. |
+| Replay attacks on Egress Gateway | HMAC signature includes timestamp; requests older than ±30 seconds are rejected. |
+| Backup data exposure | Backups contain encrypted fields but not the encryption key. Decryption requires vault access or recovery code. |
 
 ### 8.2 Credential Handling
 
 Credentials follow strict lifecycle rules:
 
-1. **Provisioning:** Owner provisions credentials via OS-native tools (Keychain Access, secret-service) or CLI commands.
-2. **Retrieval:** Orchestrator reads credentials at startup via CredentialVault abstraction.
+1. **Provisioning:** System credentials (master encryption key, egress HMAC key, API token) are generated during `openkraken init` and stored in the OS-level vault. Integration credentials (API keys, bot tokens) are provisioned by the Owner via `openkraken credentials set` or OS-native vault tools.
+2. **Retrieval:** Orchestrator reads all credentials at startup via CredentialVault abstraction.
 3. **Caching:** Credentials cached in memory with configurable timeout (default 60 minutes).
-4. **Rotation:** Re-read from vault on signal (SIGHUP) or timeout. No restart required.
+4. **Rotation:** Integration credentials re-read from vault on signal (SIGHUP) or timeout. System credentials rotated via dedicated CLI commands (`rotate-master-key`, `rotate-egress-key`, `rotate-api-token`). No restart required.
 5. **Destruction:** Process memory cleared on shutdown. No persistent storage.
 
 ### 8.3 Sandboxing Guarantees
@@ -2886,6 +2931,176 @@ Credentials follow strict lifecycle rules:
 | Process limits | cgroups | Process timeout mechanisms |
 | Unix socket blocking | Seccomp BPF filter | Seatbelt rules |
 | Violation detection | Exit codes, error messages | Native `os_log` integration |
+
+---
+
+### 8.4 Encryption Key Management Lifecycle
+
+The TechSpec specifies AES-256-GCM application-level encryption for `messages.content` and `memories.content`/`memories.metadata` fields. This section defines the complete key lifecycle.
+
+**Key Hierarchy — Single Master Key with HKDF Derivation:**
+
+OpenKraken uses a single 256-bit master key stored in the OS-level credential vault, combined with HKDF (RFC 5869) to derive purpose-specific subkeys:
+
+```
+Master Key (256-bit, vault-stored under "openkraken-master-key")
+  ├── Memory Encryption Key  = HKDF(master, info="openkraken-memory-v1")
+  ├── Message Encryption Key = HKDF(master, info="openkraken-messages-v1")
+  └── Backup Encryption Key  = HKDF(master, info="openkraken-backup-v1")
+```
+
+**Key Generation:**
+
+The master key is generated once during `openkraken init`:
+1. Generate 256 bits via `crypto.getRandomValues()`
+2. Store in OS-level vault under `openkraken-master-key`
+3. Display a one-time recovery code (base64-encoded master key) for Owner to record offline
+4. Log SECURITY event (key fingerprint only, never the key itself)
+
+The recovery code is the only mechanism to recover encrypted data if the vault is lost. This is explicitly communicated during provisioning.
+
+**Key Storage:**
+
+| Platform | Vault | Service Identifier | Access Control |
+|----------|-------|--------------------|----------------|
+| macOS | Keychain Services | `openkraken-master-key` | Application-specific access group |
+| Linux | secret-service | `openkraken-master-key` | Session-scoped D-Bus access |
+
+The master key is read once at Orchestrator startup, cached in process memory, and never written to disk, logs, environment variables, or network connections.
+
+**Key Rotation:**
+
+Rotation is Owner-initiated via `openkraken credentials rotate-master-key`. Automatic rotation is intentionally not implemented — in a single-tenant system, automatic rotation creates more risk (data inaccessibility from failed rotation) than it mitigates.
+
+Rotation procedure:
+1. Generate new 256-bit master key
+2. Read all encrypted records from `messages` and `memories` tables
+3. Decrypt with old key's derived subkeys
+4. Re-encrypt with new key's derived subkeys
+5. Write re-encrypted records in a single SQLite transaction
+6. Store new key in vault, replacing old
+7. Display new recovery code
+8. Log SECURITY event (rotation timestamp, record count, old/new key fingerprints)
+
+If rotation fails mid-process, the transaction rolls back and the old key remains active.
+
+**Key Derivation (Conceptual Pattern):**
+
+```typescript
+import { hkdf } from "node:crypto";
+
+async function deriveSubkey(masterKey: Buffer, purpose: string): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    hkdf("sha256", masterKey, "", purpose, 32, (err, key) => {
+      if (err) reject(err);
+      else resolve(Buffer.from(key));
+    });
+  });
+}
+```
+
+**Interaction with Backup/Restore:**
+
+Backups contain encrypted data but not the master key. Restoring a backup requires the master key (or recovery code) that was active when the backup was created. If the Owner rotated the master key after backup creation, the backup's encrypted data requires the old recovery code. This is an intentional design constraint communicated during key rotation.
+
+**NIST Alignment:** AES-256 per NIST SP 800-57 Part 1 Rev 5 (Table 2). HKDF per NIST SP 800-56C Rev 2. Key lifetime is Owner-controlled (appropriate for data-at-rest encryption in single-tenant contexts).
+
+---
+
+### 8.5 Backup and Disaster Recovery
+
+A complete OpenKraken backup consists of three components:
+
+| Component | Contents | Mechanism | Frequency |
+|-----------|----------|-----------|-----------|
+| **Database snapshot** | `openkraken.db` (all tables) | `db.serialize()` → gzip | Daily (configurable) |
+| **Configuration export** | `config.yaml`, Nix flake inputs, skill directories | File archive | On change |
+| **Recovery code** | Master encryption key (base64) | Owner's offline storage | Generated during init and key rotation |
+
+**Database Backup Procedure (`openkraken backup create`):**
+
+1. Call `db.serialize()` on live database (WAL-safe, no exclusive lock required)
+2. Run `PRAGMA integrity_check` on serialized buffer
+3. Compress with gzip
+4. Write to `$OPENKRAKEN_HOME/backups/openkraken-<ISO8601-date>.db.gz`
+5. Log backup event to audit log (size, checksum, duration)
+6. Enforce retention: delete backups older than configured retention (default 7 days)
+
+**Automated Schedule:**
+
+Configured via `storage.backup.schedule` in `config.yaml` (default: `0 3 * * *`). The Platform Manager (Nix) generates a systemd timer (Linux) or launchd calendar interval (macOS).
+
+**Disaster Recovery Matrix:**
+
+| Scenario | Procedure | Data Loss |
+|----------|-----------|-----------|
+| Orchestrator crash | Automatic restart via systemd/launchd. Checkpointer restores session from WAL. | None |
+| Database corruption | `openkraken backup restore <file>`. Replaces `openkraken.db` with deserialized backup. | Since last backup |
+| Vault reset / OS reinstall | `openkraken credentials restore-master-key` with recovery code. Then restore database. | None (if recovery code + backup available) |
+| Complete host loss | Fresh Nix install → restore config → restore vault from recovery code → restore database. | Since last backup |
+| Recovery code lost + vault intact | System operates normally. Owner should rotate key immediately to generate new recovery code. | None |
+| Recovery code lost + vault lost | **Unrecoverable.** Encrypted fields permanently inaccessible. Unencrypted data (checkpoints, audit, proxy, skills) remains accessible. | Encrypted message + memory content |
+
+**Restore Command (`openkraken backup restore <file>`):**
+
+1. Stop Orchestrator gracefully
+2. Decompress backup
+3. Run `PRAGMA integrity_check` on restored data
+4. Verify `schema_versions` table compatibility with running Orchestrator version
+5. Attempt to decrypt a sample encrypted field to verify vault key matches backup encryption
+6. If decryption fails, warn Owner and require `--force` flag to proceed
+7. Replace `openkraken.db`
+8. Restart Orchestrator
+9. Log SECURITY event (restore timestamp, backup date, integrity result)
+
+**Backup Size Management:**
+
+Compressed SQLite databases typically achieve 3-5x compression with gzip. With default 7-day retention, total backup storage is bounded to approximately `7 × compressed_db_size`. The Alert Emitter warns when database size approaches the configured limit (default 8GB warning at 10GB max).
+
+---
+
+### 8.6 CLI and Web UI Authentication
+
+The CLI and Web UI authenticate to the Orchestrator's local HTTP API using a vault-stored static token.
+
+**Token Generation:**
+
+During `openkraken init`, a 256-bit cryptographically random token is generated, stored in the OS-level vault under `openkraken-api-token`, and displayed once:
+
+```bash
+$ openkraken init
+# ... provisioning steps ...
+API token generated. Add to your shell profile:
+  export OPENKRAKEN_TOKEN="ok_a1b2c3d4e5f6..."
+```
+
+The `ok_` prefix enables identification in shell history and configuration.
+
+**Token Usage:**
+
+The CLI includes the token in every request:
+```
+Authorization: Bearer ok_a1b2c3d4e5f6...
+```
+
+The Orchestrator validates via constant-time comparison against the vault-stored value. Invalid tokens receive HTTP 401.
+
+The Web UI uses the same token, stored in an HTTP-only session cookie after initial authentication. Session expiry is configurable (default: 24 hours).
+
+**Token Rotation:**
+
+`openkraken credentials rotate-api-token`:
+1. Generate new 256-bit token
+2. Store in vault, replacing old
+3. Display new token for Owner's shell profile
+4. Invalidate all existing Web UI sessions immediately
+5. Log SECURITY event
+
+**Design Rationale:**
+
+JWT/OAuth/OIDC are not used because the system binds to `127.0.0.1` with exactly one user. The threat model is "prevent unauthorized local processes from issuing commands," not federated identity. A static vault-stored token provides equivalent security without token signing, refresh flows, or identity provider infrastructure.
+
+Authentication is required (rather than passwordless) because in VPS deployments, other users on a shared host could access `127.0.0.1`. The token prevents unauthorized local access without per-invocation password entry.
 
 ---
 
@@ -2987,7 +3202,5 @@ WantedBy=multi-user.target
 | 1.5.0 | 2026-02-04 | Principal Software Engineer | Changed embedding model from intfloat/e5-small-v2 to intfloat/multilingual-e5-small (multilingual support). Verified via HuggingFace API: 384 dimensions, 12 layers, 512 max tokens, XLMRobertaTokenizer, 100+ languages. |
 | 1.6.0 | 2026-02-04 | Principal Software Engineer | Removed duplicate code (Repository Pattern example). Removed Section 9 "Pending Architectural Decisions" - all decisions resolved. Renumbered Appendix to Section 9. |
 | 1.7.0 | 2026-02-04 | Principal Software Engineer | Major updates: Adopted Open Responses API as primary interface contract; Updated checkpointer schema to LangGraph-compatible with BLOB serialization; Removed embedding model details (RMM Memory middleware is external integration); Replaced ESLint/Prettier with Biome + Ultracite; Removed Content Scanning callback (uses LangChain built-in piiMiddleware); Updated Nix versions (2.31.3/nixpkgs 25.11); Removed Docker Compose (Nix-driven sandboxing only); Simplified project structure.
+| 1.8.0 | 2026-02-07 | Principal Software Engineer | Added §8.4 Encryption Key Management Lifecycle (HKDF key derivation, vault storage, rotation procedure); §8.5 Backup and Disaster Recovery (three-component strategy, recovery matrix); §8.6 CLI/Web UI Authentication (vault-stored static token). Added alerting configuration to §6.2. Removed HITL approval timeout (Checkpointer persists indefinitely). |
 
----
-
-**End of TechSpec.md**
