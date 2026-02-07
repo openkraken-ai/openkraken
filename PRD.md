@@ -14,7 +14,7 @@ Current personal AI agent implementations suffer from fundamental architectural 
 
 OpenKraken will be considered successful when the following qualitative conditions are met: the Owner can provision credentials for any integration without those credentials ever appearing in logs, filesystem, or network captures accessible to the agent; the agent cannot access any network destination or file path that the Owner has not explicitly allowed, regardless of how the agent frames its requests; every agent action—including tool invocations, network calls, and file operations—is logged with sufficient detail for complete audit and reproduction; the Orchestrator operates as a persistent background service that automatically starts on system boot, maintains continuous availability for scheduled tasks, and responds instantly to Owner interactions; and the agent demonstrates genuine helpfulness within its security constraints rather than refusing all actions that require external capability. The system must feel to the Owner like a capable assistant that happens to be unbreakable, rather than an unbreakable system that happens to be unhelpful.
 
-**Cross-Platform Consistency Criteria:** The System shall deliver identical capability semantics across Linux and macOS platforms with the following measurable criteria: path allowlist validation must produce identical results regardless of platform filesystem conventions (case sensitivity, path separators, volume mounting); network egress policies must enforce identical domain restrictions across platforms using platform-native sandbox mechanisms; credential vault operations must provide equivalent security properties (Keychain on macOS, secret-service on Linux) with identical API semantics; and CLI commands must produce functionally equivalent behavior across platforms with platform-specific formatting only where semantically required. Cross-platform consistency shall be validated through automated test suites that execute identical capability requests on both platforms and verify equivalent outcomes.
+**Cross-Platform Consistency Criteria:** The System shall deliver identical capability semantics across supported platforms with the following measurable criteria: path allowlist validation must produce identical results regardless of platform filesystem conventions; network egress policies must enforce identical domain restrictions across platforms using platform-native isolation mechanisms; credential vault operations must provide equivalent security properties with identical semantics; and CLI commands must produce functionally equivalent behavior across platforms with platform-specific formatting only where semantically required. Cross-platform consistency shall be validated through automated test suites that execute identical capability requests on both platforms and verify equivalent outcomes.
 
 ---
 
@@ -25,13 +25,13 @@ The following terms constitute the Ubiquitous Language of OpenKraken. All docume
 | Term | Definition | Do Not Use |
 |------|------------|------------|
 | **Owner** | The single human who provisions, configures, and operates a OpenKraken instance. The Owner has full system access and is the only human in the loop. There is no concept of multiple users, administrators, or tenants. | User, Client, Customer, Administrator, Operator |
-| **Agent** | The AI-driven runtime subsystem operating inside the sandbox. The Agent is a managed capability provider, not a peer to the Owner. It has no awareness of platform internals, no access to credentials, and no ability to modify its own constraints. The Agent operates within a bounded filesystem environment at /sandbox/ with awareness of zone structure but no visibility into host paths or actual filesystem location. | Assistant, Bot, Worker, Subagent, Chatbot |
-| **Orchestrator** | The Bun/TypeScript orchestration layer that manages agent execution lifecycle, session management, and tool dispatch. The Orchestrator mediates all communication between the Owner, external integrations, and the Agent. This component was previously referred to as "Gateway" in earlier documentation. | Controller, Server, API Layer, Gateway (deprecated) |
-| **Egress Gateway** | The network boundary component implementing HTTP CONNECT proxy with domain allowlisting. Implemented as a separate Go or Rust binary with independent lifecycle. Enforces strict allowlist-only network policy for all sandbox egress. | Firewall, Proxy, Outbound Gateway, Egress Proxy (deprecated) |
-| **Sandbox** | The isolation environment where the Agent executes. The Agent operates within a bounded filesystem rooted at /sandbox/ with four logical zones: skills (read-only, immutable per session), inputs (read-only, per-session), work (read-write, cleared at session boundaries), and outputs (read-write, cleared at session boundaries). The Sandbox uses platform-native mechanisms to enforce resource and capability boundaries, presenting identical semantics across Linux and macOS platforms. The Agent has no awareness of the Sandbox's existence or which mechanism enforces its boundaries. | Container, VM, Isolation Layer, Jail, Bubblewrap |
+| **Agent** | The AI-driven runtime subsystem operating inside the sandbox. The Agent is a managed capability provider, not a peer to the Owner. It has no awareness of platform internals, no access to credentials, and no ability to modify its own constraints. The Agent operates within a bounded filesystem environment with logical zones but no visibility into host paths or actual filesystem location. | Assistant, Bot, Worker, Subagent, Chatbot |
+| **Orchestrator** | The orchestration layer that manages agent execution lifecycle, session management, and tool dispatch. The Orchestrator mediates all communication between the Owner, external integrations, and the Agent. This component was previously referred to as "Gateway" in earlier documentation. | Controller, Server, API Layer, Gateway (deprecated) |
+| **Egress Gateway** | The network boundary component enforcing domain allowlisting for all outbound connections. Implemented as a separate process with independent lifecycle. Enforces strict allowlist-only network policy for all sandbox egress. | Firewall, Proxy, Outbound Gateway, Egress Proxy (deprecated) |
+| **Sandbox** | The isolation environment where the Agent executes. The Agent operates within a bounded filesystem with logical zones for different operation types. The Sandbox uses platform-native mechanisms to enforce resource and capability boundaries. The Agent has no awareness of the Sandbox's existence or which mechanism enforces its boundaries. | Container, VM, Isolation Layer, Jail, Bubblewrap |
 | **Credential** | Any secret value that authorizes access to external services, including API keys, OAuth tokens, passwords, and private keys. Credentials must be stored in OS-level vaults and never exposed to the Agent or written to persistent storage beyond runtime memory. | Secret, API Key, Token, Password, Auth Value |
 | **Skill** | A packaged capability that extends the Agent's functionality. Skills are authored by the Owner or sourced from trusted repositories and executed within the Sandbox with controlled permissions. | Plugin, Extension, Tool, Module, Addon |
-| **Middleware** | A LangChain API extension point that intercepts, modifies, or responds to Agent operations as part of the Agent lifecycle. Middleware is strongly coupled to the Agent's execution flow, enabling context injection, policy enforcement, memory management, and observability. Unlike generic hooks, LangChain Middleware operates synchronously during Agent execution, transforming inputs and outputs at defined points in the call chain. | Hook, Filter, Interceptor, Handler, Callback |
+| **Middleware** | An extension point that intercepts, modifies, or responds to Agent operations as part of the Agent lifecycle. Middleware is strongly coupled to the Agent's execution flow, enabling context injection, policy enforcement, memory management, and observability. Middleware operates synchronously during Agent execution, transforming inputs and outputs at defined points in the call chain. | Hook, Filter, Interceptor, Handler, Callback |
 | **Checkpointer** | The persistent state store that preserves Agent state across Orchestrator restarts. Checkpointers ensure session continuity and durable execution tracking. | Session Store, State Store, Persistence Layer |
 
 ---
@@ -84,15 +84,15 @@ Agent behavior is defined through constitutional documents injected at runtime, 
 
 ### Epic: Security Enforcement (P0)
 
-**CAP-010:** The System shall isolate Agent execution within platform-native sandbox mechanisms, preventing the Agent from accessing resources outside its permitted scope regardless of input manipulation.
+**CAP-010:** The System shall isolate Agent execution within an isolation environment, preventing the Agent from accessing host resources, network destinations, or filesystem paths outside explicitly permitted boundaries regardless of input manipulation.
 
-**CAP-011:** The System shall store all credentials in OS-level vaults (Keychain on macOS, secret-service on Linux), never exposing credentials to the Agent or persisting them beyond runtime memory.
+**CAP-011:** The System shall store all credentials in platform-native secure credential stores, never exposing credentials to the Agent or persisting them in configuration files or environment variables.
 
 **CAP-012:** The System shall enforce network egress through an allowlisting proxy, blocking all outbound connections to domains not explicitly approved by the Owner.
 
-**CAP-013:** The System shall inject Agent identity (SOUL.md) directly into the system prompt at runtime, never materializing identity documents as files within the Sandbox.
+**CAP-013:** The System shall inject Agent identity directly at runtime, never materializing identity documents as files accessible to the Agent.
 
-**CAP-014:** The System shall validate all file paths accessed by the Agent against an Owner-defined allowlist before Sandbox invocation, rejecting any path outside permitted zones. The Agent shall operate within a bounded filesystem environment rooted at /sandbox/ with awareness of zone structure (skills, inputs, work, outputs) but no visibility into host paths or actual filesystem location.
+**CAP-014:** The System shall validate all file paths accessed by the Agent against an Owner-defined allowlist before execution, rejecting any path outside permitted zones. The Agent shall operate within a bounded filesystem environment with logical zones for different operation types, with no visibility into host paths or actual filesystem location.
 
 ### Epic: Skill System (P0)
 
@@ -100,7 +100,7 @@ Agent behavior is defined through constitutional documents injected at runtime, 
 
 **CAP-021:** The System shall resolve Skill dependencies from locked specifications, converting standard lockfiles into isolated runtime environments during ingestion.
 
-**CAP-022:** The System shall prevent Skills from invoking native package managers at runtime, enforcing supply chain integrity through Nix-based dependency resolution.
+**CAP-022:** The System shall prevent Skills from invoking native package managers at runtime, enforcing supply chain integrity through immutable, hash-verified dependency resolution.
 
 **CAP-023:** The System shall execute Skills on-demand without requiring pre-installation or system modification, with packages becoming available transparently when requested.
 
@@ -108,7 +108,7 @@ Agent behavior is defined through constitutional documents injected at runtime, 
 
 ### Epic: Memory Management (P0)
 
-**CAP-030:** The System shall extract relevant context from previous sessions for Agent retrieval, with memory consolidation performed by middleware invisible to the Agent.
+**CAP-030:** The System shall automatically extract and consolidate relevant context from previous sessions for Agent retrieval, without requiring the Agent to initiate or manage memory operations.
 
 **CAP-031:** The System shall persist memory data in encrypted form within the Checkpointer, preventing memory exfiltration through filesystem access.
 
@@ -124,19 +124,19 @@ Agent behavior is defined through constitutional documents injected at runtime, 
 
 ### Epic: Integration Framework (P1)
 
-**CAP-050:** The System shall provide Model Context Protocol (MCP) adapters for the following first-class integrations: Slack for team communication and workflow automation; Discord for community interaction and bot commands; email (IMAP/SMTP) for message retrieval and sending; calendar (iCal/Google Calendar) for scheduling and event management; and Telegram for real-time bidirectional interaction as defined in CAP-052. Additional MCP adapters may be configured by the Owner for services not listed here.
+**CAP-050:** The System shall provide integration adapters for the following first-class services: Slack for team communication and workflow automation; Discord for community interaction; email for message retrieval and sending; calendar for scheduling and event management; and Telegram for real-time bidirectional interaction as defined in CAP-052. Additional integrations may be configured by the Owner for services not listed here.
 
 **CAP-051:** The System shall expose CLI and Web UI interfaces for Owner configuration of integrations, with credential provisioning through vault integration.
 
-**CAP-052:** The System shall support Telegram as a first-class integration channel, providing real-time interaction capabilities through the grammY framework with sandbox enforcement.
+**CAP-052:** The System shall support Telegram as a first-class integration channel, providing real-time bidirectional messaging capabilities with appropriate security validation.
 
 ### Epic: Observability (P1)
 
-**CAP-060:** The System shall emit OpenTelemetry-compatible traces for all Agent operations, including tool invocations, LLM calls, and middleware execution.
+**CAP-060:** The System shall provide comprehensive telemetry for all Agent operations, including execution traces, timing measurements, and structured event logs for debugging and audit purposes.
 
 **CAP-061:** The System shall provide structured logging of all Agent actions with sufficient detail for complete reproduction and security audit.
 
-**CAP-062:** The System shall expose observability data through multiple backends including SQLite for direct Owner access and OTLP collectors for standard interoperability. The Owner can always access raw observability data directly from the SQLite database without requiring external services.
+**CAP-062:** The System shall expose observability data through both local storage for direct Owner access and standard export formats for integration with external monitoring systems. The Owner shall retain direct access to all observability data without dependency on external services.
 
 **CAP-063:** The System shall implement automatic retry with exponential backoff for transient failures in LLM calls and external API tool invocations. Permanent failures shall be logged with detailed error information and the Owner notified through configured channels. All retry operations shall be logged for audit purposes.
 
@@ -162,15 +162,15 @@ Agent behavior is defined through constitutional documents injected at runtime, 
 
 ### Security Standards
 
-OpenKraken must satisfy the following security constraints: all credentials must be stored in OS-level vaults in production; environment variable fallback is permitted for development mode only (when `OPENKRAKEN_ENV=development` is explicitly set); the Agent must be unable to access any resource—network, filesystem, or memory—outside explicitly configured allowlists regardless of input framing; identity injection must occur at runtime with no file-based identity materialization in the Sandbox; and the system must operate on a Zero Trust model with no implicit trust for any input, including Owner-provided configuration files, system prompts, or conversation content. The system must satisfy GDPR data sovereignty requirements for European Owners and align with SOC 2 principles for auditability and change control, though full SOC 2 certification is not required for this version.
+OpenKraken must satisfy the following security constraints: all credentials must be stored in platform-native secure vaults in production; environment variable fallback is permitted for development mode only when explicitly configured; the Agent must be unable to access any resource—network, filesystem, or memory—outside explicitly configured allowlists regardless of input framing; identity injection must occur at runtime with no file-based identity materialization; and the system must operate on a Zero Trust model with no implicit trust for any input, including Owner-provided configuration files or conversation content. The system must satisfy GDPR data sovereignty requirements for European Owners and align with SOC 2 principles for auditability and change control, though full SOC 2 certification is not required for this version.
 
 ### Availability and Reliability
 
-The Agent must operate as a persistent background service that maintains continuous availability for scheduled tasks and incoming interactions; the Orchestrator shall restart automatically on system boot and recover gracefully from failures; scheduled tasks must execute within one minute of configured time under normal system conditions; the Checkpointer must maintain WAL mode for concurrent access resilience; and the system must provide graceful degradation for external integration failures without cascading to Agent unavailability.
+The Agent must operate as a persistent background service that maintains continuous availability for scheduled tasks and incoming interactions; the Orchestrator shall restart automatically on system boot and recover gracefully from failures; scheduled tasks must execute within one minute of configured time under normal system conditions; the Checkpointer must support concurrent access for resilience; and the system must provide graceful degradation for external integration failures without cascading to Agent unavailability.
 
 ### Performance Constraints
 
-Agent response latency must be dominated by LLM inference time, not system overhead; Sandbox invocation must complete within 100ms for standard tool calls; Checkpointer writes must not block Agent execution; and Egress Proxy throughput must match or exceed underlying network capacity.
+Agent response latency must be dominated by model inference time, not system overhead; Sandbox invocation must complete within 100ms for standard tool calls; Checkpointer writes must not block Agent execution; and network gateway throughput must match or exceed underlying network capacity.
 
 ### Accessibility Compliance
 
@@ -186,7 +186,7 @@ OpenKraken is scoped to deliver a deterministic, security-first personal AI agen
 
 ### Out of Scope
 
-The following capabilities, while potentially valuable, are explicitly excluded from this version to maintain focus and security posture. Direct WhatsApp integration is out of scope; Owners requiring WhatsApp must use an MCP bridge. Native mobile notifications are out of scope; the system provides browser-based and Telegram notifications only. Voice interfaces are out of scope; the system provides text-based interaction exclusively. Multi-user support is out of scope; the system serves one Owner and cannot be shared across users. Multi-tenant cloud deployment is out of scope; the system targets single-tenant deployment on personal devices or VPS infrastructure exclusively.
+The following capabilities, while potentially valuable, are explicitly excluded from this version to maintain focus and security posture. Direct WhatsApp integration is out of scope; Owners requiring WhatsApp must use a protocol bridge. Native mobile notifications are out of scope; the system provides browser-based and Telegram notifications only. Voice interfaces are out of scope; the system provides text-based interaction exclusively. Multi-user support is out of scope; the system serves one Owner and cannot be shared across users. Multi-tenant cloud deployment is out of scope; the system targets single-tenant deployment on personal devices or VPS infrastructure exclusively.
 
 ### Anti-Patterns to Avoid
 
@@ -198,7 +198,7 @@ OpenKraken explicitly rejects several patterns common in agent frameworks. The s
 
 ### Diagram A: System Context (C4 Level 1)
 
-> **Note:** The Checkpointer uses SQLite as its internal storage for all state and observability data. The Owner can query this data directly or export it to an OTLP collector. The relationship to OTLP Collector shown above represents the export path, not the primary storage.
+> **Note:** The Checkpointer provides internal storage for all state and observability data. The Owner can query this data directly or export it to external observability backends. The relationship to Observability Backend shown above represents the export path, not the primary storage.
 
 ```mermaid
 C4Context
@@ -210,37 +210,39 @@ C4Context
     System(orchestrator, "Orchestrator", "Orchestration layer that injects identity, enforces policies, manages state, and handles credential isolation")
     System(sandbox, "Sandbox", "Isolation environment where the Agent executes with bounded capabilities")
     System(agent, "Agent", "AI-driven managed subsystem with bounded filesystem awareness")
-    System(middleware, "Middleware", "LangChain API extension points for Agent lifecycle management")
+    System(middleware, "Middleware", "Extension points for Agent lifecycle management")
     System(checkpointer, "Checkpointer", "Persistent state store for session continuity and observability")
-    System(vault, "Credential Vault", "OS-level vault integration (Keychain/secret-service)")
+    System(vault, "Credential Vault", "Platform-native secure credential storage")
+ System(cli, "CLI", "Command-line interface for Owner interaction")
+ System(web_ui, "Web UI", "Web-based interface for Owner interaction")
     System(egress_gateway, "Egress Gateway", "Network intermediary enforcing domain allowlisting")
   }
 
   System_Ext(telegram, "Telegram", "First-class integration channel for Owner interaction")
-  System_Ext(mcp_servers, "MCP Servers", "Model Context Protocol adapters for Slack, Discord, email, calendar")
+  System_Ext(integration_services, "Integration Services", "External services for Slack, Discord, email, calendar")
   System_Ext(llm_provider, "LLM Provider", "External language model for Agent intelligence")
-  System_Ext(otel_collector, "OTLP Collector", "External OpenTelemetry collector for observability (Owner-configured)")
+  System_Ext(observability_backend, "Observability Backend", "External monitoring system for telemetry export (Owner-configured)")
 
-  Rel(Owner, CLI, "Configures, debugs, automates via")
-  Rel(Owner, Web_UI, "Interacts, monitors via")
-  Rel(Owner, Telegram, "Interacts via")
-  Rel(Owner, otel_collector, "Connects as OTLP consumer via")
+  Rel(Owner, cli, "Configures, debugs, automates via")
+  Rel(Owner, web_ui, "Interacts, monitors via")
+  Rel(Owner, telegram, "Interacts via")
+  Rel(Owner, observability_backend, "Connects as telemetry consumer via")
 
-  Rel(CLI, orchestrator, "Sends commands to")
-  Rel(Web_UI, orchestrator, "Sends commands to")
-  Rel(Telegram, orchestrator, "Sends messages to")
+  Rel(cli, orchestrator, "Sends commands to")
+  Rel(web_ui, orchestrator, "Sends commands to")
+  Rel(telegram, orchestrator, "Sends messages to")
 
   Rel(orchestrator, vault, "Stores/retrieves credentials via")
   Rel(orchestrator, egress_gateway, "Routes Agent network traffic through")
   Rel(orchestrator, sandbox, "Invokes Agent execution in")
   Rel(orchestrator, checkpointer, "Persists state and observability to")
-  Rel(orchestrator, middleware, "Chains LangChain middleware via")
+  Rel(orchestrator, middleware, "Chains extensions via")
 
   Rel(sandbox, agent, "Hosts")
   Rel(agent, llm_provider, "Calls for intelligence via")
 
-  Rel(orchestrator, mcp_servers, "Integrates via MCP adapters")
-  Rel(checkpointer, otel_collector, "Exports OTLP telemetry to")
+  Rel(orchestrator, integration_services, "Integrates via standard protocols")
+  Rel(checkpointer, observability_backend, "Exports telemetry to")
 ```
 
 ### Diagram B: Domain Model (Class Diagram)
@@ -250,8 +252,8 @@ classDiagram
   direction BT
 
   class Owner {
-    +string id
-    +string name
+    +id
+    +name
     +configureCredential(service, credential)
     +uploadSkill(skill)
     +definePolicy(policy)
@@ -301,30 +303,37 @@ classDiagram
   }
 
   class Middleware {
-    <<LangChain API>>
-    +handleLLMCall(input, output)
-    +handleToolExecution(input, output)
-    +handleRetrieverRetrieval(query, documents)
-    +handleChainExecution(input, output)
+    <<extension point>>
+    +interceptAgentCall(input, output)
+    +interceptToolExecution(input, output)
+    +interceptMemoryRetrieval(query, documents)
+    +interceptWorkflowExecution(input, output)
   }
 
   class Skill {
-    +string id
-    +string name
+    +id
+    +name
     +execute(inputs)
     +getCapabilities()
   }
 
   class Policy {
-    +list fileAllowlist
-    +list networkAllowlist
-    +list capabilityBounds
+    +fileAllowlist
+    +networkAllowlist
+    +capabilityBounds
   }
 
   class SOUL {
-    +string identity
-    +string values
-    +string behavioralGuidelines
+    +identity
+    +values
+    +behavioralGuidelines
+  }
+
+  class ObservabilityBackend {
+    <<external system>>
+    +receiveTelemetry(data)
+    +storeMetrics(metrics)
+    +queryEvents(filter)
   }
 
   class Integration {
@@ -338,7 +347,7 @@ classDiagram
   Owner "1" --> "1" CredentialVault : provisions credentials via
   Owner "1" --> "*" Skill : uploads
   Orchestrator "1" --> "1" Agent : invokes with context
-  Orchestrator "1" --> "*" Middleware : chains LangChain middleware for
+  Orchestrator "1" --> "*" Middleware : chains extensions for
   Agent "1" --> "*" Middleware : executes through lifecycle
   Orchestrator "1" --> "1" Checkpointer : persists state and observability to
   Orchestrator "1" --> "1" EgressGateway : routes through
@@ -346,7 +355,7 @@ classDiagram
   Agent "1" --> "*" Tool : invokes
   Sandbox "1" --> "1" Agent : hosts
   Checkpointer "1" --> "*" Middleware : stores events from
-  Checkpointer "1" --> "1" OTLP_Collector : exports OTLP telemetry to
+  Checkpointer "1" --> "1" ObservabilityBackend : exports telemetry to
   EgressGateway "1" --> "*" Integration : proxies to
   Skill "*" --> "1" Orchestrator : registered with
   Policy "1" --> "1" Orchestrator : enforces

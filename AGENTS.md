@@ -210,3 +210,98 @@ The goal is that future instances of you arrive with enough context to be immedi
 ---
 
 This document was created during the v0.13.0 architecture revision to capture project context and guidance for AI collaborators. Read it, update it, and use it to ensure your work aligns with the project's mission and principles.
+
+---
+
+## PRD Boundaries: The No-Tech Rule
+
+The Product Requirements Document (PRD.md) must remain technology-agnostic. It describes **what** the system does for the Owner, never **how** it is implemented. This section defines the boundary between PRD (business requirements), Architecture.md (design decisions), and TechSpec.md (implementation specifics).
+
+### The Principle of Abstraction
+
+Per Marty Cagan's "Inspired" framework, requirements must be timeless. Technology changes, but business intent endures. The PRD answers: *"What capability must the Owner have?"* not *"What technology will we use?"*
+
+**Violations to Reject:**
+- Specific programming languages ("Bun", "Node.js", "TypeScript", "Python")
+- Framework names ("LangChain.js", "LangGraph.js", "React", " grammY")
+- Protocol acronyms in requirements ("MCP", "OTLP", "HTTP CONNECT", "WebSocket")
+- Database technologies ("SQLite", "PostgreSQL", "WAL mode")
+- Infrastructure tools ("Nix", "Docker", "Kubernetes", "bubblewrap", "Seatbelt")
+- OS-specific mechanisms ("Keychain", "secret-service", "macOS", "Linux")
+- File paths ("/sandbox/", "~/.config/")
+- Environment variables ("OPENKRAKEN_ENV")
+- Technical implementation patterns ("middleware", "callbacks", "system prompt")
+
+### Layer Responsibilities
+
+| Document | Contains | Does NOT Contain |
+|----------|----------|------------------|
+| **PRD.md** | Business capabilities, user stories, constraints, success metrics | Technology names, implementation patterns, file paths |
+| **Architecture.md** | Design patterns, component relationships, technology choices | Code-level details, version numbers, API signatures |
+| **TechSpec.md** | Concrete versions, API contracts, configuration schemas | Business rationale, user personas, value propositions |
+
+### Requirement Quality Standards
+
+**Good (What-focused):**
+> "The System shall provide integration adapters for external messaging services"
+
+**Bad (How-focused):**
+> "The System shall provide Model Context Protocol (MCP) adapters via @langchain/mcp-adapters"
+
+**Good:**
+> "The System shall isolate Agent execution within an isolation environment"
+
+**Bad:**
+> "The System shall isolate Agent execution using bubblewrap on Linux and Seatbelt on macOS"
+
+**Good:**
+> "The System shall store all credentials in platform-native secure credential stores"
+
+**Bad:**
+> "The System shall store all credentials in OS-level vaults (Keychain on macOS, secret-service on Linux)"
+
+### Ubiquitous Language Constraints
+
+Glossary definitions in the PRD must describe **business concepts**, not technical implementations:
+
+- **Orchestrator:** "The orchestration layer that manages agent execution lifecycle" ✓  
+  NOT "The Bun/TypeScript orchestration layer" ✗
+
+- **Sandbox:** "The isolation environment where the Agent executes" ✓  
+  NOT "The isolation environment rooted at /sandbox/ using bubblewrap/Seatbelt" ✗
+
+- **Middleware:** "Extension points that intercept Agent operations" ✓  
+  NOT "LangChain API extension points" ✗
+
+### Diagram Constraints
+
+**C4 Context Diagram:**
+- Use business terminology for external systems ("Integration Services" not "MCP Servers")
+- Avoid technology stereotypes (<<extension point>> not <<LangChain API>>)
+- Declare all referenced systems (CLI, Web UI must be declared before use)
+
+**Domain Model:**
+- No type annotations on attributes (`+id` not `+string id`)
+- Business method names only (`+interceptAgentCall()` not `+handleLLMCall()`)
+- No implementation frameworks in stereotypes
+
+### Appendix Is the Exception
+
+Technology preferences belong **only** in the Appendix section labeled "User Context" or "Operator Preferences". These are noted for architectural reference but do not constrain the requirements.
+
+### When in Doubt
+
+Ask: *"Would this requirement still be valid if we changed the underlying technology?"*
+
+- If yes → It belongs in the PRD
+- If no → It belongs in Architecture.md or TechSpec.md
+
+### Enforcement
+
+Any edit to PRD.md must be validated against these boundaries. If you encounter technical terms in requirements:
+1. Remove the technology reference
+2. Elevate to business language
+3. Move specific details to the appropriate technical document
+4. Update the Appendix if this represents a new technology preference
+
+**Remember:** The PRD is the contract between business intent and technical implementation. It must remain stable even as technologies evolve.
