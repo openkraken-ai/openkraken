@@ -305,3 +305,111 @@ Any edit to PRD.md must be validated against these boundaries. If you encounter 
 4. Update the Appendix if this represents a new technology preference
 
 **Remember:** The PRD is the contract between business intent and technical implementation. It must remain stable even as technologies evolve.
+
+---
+
+## Architecture Boundaries: The Category Rule
+
+While the PRD must remain entirely technology-agnostic, Architecture.md occupies the **logical layer**—it bridges abstract requirements to concrete systems. This section defines what belongs at the architectural level versus implementation details that belong in TechSpec.md.
+
+### The Principle of Logical Specificity
+
+Per Eric Evans' *Domain-Driven Design*, the Solution Architect must define the **category** of mechanism required. The PRD says "Persistence"; Architecture.md says "Relational Database" or "Document Store"; TechSpec.md says "SQLite 3.45.1 with WAL mode enabled."
+
+**This is the key distinction:** Architecture.md names technology **categories**, not **instances**.
+
+| Level | Example | Belongs In |
+|-------|---------|------------|
+| **Category** | "JavaScript runtime", "Sandboxing runtime", "Relational database" | ✓ Architecture.md |
+| **Instance** | "Bun 1.3.8", "Anthropic Sandbox Runtime 0.0.35", "SQLite" | ✗ TechSpec.md |
+| **Configuration** | "WAL mode", "Write-ahead log", "Connection pooling" | ✗ TechSpec.md |
+
+### What Architecture.md CAN Contain
+
+**Appropriate technology declarations:**
+- **Orchestrator:** "Implemented as a JavaScript runtime" ✓
+- **Database:** "Relational database with write-ahead logging" ✓
+- **Sandbox:** "Sandboxing runtime providing OS-native isolation" ✓
+- **Egress Gateway:** "Compiled binary implementing HTTP CONNECT proxy" ✓
+
+**Appropriate architectural patterns:**
+- "Layered Modular Monolith with Eventual Consistency"
+- "Unix domain socket for local IPC"
+- "Circuit breaker pattern for external service calls"
+
+### What Architecture.md MUST NOT Contain
+
+**Implementation specifics to move to TechSpec.md:**
+- Version numbers ("v1.2.3", "0.0.x")
+- Specific library names ("@langchain/mcp-adapters", "grammY")
+- OS-specific mechanisms ("bubblewrap", "Seatbelt", "Keychain", "secret-service")
+- File paths ("/run/openkraken/egress.sock", "~/.config/")
+- Environment variables ("OPENKRAKEN_ENV", "HTTP_PROXY")
+- API signatures ("POST /api/v1/allowlist/add")
+- Concrete protocol versions ("HTTP/2", "gRPC 1.50")
+
+**Anti-pattern examples:**
+- "Implemented as Bun 1.3.8 with TypeScript 5.9.3" ✗
+- "Uses bubblewrap on Linux and Seatbelt on macOS" ✗
+- "Socket created at /run/openkraken/egress.sock" ✗
+
+### The Vendor Agnosticism Mandate
+
+Architecture.md must remain **vendor agnostic** to preserve optionality. We specify:
+- "Relational Database" not "PostgreSQL"
+- "Message Queue" not "RabbitMQ"
+- "Object Storage" not "AWS S3"
+- "Sandboxing Runtime" not "Anthropic Sandbox Runtime"
+
+This keeps the architecture document focused on **structural decisions** rather than **procurement decisions**. Vendor selection belongs in TechSpec.md or ADRs.
+
+### The "Why" Behind Layer Separation
+
+**Maintainability:** When SQLite 4.0 releases, TechSpec.md updates. When we decide to switch from SQLite to PostgreSQL, Architecture.md updates. The layer boundary localizes change.
+
+**Vendor Independence:** Architecture.md describes the system as it could be built. TechSpec.md describes the system as it *is* built. This distinction preserves strategic flexibility.
+
+**Verification:** An architecture document that names specific versions is unverifiable—it becomes a specification only valid at a single point in time. Categories are timeless; instances expire.
+
+### When in Doubt (Architecture Edition)
+
+Ask: *"Would this statement still be true if we swapped the underlying technology for an equivalent alternative?"*
+
+- If yes ("We use a relational database") → It belongs in Architecture.md
+- If no ("We use SQLite 3.45 with WAL mode") → It belongs in TechSpec.md
+
+**The Test:** Could I replace "SQLite" with "PostgreSQL" without changing the architecture's validity? If the answer is yes, you are at the right level of abstraction.
+
+### Cross-Reference Discipline
+
+Architecture.md contains explicit references to TechSpec.md for implementation details:
+
+> "See [TechSpec.md Section 1.1](TechSpec.md) for specific version specifications."
+
+This pattern:
+1. Keeps Architecture.md clean and stable
+2. Guides readers to implementation specifics when needed
+3. Creates traceability between design and implementation
+4. Prevents drift—when versions change, only TechSpec.md updates
+
+### Common Confusion: Architecture vs Implementation
+
+**Scenario:** Documenting the Checkpointer
+
+- **PRD:** "The system shall persist agent state across restarts" (business requirement)
+- **Architecture.md:** "State persistence uses a relational database with write-ahead logging for durability" (design pattern + technology category)
+- **TechSpec.md:** "SQLite 3.45.1 with WAL mode, bun-sqlite-checkpointer v2.1.0, checkpoint schema v4" (implementation specifics)
+
+**Key Insight:** Architecture.md explains *why* we chose a relational model (ACID guarantees, checkpoint recovery) and *what kind* of database (relational). TechSpec.md explains *which* database (SQLite) and *how* it's configured (WAL mode, schema version).
+
+### Enforcement (Architecture Edition)
+
+When editing Architecture.md, validate against these boundaries:
+
+1. **Scan for version numbers** (\d+\.\d+\.\d+) → Move to TechSpec.md
+2. **Scan for @ symbols** (npm package names) → Move to TechSpec.md
+3. **Scan for file paths** (/home/, /var/, /run/) → Move to TechSpec.md
+4. **Scan for OS-specific terms** (bubblewrap, Seatbelt, Keychain) → Move to TechSpec.md or generalize
+5. **Scan for protocol specifics** (HTTP/2, gRPC, WebSocket frames) → Move to TechSpec.md
+
+**Remember:** Architecture.md is the structural blueprint. It answers *what kind of* system we are building, not *which* technologies we are using. Per Martin Fowler: *"Architecture is the set of decisions that are hard to change."* Vendor versions are easy to change; architectural patterns are not.

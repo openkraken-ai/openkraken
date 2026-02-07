@@ -58,11 +58,11 @@ Four architectural entities appear throughout this document, each with distinct 
 
 **Agent** — The LLM-driven runtime operating inside the sandbox. A managed sub-system, not a peer.
 
-**Orchestrator** — The orchestration layer that mediates all communication between the Owner, external integrations, and the Agent. The Orchestrator injects identity, enforces policies, manages state, and handles credential isolation. It is the only component aware of platform specifics. Implemented as a Bun/TypeScript runtime (renamed from "Gateway" in v0.13.0 for clarity—see CHANGELOG.md).
+**Orchestrator** — The orchestration layer that mediates all communication between the Owner, external integrations, and the Agent. The Orchestrator injects identity, enforces policies, manages state, and handles credential isolation. It is the only component aware of platform specifics. Implemented as a JavaScript runtime (renamed from "Gateway" in v0.13.0 for clarity—see CHANGELOG.md).
 
-**Egress Gateway** — The network boundary component implementing HTTP CONNECT proxy with domain allowlisting. Implemented as a separate Go or Rust binary with independent lifecycle, managed by Nix as a system service. Enforces strict allowlist-only network policy for all sandbox egress.
+**Egress Gateway** — The network boundary component implementing HTTP CONNECT proxy with domain allowlisting. Implemented as a separate binary with independent lifecycle, managed as a system service. Enforces strict allowlist-only network policy for all sandbox egress.
 
-**Platform Adapter** — The cross-platform abstraction layer handling OS-specific behaviors for sandbox invocation and credential retrieval. Implemented with runtime detection within the Orchestrator binary, abstracting differences between Linux (bubblewrap, secret-service) and macOS (Seatbelt, Keychain).
+**Platform Adapter** — The cross-platform abstraction layer handling OS-specific behaviors for sandbox invocation and credential retrieval. Implemented with runtime detection within the Orchestrator binary, abstracting platform differences behind a unified interface.
 
 The Owner trusts the Project (by choosing to install it). The Project trusts the Owner (by giving them full configuration authority). Neither trusts the Agent (which operates under deterministic constraints). The Orchestrator does not trust the Egress Gateway—communication follows strict RPC patterns with no implicit trust.
 
@@ -127,7 +127,7 @@ OpenKraken adopts a **Layered Modular Monolith** architecture that enforces stri
 
 **Third**, the cross-platform requirement (Linux and macOS) creates enough environmental variance without adding service distribution complexity. The architecture delegates platform abstraction to well-defined boundaries—the Platform Adapter and the Anthropic Sandbox Runtime—rather than distributing concerns across independently deployable services that must each handle platform differences.
 
-> **Technology Bindings:** The Orchestrator runtime uses Bun 1.3.8 with TypeScript 5.9.3. See [TechSpec.md Section 1.1](TechSpec.md#11-core-runtime-and-language) for version specifications and [TechSpec.md Section 1.2](TechSpec.md#12-agent-orchestration-framework) for LangChain/LangGraph versions.
+> **Technology Bindings:** The Orchestrator runtime uses a JavaScript runtime with TypeScript. See [TechSpec.md Section 1.1](TechSpec.md#11-core-runtime-and-language) for specific version specifications and [TechSpec.md Section 1.2](TechSpec.md#12-agent-orchestration-framework) for agent orchestration framework versions.
 
 ### Justification: Why This Pattern Fits the PRD Constraints
 
@@ -149,27 +149,27 @@ The following containers constitute the deployable units of the OpenKraken syste
 
 | Term | Definition | Implementation |
 |------|------------|----------------|
-| **Orchestrator** | Central orchestration layer managing Agent, LangChain/LangGraph, adapters | Bun/TypeScript runtime |
-| **Egress Gateway** | Network proxy with domain allowlisting | Go binary (separate process) |
-| **Sandbox** | Process isolation for Agent execution | Anthropic Sandbox Runtime |
-| **Middleware** | LangChain extensions for capabilities and policies | LangChain.js v1 |
-| **Checkpointer** | State persistence for session continuity | SQLite + bun-sqlite-checkpointer |
+| **Orchestrator** | Central orchestration layer managing Agent, adapters, and middleware | JavaScript runtime |
+| **Egress Gateway** | Network proxy with domain allowlisting | Compiled binary (separate process) |
+| **Sandbox** | Process isolation for Agent execution | Sandboxing runtime |
+| **Middleware** | Extensions for capabilities and policies | Agent orchestration framework |
+| **Checkpointer** | State persistence for session continuity | Relational database with custom adapter |
 
 ### Layer -1: Platform Manager
 
-**Platform Manager**: Nix Flakes with NixOS and Nix Darwin modules — Generates platform-appropriate service definitions from unified configuration, manages atomic updates through generation switching, establishes credential boundaries between build-time and runtime, and orchestrates service lifecycle across Linux (systemd) and macOS (launchd). This layer operates below all application code, ensuring reproducibility and consistent deployment across platforms.
+**Platform Manager**: Infrastructure-as-code tooling — Generates platform-appropriate service definitions from unified configuration, manages atomic updates through generation switching, establishes credential boundaries between build-time and runtime, and orchestrates service lifecycle across platforms. This layer operates below all application code, ensuring reproducibility and consistent deployment across platforms.
 
 ### Layer 0: The Host
 
-**Credential Vault**: Platform-specific abstraction layer — Provides unified interface to OS-level credential storage, exposing `store(service, secret)`, `retrieve(service)`, and `rotate(service)` methods. On macOS, this layer integrates with Keychain Services API; on Linux, it interfaces with secret-service API (GNOME Keyring, KWallet, or pass). Credentials never leave runtime memory; the vault abstraction prevents any code path from writing secrets to filesystem, logs, or network connections.
+**Credential Vault**: Platform-specific abstraction layer — Provides unified interface to OS-level credential storage, exposing `store(service, secret)`, `retrieve(service)`, and `rotate(service)` methods. The abstraction integrates with platform-native credential storage mechanisms. Credentials never leave runtime memory; the vault abstraction prevents any code path from writing secrets to filesystem, logs, or network connections.
 
-**Egress Gateway**: Go binary implementing HTTP CONNECT proxy with domain allowlisting — Operates in a chained architecture with the Sandbox Runtime. The Sandbox Runtime's built-in proxy (HTTP/SOCKS5) routes all traffic to the Go Egress Gateway via `httpProxyPort`/`socksProxyPort` configuration. This provides defense-in-depth: the Sandbox handles platform-specific network isolation (Linux namespaces, macOS Seatbelt), while the Go proxy provides audit logging to SQLite, dynamic allowlist management API, and structured JSON error responses. The Sandbox enforces that ALL traffic must route through the proxy chain, while the Go Gateway enforces the actual domain allowlist and logs every connection attempt with complete context (timestamp, destination, disposition, bytes transferred).
+**Egress Gateway**: Binary implementing HTTP CONNECT proxy with domain allowlisting — Operates in a chained architecture with the Sandbox Runtime. The Sandbox Runtime's built-in proxy routes all traffic to the Egress Gateway. This provides defense-in-depth: the Sandbox handles platform-specific network isolation while the proxy provides audit logging to the structured database, dynamic allowlist management API, and structured error responses. The Sandbox enforces that ALL traffic must route through the proxy chain, while the Gateway enforces the actual domain allowlist and logs every connection attempt with complete context.
 
 ### Layer 1: The Sandbox
 
-**Sandbox Runtime**: Anthropic Sandbox Runtime (`@anthropic-ai/sandbox-runtime`) — Provides filesystem isolation through OS-native mechanisms (bubblewrap on Linux, sandbox-exec on macOS) and network isolation that routes all traffic through Egress Gateway. The Agent operates inside this boundary with no awareness of its existence. Sandbox configuration is platform-agnostic; the runtime handles translation to optimal native mechanisms.
+**Sandbox Runtime**: Sandbox Runtime — Provides filesystem isolation through OS-native mechanisms and network isolation that routes all traffic through Egress Gateway. The Agent operates inside this boundary with no awareness of its existence. Sandbox configuration is platform-agnostic; the runtime handles translation to optimal native mechanisms.
 
-> **Platform Implementation:** On Linux, uses bubblewrap with seccomp filters. On macOS, uses sandbox-exec (Seatbelt) profiles. See [TechSpec.md Section 1.3](TechSpec.md#13-protocol-and-integration-libraries) for runtime version and [Section 7.3](TechSpec.md#73-sandboxing-guarantees) for platform-specific guarantees.
+> **Platform Implementation:** See [TechSpec.md Section 1.3](TechSpec.md#13-protocol-and-integration-libraries) for runtime details and [Section 7.3](TechSpec.md#73-sandboxing-guarantees) for platform-specific guarantees.
 
 ### Layer 2: Middleware Stack
 
@@ -197,27 +197,27 @@ The following containers constitute the deployable units of the OpenKraken syste
 
 ### Layer 3: The Orchestrator
 
-**Orchestrator**: Bun/TypeScript runtime managing LangChain/LangGraph execution — Central orchestration component owning session management, tool dispatch, prompt injection, and policy enforcement. Uses LangChain.js v1 `createAgent()` API as canonical entry point and LangGraph for stateful workflow management. Runs as Nix-managed service with independent lifecycle from Egress Gateway.
+**Orchestrator**: JavaScript runtime managing agent execution — Central orchestration component owning session management, tool dispatch, prompt injection, and policy enforcement. Uses agent orchestration framework APIs for stateful workflow management. Runs as system-managed service with independent lifecycle from Egress Gateway.
 
 > **Version Reference:** See [TechSpec.md Section 1.2](TechSpec.md#12-agent-orchestration-framework) for complete stack specification.
 
-**Telegram Adapter**: grammY integration for Telegram Bot API — Primary interaction channel receiving Owner messages via webhook (cryptographically verified) and delivering Agent responses.
+**Telegram Adapter**: Telegram Bot API integration — Primary interaction channel receiving Owner messages via webhook (cryptographically verified) and delivering Agent responses.
 
-> **Technology Version:** grammY 1.39.3 with Telegram Bot API 9.3 support. See [TechSpec.md Section 1.3](TechSpec.md#13-protocol-and-integration-libraries).
+> **Technology Details:** See [TechSpec.md Section 1.3](TechSpec.md#13-protocol-and-integration-libraries) for specific library versions.
 
-**MCP Adapter**: `@langchain/mcp-adapters` integration — Provides access to Model Context Protocol servers for Slack, Discord, email, calendar, and custom services.
+**MCP Adapter**: Model Context Protocol integration — Provides access to MCP servers for Slack, Discord, email, calendar, and custom services.
 
-> **Version:** @langchain/mcp-adapters 1.1.2. See [TechSpec.md Section 1.2](TechSpec.md#12-agent-orchestration-framework).
+> **Technology Details:** See [TechSpec.md Section 1.2](TechSpec.md#12-agent-orchestration-framework) for adapter specifications.
 
-**Checkpointer**: Custom Bun-native SQLite checkpointer — Persists agent state across Orchestrator restarts using SkrOYC's bun-sqlite-checkpointer. A custom implementation using `bun:sqlite` directly, avoiding the `better-sqlite3` FFI incompatibility with Bun's JavaScriptCore runtime. Maintains checkpoint tables for conversation state and writes tables for metadata.
+**Checkpointer**: Custom database checkpointer — Persists agent state across Orchestrator restarts. Maintains checkpoint tables for conversation state and writes tables for metadata.
 
-> **Technology:** SQLite 3.x with Write-Ahead Logging mode via `bun:sqlite`. See [TechSpec.md Section 3](TechSpec.md#3-database-schema) for schema specifications and ADR-004 for implementation rationale.
+> **Technology:** Relational database with Write-Ahead Logging mode. See [TechSpec.md Section 3](TechSpec.md#3-database-schema) for schema specifications and ADR-004 for implementation rationale.
 
 **Structured Logger**: SQLite-based logging subsystem with automatic rotation — Captures all Agent operations including tool invocations, model calls, and middleware execution.
 
 **OpenTelemetry Handler**: Custom callback implementation for distributed tracing — Intercepts LLM calls, tool invocations, chain executions, and memory operations.
 
-> **Tracing Implementation:** Custom OpenTelemetry callback for LangChain.js. See [TechSpec.md Section 8.1](TechSpec.md#81-observability-integration) for implementation details.
+> **Tracing Implementation:** Custom observability callback. See [TechSpec.md Section 8.1](TechSpec.md#81-observability-integration) for implementation details.
 
 ### Middleware Components
 
@@ -229,13 +229,13 @@ The following containers constitute the deployable units of the OpenKraken syste
 
 **Browser Middleware**: Provides browser automation tools, managing isolated browser profiles per session and routing traffic through Egress Gateway.
 
-> **Browser Technology:** Vercel Agent Browser 0.9.0 with CDP protocol support. See [TechSpec.md Section 1.3](TechSpec.md#13-protocol-and-integration-libraries).
+> **Browser Technology:** See [TechSpec.md Section 1.3](TechSpec.md#13-protocol-and-integration-libraries) for browser implementation details.
 
-**Memory Middleware**: Manages three-tier recall system — Retrieves relevant memories before model calls using embedding-based retrieval and consolidates memories after agent completion. The Memory Middleware is a plug-and-play component developed independently by the Owner. The Orchestrator provides the middleware interface contract and SQLite storage schema; the consolidation algorithm, decay strategy, and retrieval heuristics are encapsulated within the middleware implementation and are not defined by this architecture.
+**Memory Middleware**: Manages three-tier recall system — Retrieves relevant memories before model calls using embedding-based retrieval and consolidates memories after agent completion. The Memory Middleware is a plug-and-play component developed independently by the Owner. The Orchestrator provides the middleware interface contract and storage schema; the consolidation algorithm, decay strategy, and retrieval heuristics are encapsulated within the middleware implementation and are not defined by this architecture.
 
 **Skill Loader Middleware**: Injects skill manifests into Agent context based on task — Reads skill folders and loads SKILL.md content.
 
-**Human-in-the-Loop Middleware**: Interrupts on configured operations for Owner approval via Telegram inline keyboards. When an approval is pending, the agent's execution state is persisted in the Checkpointer and the agent loop suspends. There is no timeout — the Checkpointer maintains the suspended state indefinitely until the Owner approves or rejects the operation. LangGraph's checkpoint mechanism preserves complete execution state across Orchestrator restarts.
+**Human-in-the-Loop Middleware**: Interrupts on configured operations for Owner approval via Telegram inline keyboards. When an approval is pending, the agent's execution state is persisted in the Checkpointer and the agent loop suspends. There is no timeout — the Checkpointer maintains the suspended state indefinitely until the Owner approves or rejects the operation. The checkpoint mechanism preserves complete execution state across Orchestrator restarts.
 
 **Summarization Middleware**: Compresses older messages when context exceeds token thresholds to prevent context overflow.
 
@@ -252,38 +252,37 @@ C4Container
   Person_Ext(Owner, "Owner", "Single human provisioning, configuring, and operating the instance")
 
   System_Boundary(openkraken_runtime, "OpenKraken Runtime") {
-    Container(orchestrator, "Orchestrator", "Bun/TypeScript", "Central orchestration: agent loop, tool dispatch, policy enforcement")
-    ContainerDb(checkpointer, "Checkpointer", "SQLite + LangGraph", "State persistence: conversation, checkpoints, writes")
-    ContainerDb(structured_log, "Structured Logger", "SQLite", "Audit trail: operations, errors, durations")
-    Container(egress_gateway, "Egress Gateway", "Go Binary", "HTTP CONNECT proxy with domain allowlisting")
-    Container(sandbox, "Sandbox Runtime", "Anthropic Sandbox Runtime", "Process isolation via bubblewrap/seatbelt")
-    Container(credential_vault, "Credential Vault", "Platform Abstraction", "OS-level vaults: Keychain/secret-service")
-    ContainerDb(memory_bank, "Memory Bank", "SQLite + AES-256-GCM", "Semantic memories with application-level encryption")
+    Container(orchestrator, "Orchestrator", "JavaScript/TypeScript", "Central orchestration: agent loop, tool dispatch, policy enforcement")
+    ContainerDb(checkpointer, "Checkpointer", "Relational Database", "State persistence: conversation, checkpoints, writes")
+    ContainerDb(structured_log, "Structured Logger", "Relational Database", "Audit trail: operations, errors, durations")
+    Container(egress_gateway, "Egress Gateway", "Compiled Binary", "HTTP CONNECT proxy with domain allowlisting")
+    Container(sandbox, "Sandbox Runtime", "Sandboxing Runtime", "Process isolation via OS-native mechanisms")
+    Container(credential_vault, "Credential Vault", "Platform Abstraction", "OS-level credential storage")
+    ContainerDb(memory_bank, "Memory Bank", "Relational Database + Encryption", "Semantic memories with application-level encryption")
     
-    Container(telegram_adapter, "Telegram Adapter", "grammY", "Primary channel: webhook handling, response delivery")
-    Container(mcp_adapter, "MCP Adapter", "@langchain/mcp-adapters", "Secondary channels: Slack, Discord, email, calendar")
+    Container(telegram_adapter, "Telegram Adapter", "Bot API Client", "Primary channel: webhook handling, response delivery")
+    Container(mcp_adapter, "MCP Adapter", "Protocol Client", "Secondary channels: Slack, Discord, email, calendar")
   }
 
   System_Boundary(middleware_stack, "Middleware Stack") {
-    Container(policy_mw, "Policy Middleware", "LangChain", "Security: package validation, content scanning, rate limits")
-    Container(cron_mw, "Cron Middleware", "LangChain", "Scheduled task triggers")
-    Container(web_mw, "Web Search Middleware", "LangChain", "Web search and fetch tools")
-    Container(browser_mw, "Browser Middleware", "LangChain", "Browser automation with isolation")
-    Container(memory_mw, "Memory Middleware", "LangChain", "Three-tier recall management")
-    Container(skill_mw, "Skill Loader Middleware", "LangChain", "Skill manifest injection")
-    Container(hitl_mw, "Human-in-the-Loop Middleware", "LangChain", "Owner approval interrupts")
-    Container(summarize_mw, "Summarization Middleware", "LangChain", "Context compression")
+    Container(policy_mw, "Policy Middleware", "Framework Extension", "Security: package validation, content scanning, rate limits")
+    Container(cron_mw, "Cron Middleware", "Framework Extension", "Scheduled task triggers")
+    Container(web_mw, "Web Search Middleware", "Framework Extension", "Web search and fetch tools")
+    Container(browser_mw, "Browser Middleware", "Framework Extension", "Browser automation with isolation")
+    Container(memory_mw, "Memory Middleware", "Framework Extension", "Three-tier recall management")
+    Container(skill_mw, "Skill Loader Middleware", "Framework Extension", "Skill manifest injection")
+    Container(hitl_mw, "Human-in-the-Loop Middleware", "Framework Extension", "Owner approval interrupts")
+    Container(summarize_mw, "Summarization Middleware", "Framework Extension", "Context compression")
   }
 
   System_Ext(telegram, "Telegram", "Primary interaction channel")
   System_Ext(mcp_servers, "MCP Servers", "Model Context Protocol services")
   System_Ext(llm_provider, "LLM Provider", "External language model")
-  System_Ext(exa_api, "Exa API", "Web search service")
-  System_Ext(otel_backend, "Observability Backend", "OTLP/LangSmith collector")
+  System_Ext(web_search, "Web Search Service", "External search provider")
+  System_Ext(otel_backend, "Observability Backend", "Telemetry collector")
 
-  Rel(Owner, CLI, "Configures, debugs, automates via")
-  Rel(Owner, Web_UI, "Interacts, monitors via")
-  Rel(Owner, Telegram, "Interacts via")
+  Rel(Owner, Telegram, "Primary interaction via")
+  Rel(Owner, orchestrator, "Configuration and monitoring via CLI and Web UI")
 
   Rel(Telegram, telegram_adapter, "Sends updates to (webhook)")
   Rel(telegram_adapter, orchestrator, "Routes messages to")
@@ -307,7 +306,7 @@ C4Container
 
   Rel(sandbox, egress_gateway, "Routes all traffic through")
   Rel(orchestrator, llm_provider, "Calls for intelligence")
-  Rel(orchestrator, exa_api, "Searches web via")
+  Rel(orchestrator, web_search, "Searches web via")
 
   Rel(orchestrator, mcp_adapter, "Connects to MCP servers")
   Rel(mcp_adapter, mcp_servers, "Integrates with external services")
@@ -518,7 +517,7 @@ sequenceDiagram
 
 **Flow Analysis**: This flow exposes the defense-in-depth strategy. The package allowlist is checked before any resource allocation. The credential is retrieved from the vault and exists only in runtime memory—never written to environment variables. The Egress Gateway allowlist is explicitly modified to add the npm registry, used for the command duration, then removed. The Sandbox applies filesystem zones that prevent the command from accessing anything outside `/sandbox/work/`. In the chained proxy architecture, the Sandbox Runtime's built-in HTTP/SOCKS5 proxy routes all traffic through the Go Egress Gateway, which enforces the domain allowlist and logs every connection attempt. Every action is logged before and after execution, enabling complete audit trails.
 
-> **Cross-Platform Implementation:** Linux uses bubblewrap with `--bind` mounts. macOS uses sandbox-exec (Seatbelt) profiles. See [TechSpec.md Section 7.3](TechSpec.md#73-sandboxing-guarantees) for platform-specific isolation details.
+> **Cross-Platform Implementation:** See [TechSpec.md Section 7.3](TechSpec.md#73-sandboxing-guarantees) for platform-specific isolation details.
 
 ### Flow 3: Browser Automation with Network Enforcement
 
@@ -622,7 +621,7 @@ sequenceDiagram
 
 **Flow Analysis**: Browser automation presents unique risks because web content can contain malicious JavaScript attempting network connections, filesystem access, or credential theft. The architecture mitigates these risks through multiple layers. The domain allowlist is checked before navigation begins. The Agent Browser runs in an isolated profile per session, preventing state leakage between conversations. All browser traffic routes through the Egress Gateway, ensuring the same allowlist rules apply to browser-initiated connections as to command-line tools. Each navigation is logged for security audit.
 
-> **Browser Technology:** Vercel Agent Browser 0.9.0 with CDP protocol. See [TechSpec.md Section 1.3](TechSpec.md#13-protocol-and-integration-libraries) for version and [TechSpec.md Section 4.1](TechSpec.md#41-gateway-http-api) for browser tool API specifications.
+> **Browser Technology:** See [TechSpec.md Section 1.3](TechSpec.md#13-protocol-and-integration-libraries) for browser implementation and [TechSpec.md Section 4.1](TechSpec.md#41-gateway-http-api) for browser tool API specifications.
 
 ---
 
@@ -642,13 +641,13 @@ The OpenKraken architecture implements a layered authentication and authorizatio
 
 **Egress Gateway Authorization**: The Orchestrator communicates with the Egress Gateway over a Unix domain socket with two complementary authentication layers.
 
-*Layer 1 — Filesystem Permissions (Transport):* The socket is created by the Egress Gateway at `/run/openkraken/egress.sock` (Linux) or `$OPENKRAKEN_HOME/egress.sock` (macOS) with `openkraken:openkraken` ownership and `0660` permissions. Only processes running as the `openkraken` user or group can connect. This is the primary authentication boundary.
+*Layer 1 — Filesystem Permissions (Transport):* The socket is created by the Egress Gateway with restricted ownership and permissions. Only processes running as the service user or group can connect. This is the primary authentication boundary.
 
-*Layer 2 — HMAC-SHA256 Request Signing (Application):* All Orchestrator requests to the Egress Gateway management API include an HMAC-SHA256 signature for defense-in-depth. A 256-bit shared secret is generated during `openkraken init` and stored in the OS-level vault under `openkraken-egress-hmac-key`. Both processes read this secret at startup and cache it in memory. Each request includes `X-OpenKraken-Timestamp` (unix epoch seconds) and `X-OpenKraken-Signature` (HMAC-SHA256 of timestamp + method + path + body). The Egress Gateway validates that the timestamp is within ±30 seconds of current time (preventing replay attacks) and that the signature matches. Requests failing either check receive HTTP 401.
+*Layer 2 — HMAC-SHA256 Request Signing (Application):* All Orchestrator requests to the Egress Gateway management API include an HMAC-SHA256 signature for defense-in-depth. A shared secret is generated during initialization and stored in the OS-level vault. Both processes read this secret at startup and cache it in memory. Each request includes a timestamp header and signature header. The Egress Gateway validates that the timestamp is within acceptable bounds (preventing replay attacks) and that the signature matches. Requests failing either check receive an authentication error.
 
 This design provides equivalent authentication guarantees to mTLS for same-host IPC without certificate management overhead. The HMAC signing binds authentication to specific request content, ensuring intercepted signatures cannot be reused for different operations.
 
-> **Credential Technology:** macOS uses Keychain Services API, Linux uses secret-service API (GNOME Keyring, KWallet, or pass). See [TechSpec.md Section 1.5](TechSpec.md#15-infrastructure-and-build) for Egress Gateway implementation and [TechSpec.md Section 7.2](TechSpec.md#72-credential-handling) for credential handling details.
+> **Credential Technology:** See [TechSpec.md Section 1.5](TechSpec.md#15-infrastructure-and-build) for Egress Gateway implementation and [TechSpec.md Section 7.2](TechSpec.md#72-credential-handling) for credential handling details.
 
 ### 5.2 Observability
 
@@ -790,8 +789,6 @@ The Nix packages are provisioned before sandbox invocation, ensuring reproducibl
 **Cross-Platform Substrate Differences**: The architecture claims "identical Agent capability semantics" across Linux and macOS, but the underlying mechanisms differ significantly (bubblewrap bind mounts vs. Seatbelt profiles). Edge cases around symlink handling and violation detection differ between platforms. Additionally, Apple's sandbox-exec (Seatbelt) mechanism is deprecated and receives minimal maintenance. Future macOS versions may remove or further restrict Seatbelt capabilities. The architecture should monitor alternative isolation mechanisms for macOS (e.g., Docker Desktop's hypervisor framework, nsjail via Homebrew) as potential migration paths.
 
 > **Platform-Specific Implementation Details:**
-> - **Linux:** Uses bubblewrap with `--bind` mounts for filesystem zones. Seccomp filters restrict syscalls. Network isolation via network namespace with proxy routing.
-> - **macOS:** Uses sandbox-exec (Seatbelt) profiles for filesystem and process restrictions. No network namespace support; proxy enforcement via environment variables only. Violation detection via sandbox violation log taps.
 > See [TechSpec.md Section 7.3](TechSpec.md#73-sandboxing-guarantees) for detailed platform-specific guarantees and [TechSpec.md Section 7.1](TechSpec.md#71-threat-model) for threat model per platform.
 
 ### Technical Debt
@@ -813,11 +810,11 @@ The Nix packages are provisioned before sandbox invocation, ensuring reproducibl
 | Decision | Rationale | Implications |
 |----------|-----------|--------------|
 | Modular Monolith over Microservices | Single-tenant deployment eliminates distributed systems benefits; monolithic deployment simplifies credential enforcement and tracing | No horizontal scaling capability; component boundaries must be maintained through discipline |
-| Bun Runtime for Orchestrator | High performance, Node.js compatibility (~95% API coverage), mature ecosystem for TypeScript development | Smaller ecosystem than Node.js; some packages may require compatibility work |
-| Go for Egress Gateway | Strong stdlib for networking and HTTP proxy implementation; simple deployment model; battle-tested reliability | Requires Go toolchain in build environment; separate language from Orchestrator |
-| SQLite for All Persistence | WAL mode provides durability and concurrency; single backend simplifies backup and recovery | Write-heavy workloads may require optimization; not appropriate for high-throughput scenarios |
+| JavaScript Runtime for Orchestrator | High performance, strong ecosystem for TypeScript development, modern JavaScript features | Smaller ecosystem than mainstream alternatives; some packages may require compatibility work |
+| Systems Language for Egress Gateway | Strong standard library for networking and HTTP proxy implementation; simple deployment model; battle-tested reliability | Requires additional toolchain in build environment; separate language from Orchestrator |
+| Relational Database for All Persistence | Write-ahead logging provides durability and concurrency; single backend simplifies backup and recovery | Write-heavy workloads may require optimization; not appropriate for high-throughput scenarios |
 | Egress Gateway as Separate Process | Separate trust boundary enables defense-in-depth; independent lifecycle prevents cascade failures | Adds latency to all network operations; requires process supervision |
-| Unix Domain Socket for RPC | Provides authentication through filesystem permissions; avoids network exposure | Communication limited to same host; socket file must be protected |
+| Local IPC for RPC | Provides authentication through filesystem permissions; avoids network exposure | Communication limited to same host; socket file must be protected |
 | Callback-Based Observability | Minimal overhead on critical path; composable handlers | No automatic correlation—correlation IDs must be explicitly passed |
 | CLI First, Web UI Before Public | CLI enables rapid development iteration; Web UI required for production polish and Owner experience | Dual interface maintenance; Web UI technology selection pending |
 
