@@ -444,20 +444,20 @@ Stores LangGraph agent state persistence within `openkraken.db`. Two-table schem
 ```mermaid
 erDiagram
     checkpoints {
-        text thread_id PK "Thread identifier"
+        text thread_id PK "Thread identifier (UUID as TEXT)"
         text checkpoint_ns PK "Checkpoint namespace (default: '')"
-        text checkpoint_id PK "Checkpoint unique ID (UUID6)"
-        text parent_checkpoint_id FK "Parent checkpoint reference"
+        text checkpoint_id PK "Checkpoint unique ID (UUID6 as TEXT)"
+        text parent_checkpoint_id FK "Parent checkpoint reference (UUID as TEXT)"
         text type "Serialization type (json, jsonplus)"
         blob checkpoint "Serialized Checkpoint {v, id, ts, channel_values, channel_versions, versions_seen}"
         blob metadata "Serialized CheckpointMetadata {source, step, parents}"
     }
     
     writes {
-        text thread_id PK "Thread identifier"
+        text thread_id PK "Thread identifier (UUID as TEXT)"
         text checkpoint_ns PK "Checkpoint namespace (default: '')"
-        text checkpoint_id PK "Checkpoint reference"
-        text task_id PK "Task identifier"
+        text checkpoint_id PK "Checkpoint reference (UUID as TEXT)"
+        text task_id PK "Task identifier (UUID as TEXT)"
         integer idx PK "Write order index"
         text channel "Channel name (e.g., 'messages', '__pregel_tasks')"
         text type "Serialization type"
@@ -536,8 +536,8 @@ Stores cross-session conversation history for context injection and audit purpos
 erDiagram
     messages {
         text id PK "Message unique identifier (UUID as TEXT)"
-        text thread_id FK "Conversation thread (YYYY-MM-DD date as ID)"
-        text role PK "Message role (user/assistant/system/tool)"
+        text thread_id FK "Conversation thread (date as TEXT: YYYY-MM-DD)"
+        text role "Message role (user/assistant/system/tool)"
         text content_type "Content type (text/image/file)"
         blob content "Encrypted message content (AES-256-GCM)"
         text metadata "JSON metadata as TEXT"
@@ -568,12 +568,12 @@ erDiagram
 
 ### 3.3 Semantic Memory Tables
 
-Stores long-term semantic memories for the RMM Memory middleware integration within `openkraken.db`. Sensitive content and metadata fields are encrypted using AES-256-GCM before storage.
+Stores long-term semantic memories for the **RMM (Reflective Memory Management)** middleware integration within `openkraken.db`. Sensitive content and metadata fields are encrypted using AES-256-GCM before storage.
 
 ```mermaid
 erDiagram
     memories {
-        text id PK "Memory unique identifier"
+        text id PK "Memory unique identifier (UUID as TEXT)"
         blob content "Encrypted memory content (AES-256-GCM ciphertext)"
         blob metadata "Encrypted metadata (AES-256-GCM ciphertext)"
         integer created_at "Creation timestamp"
@@ -582,12 +582,22 @@ erDiagram
     }
 ```
 
+**RMM (Reflective Memory Management) Middleware:**
+
+RMM is a plug-and-play memory management middleware implementing reflective memory patterns based on arXiv:2503.08026v2 research and equivalent to Google Vertex AI Memory Bank architecture. RMM provides:
+
+- **Memory Extraction**: Automatically extracts salient information from agent conversations
+- **Consolidation**: Compacts and deduplicates memories using LLM-based consolidation
+- **Retrieval**: Semantic similarity search using vector embeddings
+- **Decay**: Time-based memory importance adjustment
+- **Owner Control**: Owner can view, edit, or purge specific memories
+
 **Notes:**
-- Database structure matches RMM Memory middleware requirements
+- Database structure matches RMM Memory middleware interface requirements
 - `content` and `metadata` fields are encrypted using AES-256-GCM before INSERT, decrypted after SELECT
 - Encryption key derived from master key stored in OS-level vault
-- Middleware handles embedding generation, similarity search, and memory decay
-- Integration interface defined by middleware API
+- RMM middleware handles embedding generation, similarity search, consolidation, and decay algorithms
+- The Orchestrator provides the storage schema and middleware interface; RMM implements the algorithmic logic
 
 ### 3.4 Audit Log Tables
 
@@ -597,7 +607,7 @@ Stores security-relevant events for compliance and debugging within `openkraken.
 erDiagram
     audit_logs {
         text id PK "Log entry identifier (UUID as TEXT)"
-        integer timestamp "Unix timestamp (ISO8601 stored as TEXT)"
+        integer timestamp "Unix timestamp"
         text event_type "Event classification"
         text severity "Log severity (INFO/WARN/ERROR/SECURITY)"
         text source_component "Origin (orchestrator/sandbox/egress_gateway)"
@@ -610,7 +620,7 @@ erDiagram
     correlations {
         text id PK "Correlation identifier (UUID as TEXT)"
         text parent_id FK "Parent request ID (UUID as TEXT)"
-        text trace_id "Distributed trace ID"
+        text trace_id "Distributed trace ID (UUID as TEXT)"
         integer depth "Correlation depth"
         integer created_at "Correlation creation timestamp"
     }
@@ -652,7 +662,7 @@ erDiagram
     
     skill_analysis_reports {
         text id PK "Report identifier (UUID as TEXT)"
-        text skill_id FK "Reference to skills.id"
+        text skill_id FK "Reference to skills.id (UUID as TEXT)"
         integer analysis_version "Report schema version"
         text overall_risk "Risk level (low/medium/high/critical)"
         text findings "JSON array of findings"
@@ -663,7 +673,7 @@ erDiagram
     
     skill_audit_log {
         text id PK "Audit entry identifier (UUID as TEXT)"
-        text skill_id FK "Reference to skills.id"
+        text skill_id FK "Reference to skills.id (UUID as TEXT)"
         text action "Action type (ingest/approve/reject/update/remove)"
         text performed_by "Actor (system/owner)"
         text details "Action details (JSON)"
@@ -690,7 +700,7 @@ Stores network egress requests for security auditing within `openkraken.db`.
 erDiagram
     proxy_requests {
         text id PK "Request identifier (UUID as TEXT)"
-        integer timestamp "Unix timestamp (ISO8601 stored as TEXT)"
+        integer timestamp "Unix timestamp"
         text request_id FK "Orchestrator request correlation (UUID as TEXT)"
         text source_process "Sandbox process ID"
         text destination_domain "Target domain (SNI)"
@@ -730,6 +740,21 @@ erDiagram
 - **Index:** `(disposition, domain)` for allowlist analysis.
 - **Index:** `(request_id)` for correlation with audit logs.
 - **Retention:** 30-day rolling retention, automatic rotation at 100MB.
+
+#### SQLite Type Conventions
+
+SQLite does not have a native UUID type. All UUID fields use `TEXT` storage with string representation (e.g., `550e8400-e29b-41d4-a716-446655440000`). ERD annotations indicate `(UUID as TEXT)` for clarity.
+
+**Supported Type Mappings:**
+
+| JavaScript | SQLite | Usage |
+|------------|--------|-------|
+| `string` (UUID) | `TEXT` | IDs, foreign keys, references |
+| `string` | `TEXT` | Names, descriptions, JSON |
+| `number` | `INTEGER` | Timestamps, counts, IDs |
+| `boolean` | `INTEGER` (0/1) | Flags, status |
+| `Uint8Array` | `BLOB` | Encrypted data, embeddings |
+| `bigint` | `INTEGER` | Large numbers |
 
 ### 3.6 Migration Strategy
 
@@ -871,60 +896,6 @@ async function main() {
 ```
 
 ---
-
-### 3.7 Skill Pipeline Schema
-
-Stores skill lifecycle events, provenance metadata, and security analysis reports within `openkraken.db`.
-
-```mermaid
-erDiagram
-    skills {
-        text id PK "Skill identifier (UUID as TEXT)"
-        text name "Skill name (from SKILL.md frontmatter)"
-        text description "Skill description"
-        text version "Current version (e.g., '1.2.3')"
-        text source "Source URL/repository"
-        text tier "Skill tier (system/owner/community)"
-        text directory "Relative path to skill directory"
-        text metadata_json "Additional metadata (JSON)"
-        integer approved_at "Approval timestamp"
-        text approved_by "Owner ID who approved"
-        integer auto_updated_at "Auto-update timestamp"
-        integer created_at "Skill addition timestamp"
-        integer updated_at "Last modification timestamp"
-    }
-    
-    skill_analysis_reports {
-        text id PK "Report identifier (UUID as TEXT)"
-        text skill_id FK "Reference to skills.id"
-        integer analysis_version "Report schema version"
-        text overall_risk "Risk level (low/medium/high/critical)"
-        text findings "JSON array of findings"
-        text recommendation "Decision (approve/review/reject)"
-        text llm_model "LLM model used for analysis"
-        integer created_at "Analysis timestamp"
-    }
-    
-    skill_audit_log {
-        text id PK "Audit entry identifier (UUID as TEXT)"
-        text skill_id FK "Reference to skills.id"
-        text action "Action type (ingest/approve/reject/update/remove)"
-        text performed_by "Actor (system/owner)"
-        text details "Action details (JSON)"
-        integer timestamp "Unix timestamp"
-    }
-
-    skills ||--o{ skill_analysis_reports : "analyzed_by"
-    skills ||--o{ skill_audit_log : "tracked_in"
-```
-
-**Schema Notes:**
-- `skills.tier`: Constrained to "system", "owner", or "community"
-- `skill_analysis_reports.findings`: JSON array of `{severity, category, location, description, evidence}`
-- `skill_audit_log.action`: Constrained vocabulary: "ingest", "approve", "reject", "update", "remove"
-- **Index:** `(skills.name, skills.tier)` for skill lookup
-- **Index:** `(skill_audit_log.timestamp)` for chronological queries
-- **Index:** `(skill_analysis_reports.skill_id)` for report history
 
 ## 4. API Contract
 
@@ -1203,100 +1174,6 @@ components:
         id:
           type: string
 ```
-                stream:
-                  type: boolean
-                  default: true
-                  description: Stream response as SSE events.
-                # OpenKraken Provider-Specific Extensions
-                openkraken:
-                  type: object
-                  properties:
-                    sandbox:
-                      type: object
-                      properties:
-                        enabled:
-                          type: boolean
-                          default: true
-                        network_isolation:
-                          type: string
-                          enum: [strict, relaxed, none]
-                          default: strict
-                        filesystem_zones:
-                          type: object
-                          properties:
-                            skills:
-                              type: string
-                              default: "/sandbox/skills"
-                            inputs:
-                              type: string
-                              default: "/sandbox/inputs"
-                            work:
-                              type: string
-                              default: "/sandbox/work"
-                            outputs:
-                              type: string
-                              default: "/sandbox/outputs"
-                    determinism:
-                      type: object
-                      properties:
-                        seed:
-                          type: integer
-                          description: Random seed for reproducible execution.
-                        checkpoint_before_tools:
-                          type: boolean
-                          default: true
-                          description: Checkpoint state before each tool call.
-                    session:
-                      type: object
-                      properties:
-                        channel:
-                          type: string
-                          enum: [telegram, debug, api]
-                          default: api
-                        channel_id:
-                          type: string
-                          description: Channel-specific identifier (e.g., Telegram chat_id).
-              required: [input]
-      responses:
-        '200':
-          description: Response generated (non-streaming)
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  id:
-                    type: string
-                    format: uuid
-                    description: Response identifier (maps to checkpoint_id).
-                  object:
-                    type: string
-                    enum: [response]
-                  created_at:
-                    type: integer
-                    description: Unix timestamp.
-                  status:
-                    type: string
-                    enum: [completed, in_progress, cancelled]
-                  model:
-                    type: string
-                  input:
-                    type: array
-                    description: Echo of input items.
-                  output:
-                    type: array
-                    description: Output items (messages, tool calls, reasoning).
-                  error:
-                    type: object
-                    description: Error information if failed.
-        '202':
-          description: Response accepted for streaming
-          content:
-            text/event-stream:
-              schema:
-                type: string
-                description: SSE stream of Open Responses events.
-```
 
 #### 4.1.2 Streaming Events (SSE)
 
@@ -1365,8 +1242,6 @@ Output items transition through states:
 - `in_progress`: Item being constructed
 - `completed`: Item fully formed
 - `incomplete`: Response truncated or interrupted
-        - openkraken.sandbox.terminated
-        - openkraken.checkpoint.created
 ```
 
 **Example SSE Stream:**
@@ -1769,9 +1644,11 @@ paths:
 
 ## 5. Implementation Guidelines
 
-### 5.1 Project Structure
+### 5.1 Monorepo Structure (devenv-managed)
 
-The following directory structure enforces Clean Architecture principles. Business logic is isolated from infrastructure concerns. The structure supports horizontal scaling of components while maintaining clear boundaries.
+OpenKraken uses a **devenv-managed monorepo** to coordinate the TypeScript/Bun Orchestrator and Go Egress Gateway. This structure leverages devenv's multi-language support and process orchestration for reproducible development environments.
+
+#### Monorepo Layout
 
 ```
 openkraken/
@@ -1780,168 +1657,276 @@ openkraken/
 ├── PRD.md
 ├── Architecture.md
 ├── TechSpec.md                    # This document
-├── package.json
-├── bun.lock
-├── tsconfig.json
-├── .nix/
-│   ├── flake.nix
-│   ├── flake.lock
-│   └── nixos-modules/
-│       ├── openkraken.nix
-│       └── openkraken-darwin.nix
-└── src/
-    ├── main.ts                    # Application entry point
-    ├── orchestrator/              # Bun-based Orchestrator
-    │   ├── index.ts               # Orchestrator bootstrap
-    │   ├── config/
-    │   │   ├── index.ts           # Configuration loader
-    │   │   ├── schema.ts          # Configuration validation
-    │   │   └── defaults.ts        # Default values
-    │   ├── api/                   # HTTP API handlers
-    │   │   ├── server.ts          # Bun HTTP server
-    │   │   ├── health.ts          # Health endpoints
-    │   │   ├── responses.ts       # Open Responses /v1/responses endpoint
-    │   │   ├── adapters.ts        # Input adapters (Telegram, MCP, etc.)
-    │   │   └── middleware.ts      # Request processing
-    │   ├── agent/                 # LangChain/LangGraph agent
-    │   │   ├── index.ts           # Agent factory
-    │   │   ├── types.ts           # Agent type definitions
-    │   │   ├── checkpointer.ts    # SqliteCheckpointer wrapper
-    │   │   └── tools/             # Tool implementations
-    │   │       ├── index.ts
-    │   │       ├── file.ts
-    │   │       ├── terminal.ts
-    │   │       ├── browser.ts
-    │   │       ├── network.ts
-    │   │       └── delivery.ts
-    │   ├── middleware/            # LangChain middleware stack
-    │   │   ├── index.ts
-    │   │   ├── policy.ts          # Tier 1: Foundational policy
-    │   │   ├── cron.ts            # Tier 2: Scheduled tasks
-    │   │   ├── websearch.ts       # Tier 2: Web search
-    │   │   ├── browser.ts         # Tier 2: Browser automation
-    │   │   ├── memory.ts          # Tier 2: Memory management
-    │   │   ├── mcp.ts             # Tier 2: MCP adapter
-    │   │   ├── skills.ts          # Tier 2: Skill loading
-    │   │   ├── subagent.ts        # Tier 2: Sub-agent delegation
-    │   │   ├── summarization.ts   # Tier 3: Context compression
-    │   │   └── human-in-loop.ts   # Tier 3: Owner approval
-    │   ├── callbacks/             # LangChain callback handlers
-    │   │   ├── index.ts
-    │   │   ├── logger.ts          # Logger callback
-    │   │   └── opentelemetry.ts   # OTel tracing callback
-    │   ├── sandbox/               # Platform adapter for sandbox
-    │   │   ├── index.ts           # Sandbox factory
-    │   │   ├── platform.ts        # Platform detection
-    │   │   ├── linux.ts           # Bubblewrap configuration
-    │   │   ├── darwin.ts          # Seatbelt configuration
-    │   │   └── types.ts           # Sandbox types
-    │   ├── credentials/           # Credential vault abstraction
-    │   │   ├── index.ts
-    │   │   ├── vault.ts           # CredentialVault interface
-    │   │   ├── keychain.ts        # macOS Keychain
-    │   │   ├── secret-service.ts  # Linux secret-service
-    │   │   └── memory.ts          # In-memory caching
-    │   ├── channels/              # External channel integrations
-    │   │   ├── index.ts
-    │   │   ├── telegram/
-    │   │   │   ├── index.ts
-    │   │   │   ├── bot.ts         # grammY bot
-    │   │   │   ├── webhook.ts     # Webhook handler
-    │   │   │   └── types.ts
-    │   │   └── mcp/
-    │   │       ├── index.ts
-    │   │       ├── client.ts      # MCP client wrapper
-    │   │       └── types.ts
-    │   ├── database/              # SQLite database layer
-    │   │   ├── index.ts
-    │   │   ├── connection.ts      # Database connection pool
-    │   │   ├── migrations/        # Schema migrations
-    │   │   │   ├── 001_init.sql
-    │   │   │   ├── 002_messages.sql
-    │   │   │   ├── 003_memory.sql
-    │   │   │   ├── 004_audit.sql
-    │   │   │   └── 005_proxy.sql
-    │   │   └── repositories/      # Data access objects
-    │   │       ├── index.ts
-    │   │       ├── checkpoints.ts
-    │   │       ├── messages.ts
-    │   │       ├── memories.ts
-    │   │       ├── audit.ts
-    │   │       └── proxy.ts
-    │   ├── observability/         # Logging, metrics, and alerting
-    │   │   ├── index.ts
-    │   │   ├── logger.ts
-    │   │   ├── tracer.ts
-    │   │   ├── metrics.ts
-    │   │   └── alerting.ts         # Alert Emitter: system health → Telegram
-    │   └── gateway/               # Egress gateway client
-    │       ├── index.ts
-    │       ├── client.ts          # HTTP client for gateway
-    │       ├── types.ts
-    │       └── exceptions.ts
-    │
-    ├── gateway/                   # Egress Gateway (Go)
-    │   ├── main.go
-    │   ├── config/
-    │   ├── proxy/
-    │   │   ├── http.go            # HTTP CONNECT handler
-    │   │   ├── socks5.go          # SOCKS5 handler
-    │   │   └── allowlist.go       # Domain validation
-    │   ├── logging/
-    │   │   ├── logger.go
-    │   │   └── database.go
-    │   ├── api/
-    │   │   ├── server.go
-    │   │   └── handlers.go
-    │   └── platform/
-    │       └── service.go         # Systemd/launchd integration
-    │
-    ├── skills/                    # Bundled skills (AgentSkills.io format)
-    │   ├── python-helper/
-    │   │   ├── SKILL.md
-    │   │   └── scripts/
-    │   │       └── run.sh
-    │   └── git-helper/
-    │       ├── SKILL.md
-    │       └── scripts/
-    │
-    ├── cli/                       # Integrated CLI tools
-    │   └── skills/                # Vercel skills CLI integration (bundled via Nix)
-    │       ├── src/
-    │       │   ├── cli.ts         # CLI entry point
-    │       │   ├── commands/      # Command implementations
-    │       │   │   ├── add.ts
-    │       │   │   ├── list.ts
-    │       │   │   ├── remove.ts
-    │       │   │   ├── update.ts
-    │       │   │   └── check.ts
-    │       │   ├── pipeline/      # Ingestion pipeline stages
-    │       │   │   ├── validation.ts
-    │       │   │   ├── analysis.ts
-    │       │   │   └── approval.ts
-    │       │   └── sources/       # Source resolution
-    │       │       ├── github.ts
-    │       │       └── index.ts
-    │       ├── package.json        # Bundled dependencies
-    │       └── skills-cli.nix     # Nix derivation
-    │
-    └── storage/                   # Runtime data (managed by Nix)
-        ├── data/
-        │   └── openkraken.db       # Unified SQLite database (checkpoints, messages, memories, audit, proxy)
-        ├── cache/
-        │   ├── browser/
-        │   │   └── (isolated profiles per session)
-        │   └── downloads/
-        │       └── (temporary file storage)
-        ├── logs/
-        │   └── (application logs)
-        └── sandbox/
-            ├── skills/
-            ├── inputs/
-            ├── work/
-            └── outputs/
+├── devenv.nix                     # Root devenv configuration
+├── devenv.yaml                    # devenv inputs and imports
+├── .envrc                         # direnv auto-activation
+├── flake.nix                      # Nix flake for CI/builds
+├── flake.lock                     # Pinned flake dependencies
+│
+├── packages/                      # Monorepo packages
+│   ├── shared/                    # Shared configurations
+│   │   └── devenv.nix             # Common devenv settings
+│   │
+│   ├── orchestrator/              # Bun/TypeScript Orchestrator
+│   │   ├── devenv.yaml            # Imports /packages/shared
+│   │   ├── devenv.nix             # TypeScript/Bun environment
+│   │   ├── package.json           # Bun dependencies
+│   │   ├── tsconfig.json          # TypeScript config
+│   │   ├── src/
+│   │   │   ├── main.ts            # Application entry
+│   │   │   ├── config/
+│   │   │   ├── api/
+│   │   │   ├── agent/
+│   │   │   ├── middleware/
+│   │   │   ├── callbacks/
+│   │   │   ├── sandbox/
+│   │   │   ├── credentials/
+│   │   │   ├── channels/
+│   │   │   ├── database/
+│   │   │   └── observability/
+│   │   └── test/                  # Orchestrator tests
+│   │
+│   └── egress-gateway/            # Go Egress Gateway
+│       ├── devenv.yaml            # Imports /packages/shared
+│       ├── devenv.nix             # Go environment
+│       ├── go.mod                 # Go module
+│       ├── go.sum                 # Go dependencies
+│       ├── src/
+│       │   ├── main.go
+│       │   ├── proxy/
+│       │   ├── logging/
+│       │   ├── api/
+│       │   └── platform/
+│       └── test/                  # Gateway tests
+│
+├── apps/                          # Deployable applications
+│   ├── cli/                       # CLI tool (Bun)
+│   │   ├── devenv.nix
+│   │   ├── src/
+│   │   └── package.json
+│   │
+│   └── web-ui/                    # SvelteKit Web UI
+│       ├── devenv.nix
+│       ├── src/
+│       ├── package.json
+│       └── svelte.config.js
+│
+├── services/                      # Background services (devenv processes)
+│   └── local-development.nix      # Procfile-like process definitions
+│
+├── skills/                        # Bundled skills
+│   ├── system/                    # System-provided skills
+│   └── owner/                     # Owner-uploaded skills (gitignored)
+│
+└── storage/                       # Runtime data (gitignored)
+    ├── data/
+    ├── cache/
+    ├── logs/
+    └── sandbox/
 ```
+
+#### devenv Configuration
+
+**Root devenv.yaml** (imports shared config):
+```yaml
+inputs:
+  nixpkgs:
+    url: github:NixOS/nixpkgs/nixos-25.11
+  devenv:
+    url: github:cachix/devenv
+imports:
+  - /packages/shared
+```
+
+**Shared Configuration** (`packages/shared/devenv.nix`):
+```nix
+{ pkgs, lib, config, ... }:
+{
+  # Common packages for all packages
+  packages = with pkgs; [
+    git
+    jq
+    just          # Command runner
+    parallel      # Parallel execution
+  ];
+
+  # Pre-commit hooks
+  git-hooks.hooks = {
+    nixpkgs-fmt.enable = true;
+    typos.enable = true;
+  };
+
+  # Common environment variables
+  env = {
+    OPENKRAKEN_ENV = "development";
+    OPENKRAKEN_HOME = "./storage";
+  };
+
+  # Common scripts
+  scripts = {
+    build.exec = "just build";
+    test.exec = "just test";
+    lint.exec = "just lint";
+  };
+}
+```
+
+**Orchestrator devenv.nix** (`packages/orchestrator/devenv.nix`):
+```nix
+{ pkgs, lib, config, ... }:
+{
+  # Import shared config
+  imports = [ ../shared/devenv.nix ];
+
+  # Bun runtime
+  languages.javascript = {
+    enable = true;
+    package = pkgs.bun;  # Bun 1.3.8
+  };
+
+  # TypeScript support
+  languages.typescript.enable = true;
+
+  # SQLite for development
+  services.sqlite.enable = true;
+
+  # Environment-specific variables
+  env = {
+    ORCHESTRATOR_PORT = "3000";
+    DATABASE_PATH = "./storage/data/openkraken.db";
+  };
+
+  # Development scripts
+  scripts = {
+    dev.exec = "bun run src/main.ts";
+    test.exec = "bun test";
+    migrate.exec = "bun run migrate";
+  };
+
+  # Processes (run with `devenv up`)
+  processes.orchestrator = {
+    exec = "bun run src/main.ts";
+    cwd = "packages/orchestrator";
+  };
+}
+```
+
+**Egress Gateway devenv.nix** (`packages/egress-gateway/devenv.nix`):
+```nix
+{ pkgs, lib, config, ... }:
+{
+  imports = [ ../shared/devenv.nix ];
+
+  # Go toolchain
+  languages.go = {
+    enable = true;
+    package = pkgs.go_1_25;  # Go 1.25.6
+  };
+
+  # Environment
+  env = {
+    EGRESS_GATEWAY_PORT = "3001";
+    EGRESS_SOCKET_PATH = "/tmp/openkraken-egress.sock";
+  };
+
+  # Scripts
+  scripts = {
+    build.exec = "go build -o bin/egress-gateway ./src";
+    test.exec = "go test ./...";
+    run.exec = "go run ./src";
+  };
+
+  # Processes
+  processes.egress-gateway = {
+    exec = "go run ./src";
+    cwd = "packages/egress-gateway";
+  };
+}
+```
+
+**Root Process Orchestration** (`services/local-development.nix`):
+```nix
+{ pkgs, lib, config, ... }:
+{
+  # Import both package processes
+  imports = [
+    ../packages/orchestrator/devenv.nix
+    ../packages/egress-gateway/devenv.nix
+  ];
+
+  # Additional development services
+  services.redis.enable = true;  # For caching (optional)
+
+  # Process dependencies
+  processes.egress-gateway = {
+    exec = "go run ./src";
+    cwd = "packages/egress-gateway";
+  };
+
+  processes.orchestrator = {
+    exec = "bun run src/main.ts";
+    cwd = "packages/orchestrator";
+    # Ensure gateway starts first
+    depends_on = [ "egress-gateway" ];
+  };
+}
+```
+
+#### Development Workflow
+
+**Enter development environment:**
+```bash
+# Auto-activate with direnv
+cd openkraken
+
+# Or manually enter
+devenv shell
+```
+
+**Start all services:**
+```bash
+devenv up
+# Starts: egress-gateway → orchestrator
+```
+
+**Work on specific package:**
+```bash
+cd packages/orchestrator
+devenv shell
+bun test
+```
+
+**Build for production:**
+```bash
+just build
+# Builds both TypeScript and Go binaries
+```
+
+#### Cross-Language Coordination
+
+**Justfile** (task runner at root):
+```just
+# Build all packages
+build:
+    cd packages/egress-gateway && go build -o ../../bin/egress-gateway ./src
+    cd packages/orchestrator && bun build --compile --outfile ../../bin/openkraken ./src/main.ts
+
+# Run all tests
+test:
+    cd packages/egress-gateway && go test ./...
+    cd packages/orchestrator && bun test
+
+# Development mode (uses devenv)
+dev:
+    devenv up
+```
+
+**Key Benefits:**
+1. **Language Isolation**: Each package has its own toolchain (Bun vs Go)
+2. **Shared Configuration**: Common tools (git, jq, just) defined once in `packages/shared`
+3. **Process Orchestration**: `devenv up` starts both services with proper dependencies
+4. **Reproducible**: All dependencies pinned via `devenv.lock` and `flake.lock`
+5. **CI-Ready**: Same environment locally and in CI via Nix
 
 ### 5.2 Clean Architecture Layer Definitions
 
@@ -2223,35 +2208,48 @@ Middleware executes in the order defined below. Later middleware operates on the
 
 | Order | Tier | Middleware | Purpose | Input Contract | Output Contract |
 |-------|------|-----------|---------|----------------|-----------------|
-| 1 | **Policy** | Policy Middleware | Security boundary enforcement | Raw user input | Validated input or rejection |
-| 2 | **Policy** | PII Middleware | Credential/PII detection via LangChain piiMiddleware | Validated input | Clean input or block |
-| 3 | **Policy** | Rate Limiting | Request throttling | Clean input | Rate token or proceed |
-| 4 | **Capabilities** | Cron Middleware | Scheduled task detection | Proceed signal | Task context or proceed |
-| 5 | **Capabilities** | Web Search Middleware | Web capability injection | Proceed signal | web_search tools available |
-| 6 | **Capabilities** | Browser Middleware | Browser automation tools | Proceed signal | browser tools available |
-| 7 | **Capabilities** | Memory Middleware | Memory retrieval/injection | Proceed signal | Context with memories |
-| 8 | **Capabilities** | MCP Adapter Middleware | MCP server access | Proceed signal | MCP tools available |
-| 9 | **Capabilities** | Skill Loader Middleware | Skill manifest injection, version tracking, auto-update within approved bounds | Proceed signal | Skill tools available, skill_version metadata |
-| 10 | **Capabilities** | Sub-Agent Middleware | Task delegation via createSubAgentMiddleware() pattern | Proceed signal | Sub-agent tools available |
-| 11 | **Operational** | Summarization Middleware | Context compression | Full context | Compressed context |
-| 12 | **Operational** | Human-in-the-Loop Middleware | Owner approval requests | Proceed signal | Approval or block |
+| 1 | **Policy** | Policy Middleware | Security boundary enforcement: package validation, rate limiting, content scanning (non-PII) | Raw user input | Validated input or rejection |
+| 2 | **Policy** | PII Middleware | Credential/PII detection and scrubbing via LangChain built-in piiMiddleware | Validated input | PII-scrubbed input or block |
+| 3 | **Capabilities** | Cron Middleware | Scheduled task detection | Proceed signal | Task context or proceed |
+| 4 | **Capabilities** | Web Search Middleware | Web capability injection | Proceed signal | web_search tools available |
+| 5 | **Capabilities** | Browser Middleware | Browser automation tools | Proceed signal | browser tools available |
+| 6 | **Capabilities** | Memory Middleware | Memory retrieval/injection via RMM (Reflective Memory Management) | Proceed signal | Context with memories |
+| 7 | **Capabilities** | MCP Adapter Middleware | MCP server access | Proceed signal | MCP tools available |
+| 8 | **Capabilities** | Skill Loader Middleware | Skill manifest injection, version tracking, auto-update within approved bounds | Proceed signal | Skill tools available, skill_version metadata |
+| 9 | **Capabilities** | Sub-Agent Middleware | Task delegation via createSubAgentMiddleware() pattern | Proceed signal | Sub-agent tools available |
+| 10 | **Operational** | Summarization Middleware | Context compression | Full context | Compressed context |
+| 11 | **Operational** | Human-in-the-Loop Middleware | Owner approval requests | Proceed signal | Approval or block |
 
 #### 5.5.2 Tier Organization
 
 **Tier 1: Foundational Policy**
 - Executes first on every request
+- **Policy Middleware**: Validates terminal package requests against allowlist, enforces rate limiting, performs content scanning (excluding PII which is handled by dedicated PII Middleware)
+- **PII Middleware**: LangChain's built-in `piiMiddleware` specifically handles credential/PII detection and scrubbing
 - Determines if request should proceed
 - No capability expansion—only validation and gating
 
 **Tier 2: Agent Capabilities**
 - Expands agent capabilities based on configuration
 - Injects tools and context
+- **Memory Middleware**: Uses RMM (Reflective Memory Management) for semantic memory operations
 - Order matters for context injection priority
 
 **Tier 3: Operational Concerns**
 - Handles cross-cutting operational needs
 - Context optimization (summarization)
 - Human-in-the-loop workflows
+
+#### Middleware Responsibility Matrix
+
+| Concern | Implementation | Layer |
+|---------|---------------|-------|
+| Package validation | Policy Middleware | Tier 1 |
+| Rate limiting | Policy Middleware | Tier 1 |
+| Content scanning (general) | Policy Middleware | Tier 1 |
+| PII/Credential detection | LangChain `piiMiddleware` | Tier 1 |
+| Semantic memory | RMM Memory Middleware | Tier 2 |
+| Observability | Langfuse CallbackHandler | Callback (parallel) |
 
 #### 5.5.3 Middleware Input/Output Contracts
 
@@ -2470,197 +2468,124 @@ Detailed testing strategy expansion deferred to include:
 
 ---
 
-### 5.8 OpenTelemetry Implementation
+### 5.8 OpenTelemetry Implementation with Langfuse
 
-> **Implementation Note:** This section documents OpenTelemetry concepts and patterns for LangChain integration. This is theoretical documentation intended to guide implementation—actual code implementation is deferred to the development phase.
+OpenKraken uses **Langfuse v4** for OpenTelemetry observability. Langfuse v4 is built on OpenTelemetry and provides a production-tested `CallbackHandler` for LangChain.js integration.
 
-#### Integration Choice
+#### Stack Specification
 
-**Langfuse** provides plug-and-play LangChain integration for OpenTelemetry tracing:
-- Direct `@langfuse/langchain` callback handler
-- No reinventing the wheel
-- Production-tested with LangChain.js
-- Supports export to OTLP collectors, LangSmith, or SQLite
+| Component | Version | Package | Purpose |
+|-----------|---------|---------|---------|
+| **Langfuse SDK** | v4.x | `@langfuse/langchain` | OpenTelemetry-based tracing for LangChain |
+| **Langfuse Core** | v4.x | `@langfuse/core` | Base SDK for custom traces |
+| **OpenTelemetry** | v1.x | `@opentelemetry/sdk-node` | OTLP export infrastructure |
 
-#### Documentation-Only: Callback Handler Pattern
-
-LangChain's `BaseCallbackHandler` provides lifecycle hooks for observing agent execution. This is documentation of the pattern—concrete implementation will use Langfuse's pre-built handler.
-
-**Lifecycle Hooks:**
-
-| Hook Purpose | When Called | Usage |
-|--------------|-------------|-------|
-| `handleChainStart` | Before chain execution | Create span, capture inputs |
-| `handleChainEnd` | After chain completes | Record outputs, end span |
-| `handleChainError` | On chain failure | Capture error, set span status |
-| `handleLLMStart` | Before LLM invocation | Track model, token counts |
-| `handleLLMEnd` | After LLM response | Record tokens, latency |
-| `handleToolStart` | Before tool execution | Track tool name, inputs |
-| `handleToolEnd` | After tool result | Record outputs, duration |
-| `handleError` | On any error | Propagate to tracing |
-
-**Theoretical Span Creation Pattern:**
-
-> **Conceptual example only—actual implementation will follow Langfuse patterns**
-
-```typescript
-// THEORETICAL PATTERN - Documentation Only
-import { trace } from "@opentelemetry/api"
-
-class OpenTelemetryCallbackHandler extends BaseCallbackHandler {
-  private tracer = trace.getTracer("openkraken")
-  private activeSpans = new Map<string, Span>()
-  
-  handleChainStart(_ignored, inputs, runId) {
-    const span = this.tracer.startSpan(`langchain.chain.run`, {
-      attributes: {
-        "langchain.run_type": "chain",
-        "langchain.chain.inputs": JSON.stringify(inputs)
-      }
-    })
-    this.activeSpans.set(runId, span)
-  }
-  
-  handleChainEnd(outputs, runId) {
-    const span = this.activeSpans.get(runId)
-    span.setAttributes({
-      "langchain.chain.outputs": JSON.stringify(outputs)
-    })
-    span.end()
-    this.activeSpans.delete(runId)
-  }
-}
-```
-
-**Important:** Above code is for documentation purposes only to illustrate the pattern. Actual implementation will use Langfuse's `CallbackHandler` which implements these patterns.
-
-#### Documentation-Only: Semantic Conventions
-
-OpenTelemetry defines standard attributes for LLM operations. Langfuse follows these conventions—this documents what will be tracked.
-
-**LLM Operation Attributes:**
-
-| Attribute | Type | Description | Example |
-|-----------|------|-------------|---------|
-| `llm.request.type` | string | Type of request | `"chat"` |
-| `llm.model.name` | string | Model identifier | `"claude-3-sonnet-20240229"` |
-| `llm.prompt_tokens` | int | Number of input tokens | `1250` |
-| `llm.completion_tokens` | int | Number of output tokens | `342` |
-| `llm.response.model` | string | Actual model used | `"gpt-4-0125-preview"` |
-| `llm.provider` | string | LLM provider name | `"anthropic"` |
-
-**Span Naming Convention:**
-- Chain: `langchain.chain.<chain_name>`
-- LLM: `langchain.llm.<provider>.<model>` (e.g., `langchain.llm.anthropic.claude-opus`)
-- Tool: `langchain.tool.<tool_name>`
-
-#### Langfuse Integration Pattern
-
-> **Documentation of configuration pattern—implementation deferred**
+#### Langfuse CallbackHandler Integration
 
 **Installation:**
 ```bash
-bun add @langfuse/langchain
+bun add @langfuse/langchain@latest
 ```
 
-**Configuration Pattern:**
+**Basic Configuration:**
 ```typescript
-// THEORETICAL CONFIGURATION - Documentation Only
-import { CallbackHandler } from "@langfuse/langchain"
+import { CallbackHandler } from "@langfuse/langchain";
 
-export const langfuseHandler = new CallbackHandler({
-  publicKey: process.env.LANGFUSE_PUBLIC_KEY,
-  secretKey: process.env.LANGFUSE_SECRET_KEY,
-  baseUrl: process.env.LANGFUSE_BASE_URL || "https://cloud.langfuse.com",
+const langfuseHandler = new CallbackHandler({
+  // Credentials retrieved from CredentialVault at runtime
+  publicKey: await credentialVault.retrieve("langfuse-public-key"),
+  secretKey: await credentialVault.retrieve("langfuse-secret-key"),
+  baseUrl: "https://cloud.langfuse.com", // or self-hosted URL
   
-  // Session metadata
-  sessionId: generateSessionId(),
-  userId: retrieveOwnerId(),
-  tags: ["openkraken", env],
+  // Trace metadata
+  sessionId: threadId,
+  userId: ownerId,
+  tags: ["openkraken", OPENKRAKEN_ENV],
   
-  // Callback execution order
-  flushAt: 10  // Batch size
-})
+  // Performance tuning
+  flushAt: 10,        // Batch size for events
+  flushInterval: 5000, // Flush every 5 seconds
+});
 ```
 
-**Agent Integration Pattern:**
+**Agent Integration:**
 ```typescript
-// THEORETICAL USAGE - Documentation Only
 const result = await agent.invoke(
-  { messages: [...] },
+  { messages: inputMessages },
   { callbacks: [langfuseHandler] }
-)
+);
 ```
 
-#### Traced Data (Documentation)
-
-The Langfuse callback automatically tracks:
-
-1. **LLM Calls**
-   - Model: `llm.model.name`
-   - Tokens: `llm.prompt_tokens`, `llm.completion_tokens`
-   - Duration: `llm.latency`
-   - Provider: `llm.provider`
-
-2. **Tool Calls**
-   - Tool: `langchain.tool.name`
-   - Input: `langchain.tool.input`
-   - Output: `langchain.tool.output`
-   - Duration
-
-3. **Chain Execution**
-   - Chain: `langchain.chain.name`
-   - Input/Output: JSON payload
-   - State transitions
-
-4. **Middleware Execution**
-   - Middleware name and order
-   - State transformations
-   - Interruptions (human-in-the-loop)
-
-#### Export Configuration (Documentation)
-
-**SQLite for Audit (Primary):**
-> Theoretical export pattern for audit logging
+**LangGraph Integration:**
 ```typescript
-const sqliteExporter = new SQLiteSpanProcessor({
-  database: "openkraken.db",
-  tableName: "otel_spans"
-})
+const result = await graph.invoke(
+  { messages: inputMessages },
+  { callbacks: [langfuseHandler] }
+);
 ```
 
-**OTLP Collector for Production:**
-> Theoretical export pattern for production systems
+#### Automatic Tracing
+
+The Langfuse `CallbackHandler` automatically captures:
+
+| Operation | Captured Data | OpenTelemetry Attribute |
+|-----------|---------------|------------------------|
+| **LLM Calls** | Model name, token counts, latency, cost | `llm.model.name`, `llm.prompt_tokens`, `llm.completion_tokens` |
+| **Tool Calls** | Tool name, inputs, outputs, duration | `langchain.tool.name`, `langchain.tool.input` |
+| **Chain Execution** | Chain type, inputs/outputs, step count | `langchain.chain.name`, `langchain.chain.inputs` |
+| **Agent Actions** | Action type, reasoning, tool selection | `langchain.agent.action` |
+| **Errors** | Error type, message, stack trace | `error.type`, `error.message` |
+
+#### Export Configuration
+
+Langfuse supports multiple export backends:
+
+**Primary: Langfuse Cloud/Self-Hosted**
+- Direct export to Langfuse API
+- Rich UI for trace visualization
+- Cost and token tracking
+- Annotation and scoring
+
+**Secondary: OTLP Export**
 ```typescript
-const otlpExporter = new OTLPTraceExporter({
-  url: "http://jaeger:4318/v1/traces"
-})
+import { NodeSDK } from "@opentelemetry/sdk-node";
+import { LangfuseSpanProcessor } from "@langfuse/otel";
+
+const sdk = new NodeSDK({
+  spanProcessors: [
+    new LangfuseSpanProcessor(),
+    // Additional OTLP exporters can be added here
+  ],
+});
+sdk.start();
 ```
 
-**LangSmith for Development (Optional):**
-> Theoretical export pattern for development debugging
+#### Shutdown Handling
+
+For clean shutdown (ensures all traces are flushed):
 ```typescript
-const langsmithExporter = new LangSmithExporter({
-  apiKey: process.env.LANGSMITH_API_KEY
-})
+// On process exit
+process.on("SIGTERM", async () => {
+  await langfuseHandler.shutdownAsync();
+  process.exit(0);
+});
 ```
 
-#### Observability Endpoints
+#### Security Considerations
 
-> **Planned endpoints for future implementation**
+- **Credential Isolation**: Langfuse credentials stored in OS-level vault, retrieved at runtime
+- **PII Handling**: Langfuse automatically scrubs common PII patterns; additional scrubbing via middleware
+- **Data Residency**: Self-hosted Langfuse option for data sovereignty requirements
 
-The `/metrics` endpoint will expose aggregate metrics:
-- Total LLM token usage by provider
-- Tool invocation frequency
-- Average latency per model type
-- Error rates
+#### Alternatives Considered
 
-#### Implementation Notes
+| Alternative | Rejected Because |
+|-------------|-----------------|
+| Custom OpenTelemetry implementation | Langfuse provides proven, maintained integration |
+| LangSmith | PRD explicitly excludes LangSmith support; also LangSmith requires OpenAI-specific patterns |
+| Native OTEL SDK only | Would require reimplementing LangChain-specific instrumentation |
 
-- This section documents OpenTelemetry concepts and patterns for reference during implementation
-- Actual callback handler will use Langfuse's built-in implementation, not custom code
-- Configuration patterns provide guidance for development phase
-- All concrete implementation is deferred until development begins
+> **Langfuse v4 Selection Rationale:** Langfuse v4 is built on OpenTelemetry (meeting our OTLP requirement), provides a maintained LangChain.js CallbackHandler, supports Bun runtime, and offers both cloud and self-hosted deployment options. This aligns with the "Build on Proven Foundations" philosophy.
 
 ---
 
@@ -3201,6 +3126,7 @@ WantedBy=multi-user.target
 | 1.4.0 | 2026-02-04 | Principal Software Engineer | Verified intfloat/e5-small-v2 details via HuggingFace model card: 384 dimensions, 33.4M params, 12 layers, 512 max tokens |
 | 1.5.0 | 2026-02-04 | Principal Software Engineer | Changed embedding model from intfloat/e5-small-v2 to intfloat/multilingual-e5-small (multilingual support). Verified via HuggingFace API: 384 dimensions, 12 layers, 512 max tokens, XLMRobertaTokenizer, 100+ languages. |
 | 1.6.0 | 2026-02-04 | Principal Software Engineer | Removed duplicate code (Repository Pattern example). Removed Section 9 "Pending Architectural Decisions" - all decisions resolved. Renumbered Appendix to Section 9. |
-| 1.7.0 | 2026-02-04 | Principal Software Engineer | Major updates: Adopted Open Responses API as primary interface contract; Updated checkpointer schema to LangGraph-compatible with BLOB serialization; Removed embedding model details (RMM Memory middleware is external integration); Replaced ESLint/Prettier with Biome + Ultracite; Removed Content Scanning callback (uses LangChain built-in piiMiddleware); Updated Nix versions (2.31.3/nixpkgs 25.11); Removed Docker Compose (Nix-driven sandboxing only); Simplified project structure.
+| 1.7.0 | 2026-02-04 | Principal Software Engineer | Major updates: Adopted Open Responses API as primary interface contract; Updated checkpointer schema to LangGraph-compatible with BLOB serialization; Removed embedding model details (RMM Memory middleware is external integration); Replaced ESLint/Prettier with Biome + Ultracite; Removed Content Scanning callback (uses LangChain built-in piiMiddleware); Updated Nix versions (2.31.3/nixpkgs 25.11); Removed Docker Compose (Nix-driven sandboxing only); Simplified project structure. |
 | 1.8.0 | 2026-02-07 | Principal Software Engineer | Added §8.4 Encryption Key Management Lifecycle (HKDF key derivation, vault storage, rotation procedure); §8.5 Backup and Disaster Recovery (three-component strategy, recovery matrix); §8.6 CLI/Web UI Authentication (vault-stored static token). Added alerting configuration to §6.2. Removed HITL approval timeout (Checkpointer persists indefinitely). |
+| 1.9.0 | 2026-02-07 | Principal Software Engineer | **Structural fixes**: Removed duplicate Skill Schema Section (3.7); Removed malformed OpenAPI YAML duplicate event types; Removed duplicate YAML block in Request Schema. **Content updates**: Added concrete Langfuse v4 CallbackHandler implementation (§5.8); Clarified middleware stack responsibilities - Policy Middleware (rate limits, content scanning) vs PII Middleware (§5.5); Documented RMM (Reflective Memory Management) Middleware definition (§3.3); Added devenv-managed monorepo structure (§5.1); Standardized SQLite UUID type annotations across all ERDs (§3.x). |
 

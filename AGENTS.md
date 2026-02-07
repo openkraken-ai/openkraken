@@ -413,3 +413,121 @@ When editing Architecture.md, validate against these boundaries:
 5. **Scan for protocol specifics** (HTTP/2, gRPC, WebSocket frames) → Move to TechSpec.md
 
 **Remember:** Architecture.md is the structural blueprint. It answers *what kind of* system we are building, not *which* technologies we are using. Per Martin Fowler: *"Architecture is the set of decisions that are hard to change."* Vendor versions are easy to change; architectural patterns are not.
+
+---
+
+## TechSpec Boundaries: The Code Rule
+
+TechSpec.md occupies the **physical layer**—it specifies concrete versions, API contracts, database schemas, and configuration schemas. However, it does not contain implementation code. This section defines the boundary between TechSpec.md (specification) and the actual codebase (implementation).
+
+### The Principle of Specification Completeness
+
+Per Robert C. Martin's *Clean Architecture*, specifications describe contracts that code must fulfill. TechSpec.md answers: *"What are the binding agreements?"* not *"How is the logic implemented?"*
+
+**This is the key distinction:** TechSpec.md contains **contracts and constraints**, not **algorithms and business logic**.
+
+| Level | Example | Belongs In |
+|-------|---------|------------|
+| **Contract** | "OpenAPI 3.0 YAML for `/v1/responses` endpoint" | ✓ TechSpec.md |
+| **Schema** | "SQLite table `checkpoints` with columns (thread_id, checkpoint_id, checkpoint BLOB)" | ✓ TechSpec.md |
+| **Configuration** | "Environment variable `OPENKRAKEN_ENV` accepts values: production, development" | ✓ TechSpec.md |
+| **Algorithm** | "PII detection uses regex patterns for email, phone, credit card" | ✗ Code + Comments |
+| **Business Logic** | "Skill approval workflow: analyze → approve → activate" | ✗ Code |
+| **Implementation Pattern** | "Repository pattern with async/await" | ✗ Code Architecture |
+
+### What TechSpec.md CAN Contain
+
+**Appropriate specification elements:**
+- **Version Specifications:** "Bun 1.3.8", "Go 1.25.6" ✓
+- **API Contracts:** OpenAPI 3.0 YAML, request/response schemas ✓
+- **Database Schemas:** ERDs, table definitions, type mappings ✓
+- **Configuration Schemas:** YAML structure, environment variables, validation rules ✓
+- **File Structures:** Project layout, directory conventions ✓
+- **Interface Definitions:** Public API signatures (not implementation) ✓
+- **Package Dependencies:** `package.json` dependencies with versions ✓
+
+**Appropriate reference patterns:**
+- "Uses `@langfuse/langchain` CallbackHandler (see Section 5.8)"
+- "Database schema defined in Section 3.1"
+- "Configuration file schema: `openkraken.yaml` (Section 6.2)"
+
+### What TechSpec.md MUST NOT Contain
+
+**Implementation code to keep in source files:**
+- Actual function implementations (even "example" code)
+- Algorithm details (regex patterns, parsing logic)
+- Business rule implementations
+- Internal helper functions
+- Test implementations
+- Build scripts and CI/CD pipelines
+- Deployment manifests (these belong in `nix/` directory)
+
+**Anti-pattern examples:**
+- "The `validateEmail()` function uses `/^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/`" ✗
+- "Migration runner implementation:" followed by 50 lines of TypeScript ✗
+- "Example usage:" followed by production-ready code ✗
+
+### The "Why" Behind Specification Boundaries
+
+**Maintainability:** When implementation details change (refactoring, optimization), TechSpec.md should remain stable. Only contracts and schemas should require updates.
+
+**Single Source of Truth:** Code is the authoritative implementation. TechSpec describes what the code must do, but code describes how it does it. Duplication creates drift.
+
+**Review Efficiency:** PR reviewers should verify TechSpec-to-code alignment. If TechSpec contains implementation, reviewers must check both specification and code—doubling cognitive load.
+
+### The Deferred Implementation Pattern
+
+When a specific implementation is not yet decided, use this pattern:
+
+**❌ Wrong (vague placeholder):**
+> "Implementation of the migration runner is deferred to development phase."
+
+**✅ Correct (clear contract):**
+> "Migration contract: Must support forward-only migrations with checksum verification. Implementation must use `bun:sqlite` transactions. See ADR-002 for durability requirements."
+
+### When in Doubt (TechSpec Edition)
+
+Ask: *"Would I need to update this if I refactored the implementation without changing behavior?"*
+
+- If no (behavior changed) → It belongs in TechSpec.md
+- If yes (implementation detail changed) → It belongs in code
+
+**The Test:** Could I rewrite the implementation in a different programming style (functional vs OOP) without changing TechSpec.md? If yes, you're at the right level of abstraction.
+
+### Cross-Reference Discipline
+
+TechSpec.md contains explicit references to source code locations:
+
+> "Implementation follows the pattern documented in `src/orchestrator/database/migrations/README.md`."
+
+This pattern:
+1. Keeps TechSpec.md focused on contracts
+2. Guides implementers to detailed patterns
+3. Prevents duplication between spec and code
+4. Allows code to evolve independently
+
+### Code-First Documentation
+
+For complex algorithms, document in code:
+
+```typescript
+// In source file: src/orchestrator/pii/detector.ts
+/**
+ * PII Detection Algorithm
+ * 
+ * Detects and masks personally identifiable information in text.
+ * 
+ * Patterns detected:
+ * - Email addresses (RFC 5322 compliant)
+ * - Phone numbers (E.164 format)
+ * - Credit card numbers (Luhn validation)
+ * 
+ * @see TechSpec.md Section 5.5 for middleware placement
+ * @see ADR-005 for credential handling requirements
+ */
+export function detectPII(input: string): MaskedResult {
+  // Implementation here...
+}
+```
+
+**Remember:** TechSpec.md is the "Builder's Blueprint"—it describes the materials (versions), the interfaces (APIs), and the constraints (schemas), but the actual construction (code) happens in the source files. Per Robert C. Martin: *"The code is the truth, but the specification is the contract."*
