@@ -46,14 +46,99 @@ This section defines the concrete technology stack for OpenKraken, specifying ex
 
 | Component | Version | Justification |
 |-----------|---------|---------------|
-| **Nix** | 2.33.2 (latest stable) | Reproducible builds via Nix Flakes. Cross-platform package management. |
+| **Nix** | 2.31.2 (current) or 2.33.2 (latest stable) | Reproducible builds via Nix Flakes. Cross-platform package management. Use 2.18.x+ for flake support. |
 | **nixpkgs** | 25.11 (stable channel) | Declarative system configuration. Generates systemd units (Linux) and launchd plists (macOS). |
+| **devenv** | 1.5+ (via Flake Hub) | Fast, reproducible development environments for multi-language monorepo. |
+| **direnv** | 2.35+ (via Nix, optional) | Automatic shell activation for devenv environments. |
+| **git** | 2.47+ (via devenv packages) | Version control for all environments. |
+| **just** | 1.36+ (via devenv packages) | Command runner for task orchestration at repo root. |
 | **Egress Gateway** | Go 1.25.6 | Systems programming language for network proxy. Selected for faster implementation velocity, simpler concurrency (goroutines), and mature HTTP CONNECT proxy ecosystem. |
 | **Vercel Skills CLI** | Bundled via Nix | Integrated Agent Skills CLI implementation. Bundled as Nix package for reproducibility (not `npx`). Enables access to curated skills ecosystem while applying OpenKraken's security pipeline. |
 
 ### 1.6 Dependency Management Strategy
 
 All dependencies declared in `package.json` with exact semver ranges. The build process pins transitive dependencies via `bun.lockb` to prevent dependency confusion attacks. No `*` or `^` prefixes permitted in production dependencies. DevDependencies may use `^` for tooling flexibility but require periodic review.
+
+### 1.7 SBOM Generation & Regulatory Compliance (2026)
+
+OpenKraken SHALL generate Software Bill of Materials (SBOM) for all production builds to meet:
+- **CRA (Cyber Resilience Act)** - EU market requirements (Late 2026/2027)
+- **PCI DSS 4.0** - Payment security compliance
+- **FDA Medical Device Software** - SBOM mandates for submissions
+- **OMB Policy (Jan 2026)** - Federal contractor attestation
+
+**SBOM Tooling Strategy:**
+
+| Tool | Format | Status | Use Case |
+|------|--------|--------|----------|
+| **nix2sbom** | CycloneDX, SPDX | Active maintenance | Self-hosted CI |
+| **genealogos** | CycloneDX | Tweag-developed | Enterprise adoption |
+| **sbomnix** | Multiple formats | tiiuae-developed | Multi-format output |
+| **Determinate Secure Packages** | CycloneDX | Enterprise tier (optional) | Managed vulnerability remediation |
+
+**Implementation Pattern (flake.nix):**
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
+    # Optional: Use Determinate Secure Packages for CVE monitoring
+    # nixpkgs.url = "github:determinate/systems/nixpkgs";
+  };
+
+  outputs = { self, nixpkgs, ... }@inputs:
+    let
+      systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" ];
+      forAllSystems = nixpkgs.lib.genAttrs systems;
+    in
+    {
+      packages = forAllSystems (system:
+        let pkgs = import nixpkgs { inherit system; };
+        in {
+          openkraken-orchestrator = pkgs.callPackage ./nix/package.nix { };
+          openkraken-gateway = pkgs.callPackage ./nix/gateway-package.nix { };
+
+          # SBOM package
+          sbom = pkgs.writeShellScriptBin "generate-sbom" ''
+            ${pkgs.nix2sbom}/bin/nix2sbom -f cyclonedx \
+              ${self.packages.${system}.openkraken-orchestrator} \
+              > sbom-${system}-orchestrator.cyclonedx.json
+
+            ${pkgs.nix2sbom}/bin/nix2sbom -f cyclonedx \
+              ${self.packages.${system}.openkraken-gateway} \
+              > sbom-${system}-gateway.cyclonedx.json
+
+            echo "SBOMs generated for $system"
+          '';
+        }
+      );
+    };
+}
+```
+
+**CI Integration:**
+```yaml
+- name: Generate SBOM
+  run: nix run .#sbom
+
+- name: Upload SBOM artifact
+  uses: actions/upload-artifact@v4
+  with:
+    name: sbom-${{ matrix.os }}
+    path: sbom-*.json
+    retention-days: 90
+```
+
+**SBOM Contents:**
+```yaml
+sbom:
+  format: "CycloneDX 1.6"
+  scope: "production"
+  validation: "Nix store integrity verification (SHA256)"
+  compliance:
+    - "CRA: Late 2026/2027"
+    - "PCI DSS 4.0: Active"
+    - "FDA: Ongoing"
+```
 
 ---
 
@@ -430,6 +515,37 @@ Mitigation:
 - LangChain.js 1.2.18 Provider Documentation: https://js.langchain.com/docs/modules/models/integrations/
 - Librarian CLI Verification: Confirmed Bun compatibility for all provider packages
 - TechSpec Section 1.2: LangChain version locked to 1.2.18
+
+### ADR-009: devenv over Docker Compose for Development
+
+**Context:**
+Local development environments require consistent tooling across Linux/macOS.
+Traditionally, teams use Docker Compose to run multiple services, but this has
+limitations:
+- Heavy resource overhead (3-4 virtual machines for simple tools)
+- Slow cold starts (30+ seconds for first run)
+- Cross-platform inconsistencies (Docker Desktop issues on macOS/Windows)
+- Separate lockfile management (Dockerfile vs package.json vs go.mod)
+
+**Decision:**
+Use devenv for all development environment orchestration:
+- Multi-language support (Bun + Go) in single devenv.nix
+- Process orchestration via `devenv up`
+- Symlink-based tool activation (`nix develop` pattern, zero virtualization overhead)
+- Input-addressable builds (automatic caching via narHash)
+- Task-based automation with dependency management
+
+**Consequences:**
+| Positive | Negative |
+|----------|----------|
+| Fast shell activation (~1s vs 30s for Docker) | Nix learning curve (2-4 weeks) |
+| Zero-cost reproducibility (hash-based caching) | Windows support limited (WSL only) |
+| Single lockfile for entire stack (devenv.lock) | Not suitable for production isolation |
+| Automatic cross-platform parity (Linux/macOS) | |
+| Task-based dependencies with execIfModified | |
+| enterTest hook for test environment setup | |
+- Docker retained only for: Anthropic Sandbox Runtime (security isolation required)
+- Production deployment via NixOS/Darwin modules, not containers
 
 ---
 
@@ -1727,13 +1843,27 @@ openkraken/
 
 #### devenv Configuration
 
-**Root devenv.yaml** (imports shared config):
+**Root devenv.yaml** (with version pinning):
+```yaml
+inputs:
+  nixpkgs:
+    url: github:NixOS/nixpkgs/nixos-25.11
+    # Pin to commit for maximum reproducibility:
+    # url: github:NixOS/nixpkgs/abc123def456...  # Specific SHA
+  devenv:
+    url: github:cachix/devenv/latest
+    inputs.nixpkgs.follows = "nixpkgs"
+imports:
+  - /packages/shared
+```
+
+**Alternative: Pin devenv to specific version:**
 ```yaml
 inputs:
   nixpkgs:
     url: github:NixOS/nixpkgs/nixos-25.11
   devenv:
-    url: github:cachix/devenv
+    url: github:cachix/devenv/v1.5.0  # Specific version
 imports:
   - /packages/shared
 ```
@@ -1857,20 +1987,186 @@ imports:
   # Additional development services
   services.redis.enable = true;  # For caching (optional)
 
-  # Process dependencies
-  processes.egress-gateway = {
-    exec = "go run ./src";
-    cwd = "packages/egress-gateway";
+  # NOTE: devenv processes run concurrently. Use tasks with `before`
+  # or scripts with wait_for_port to coordinate startup order.
+
+  # Pattern 1: Create task that waits for gateway before starting orchestrator
+  tasks = {
+    "wait:gateway" = {
+      exec = "wait_for_port 3001";
+      before = [ "devenv:processes:egress-gateway" ];
+    };
+
+    "start:orchestrator" = {
+      exec = "bun run src/main.ts";
+      cwd = "${config.git.root}/packages/orchestrator";
+    };
   };
 
-  processes.orchestrator = {
-    exec = "bun run src/main.ts";
-    cwd = "packages/orchestrator";
-    # Ensure gateway starts first
-    depends_on = [ "egress-gateway" ];
+  # Pattern 2: Simple dev script that starts everything
+  scripts = {
+    dev-server.exec = ''
+      echo "Starting development environment..."
+      devenv processes run egress-gateway &
+      sleep 2
+      wait_for_port 3001 || exit 1
+      echo "Gateway ready, starting orchestrator..."
+      devenv processes run orchestrator
+    '';
+
+    dev.exec = "dev-server";
   };
 }
 ```
+
+#### Scripts vs Tasks (devenv Distinction)
+
+**Scripts** (short-running commands, available as shell commands):
+```nix
+scripts = {
+  dev.exec = "bun run src/main.ts";
+  test.exec = "bun test";
+  migrate.exec = "bun run migrate";
+  lint.exec = "biome lint src/";
+};
+```
+Usage: `dev`, `test`, `migrate`, `lint` (no prefix, no `devenv` prefix)
+
+**Tasks** (workflow automation with dependencies, caching, modification detection):
+```nix
+tasks = {
+  "app:build" = {
+    exec = "bun run build";
+    execIfModified = [ "src/**/*.ts" "package.json" ];  # Only builds if files changed
+    description = "Build the application";
+  };
+
+  "db:migrate" = {
+    exec = "bun run db:migrate";
+    before = [ "devenv:enterTest" ];  # Runs enterTest before migration
+  };
+
+  "db:setup" = {
+    exec = "bun run db:migrate";
+    before = [ "devenv:processes:egress-gateway" ];  # Waits for gateway
+  };
+
+  "test:integration" = {
+    exec = "bun test --testPathPattern='integration'";
+    before = [ "devenv:enterTest" ];  # Runs enterTest hook first
+  };
+};
+```
+Usage: `devenv tasks run app:build`, `devenv tasks run test:integration`
+
+| Feature | Scripts | Tasks |
+|---------|---------|-------|
+| Command syntax | `script-name` | `devenv tasks run task-name` |
+| Caching | None | `execIfModified` (file-based) |
+| Dependencies | None | `before` / `after` keywords |
+| Test integration | Manual | `devenv:enterTest` hook |
+| Conditional execution | None | `status` field (skip if ready) |
+| Input/output chaining | None | Full JSON I/O support |
+
+#### Test Environment Pattern with enterTest
+
+**Orchestrator devenv.nix** (with enterTest - top-level option):
+```nix
+{ pkgs, lib, config, ... }:
+{
+  imports = [ ../shared/devenv.nix ];
+
+  languages.javascript = {
+    enable = true;
+    package = pkgs.bun;
+  };
+  languages.typescript.enable = true;
+
+  # SQLite for development
+  packages = [ pkgs.sqlite ];
+
+  # Environment
+  env = {
+    ORCHESTRATOR_PORT = "3000";
+    DATABASE_PATH = "./storage/data/openkraken.db";
+  };
+
+  # Test environment setup (runs before `devenv test` and before tasks with before = ["devenv:enterTest"])
+  enterTest = ''
+    echo "Setting up test environment..."
+
+    # Create storage directory
+    mkdir -p "$DEVENV_STATE/data"
+
+    # Initialize test database
+    if [ ! -f "$DATABASE_PATH" ]; then
+      echo "Creating test database..."
+      bun run db:init
+    fi
+
+    # Seed test data
+    bun run db:seed
+
+    echo "Test environment ready"
+  '';
+
+  # Test task (requires enterTest to run first)
+  tasks = {
+    "test:unit" = {
+      exec = "bun test --testPathPattern='unit'";
+      before = [ "devenv:enterTest" ];
+    };
+
+    "test:integration" = {
+      exec = "bun test --testPathPattern='integration'";
+      before = [ "devenv:enterTest" ];
+    };
+  };
+
+  # Scripts
+  scripts = {
+    test.exec = "bun test";
+  };
+}
+```
+
+**Usage:**
+```bash
+# Run all tests (enterTest executes automatically)
+devenv test
+
+# Run specific task (enterTest executes first due to before clause)
+devenv tasks run test:integration
+
+# Run specific script manually (enterTest does NOT run)
+test
+```
+
+#### Direnv Auto-Activation
+
+**.envrc** (auto-activates on cd):
+```bash
+use devenv
+watch_file devenv.nix devenv.yaml devenv.lock
+```
+
+**Activation workflow:**
+```bash
+# First time: approve direnv
+cd openkraken
+# Output: direnv: error /path/to/.envrc is blocked. Run `direnv allow` to approve its content.
+direnv allow
+# Output: direnv: loading /path/to/.envrc
+# Output: devenv: Welcome to OpenKraken development environment
+
+# Subsequent times: automatic
+cd openkraken  # Shell auto-activates instantly
+
+# Verify activation (shows devenv.nix contents)
+direnv reload
+```
+
+**Benefit:** Zero-thought environment switching - no manual `devenv shell` needed.
 
 #### Development Workflow
 
@@ -1927,6 +2223,37 @@ dev:
 3. **Process Orchestration**: `devenv up` starts both services with proper dependencies
 4. **Reproducible**: All dependencies pinned via `devenv.lock` and `flake.lock`
 5. **CI-Ready**: Same environment locally and in CI via Nix
+
+#### devenv Maintenance
+
+**Updating dependencies:**
+```bash
+devenv update            # Update all pinned inputs (nixpkgs, devenv)
+devenv search ncdu       # Search for new packages
+```
+
+**Development debugging:**
+```bash
+devenv info             # Show environment configuration
+devenv test --no-cached # Force rebuild of tests
+```
+
+**Garbage collection:**
+```bash
+devenv gc               # Garbage collect old environments
+nix store gc --delete-old   # Clean up Nix store (more aggressive)
+```
+
+**Lockfile management:**
+```bash
+# Check if lockfile is up to date
+devenv update --dry-run
+git diff --quiet devenv.lock && echo "Lockfile is current" || echo "Lockfile needs update"
+
+# Commit both lockfiles
+git add devenv.lock flake.lock
+git commit -m "chore: update devenv and flake lockfiles"
+```
 
 ### 5.2 Clean Architecture Layer Definitions
 
@@ -3113,6 +3440,115 @@ WantedBy=multi-user.target
 </plist>
 ```
 
+### 9.3 CI/CD Strategy (Nix-First with Devenv)
+
+**Principles:**
+1. **Input-Addressable Builds**: Cache hits are automatic based on hash (no manual cache scripts)
+2. **Zero-Config Caching**: No `npm ci` or `restore_cache` steps needed - Nix handles this
+3. **Garnix for Incremental Builds**: Recommended for production CI (automatic binary caching with commit selection)
+
+**GitHub Actions with Devenv:**
+```yaml
+name: OpenKraken CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Required for flakes
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          nix_path: nixpkgs=channel:nixos-25.11
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+
+      - name: Cache Nix store (eval + build cache)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/nix
+            ~/.config/nix
+          key: nix-${{ matrix.os }}-${{ hashFiles('**/flake.lock', '**/devenv.lock') }}
+          restore-keys: |
+            nix-${{ matrix.os }}-
+
+      - name: Setup Cachix
+        uses: cachix/cachix-action@v16
+        with:
+          name: openkraken
+          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+          extraPullNames: devenv, cachix  # Pull from public caches
+
+      - name: Install devenv
+        run: nix profile install nixpkgs#devenv
+
+      - name: Build all packages
+        run: |
+          nix build .#packages.${{ runner.hostArch }}-linux.openkraken-orchestrator
+          nix build .#packages.${{ runner.hostArch }}-linux.openkraken-gateway
+
+      - name: Run devenv tests
+        run: devenv test --no-cached  # Run tests with enterTest
+
+      - name: Generate SBOM
+        run: nix run .#sbom
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ matrix.os }}
+          path: sbom-*.json
+          retention-days: 90
+
+      - name: Build and verify
+        run: |
+          devenv tasks run build
+          bun test
+
+      - name: Push to Cachix (main branch only)
+        if: github.ref == 'refs/heads/main'
+        run: |
+          nix copy --to cachix://openkraken result
+```
+
+**Garnix Configuration** (`.garnix.yaml` - Recommended for Production CI):
+```yaml
+# Garnix: Automatic binary caching and incremental builds
+builds:
+  include:
+    - system: x86_64-linux
+    - system: aarch64-linux
+    - system: x86_64-darwin
+
+cache:
+  enabled: true
+  public: true
+  name: openkraken
+
+extra_nix_config:
+  experimental-features: nix-command flakes
+```
+
+**Key CI Benefits:**
+- **Zero-config caching**: Cache hits are automatic based on flake.lock hash
+- **Cross-platform**: Same workflow runs on Linux and macOS
+- **Dev parity**: Same devenv.nix runs locally and in CI
+- **Incremental builds**: Garnix only rebuilds changed packages
+- **Binary cache sharing**: Push to Cachix on main, pull on all branches
+
 ---
 
 ## 10. Appendix: Version History
@@ -3129,4 +3565,5 @@ WantedBy=multi-user.target
 | 1.7.0 | 2026-02-04 | Principal Software Engineer | Major updates: Adopted Open Responses API as primary interface contract; Updated checkpointer schema to LangGraph-compatible with BLOB serialization; Removed embedding model details (RMM Memory middleware is external integration); Replaced ESLint/Prettier with Biome + Ultracite; Removed Content Scanning callback (uses LangChain built-in piiMiddleware); Updated Nix versions (2.31.3/nixpkgs 25.11); Removed Docker Compose (Nix-driven sandboxing only); Simplified project structure. |
 | 1.8.0 | 2026-02-07 | Principal Software Engineer | Added §8.4 Encryption Key Management Lifecycle (HKDF key derivation, vault storage, rotation procedure); §8.5 Backup and Disaster Recovery (three-component strategy, recovery matrix); §8.6 CLI/Web UI Authentication (vault-stored static token). Added alerting configuration to §6.2. Removed HITL approval timeout (Checkpointer persists indefinitely). |
 | 1.9.0 | 2026-02-07 | Principal Software Engineer | **Structural fixes**: Removed duplicate Skill Schema Section (3.7); Removed malformed OpenAPI YAML duplicate event types; Removed duplicate YAML block in Request Schema. **Content updates**: Added concrete Langfuse v4 CallbackHandler implementation (§5.8); Clarified middleware stack responsibilities - Policy Middleware (rate limits, content scanning) vs PII Middleware (§5.5); Documented RMM (Reflective Memory Management) Middleware definition (§3.3); Added devenv-managed monorepo structure (§5.1); Standardized SQLite UUID type annotations across all ERDs (§3.x). |
+| 2.0.0 | 2026-02-07 | Principal Software Engineer | **Major Nix/Devenv Integration**: Fixed invalid process orchestration syntax (replaced depends_on with task-based before dependencies); Added Scripts vs Tasks distinction with comparison table; Added enterTest pattern for test environment setup; Updated Section 1.5 Stack Specification with devenv, direnv, git, just versions; Added ADR-009 (devenv over Docker Compose); Added Section 1.7 SBOM Generation & 2026 Regulatory Compliance with CRA, PCI DSS, FDA requirements; Added Section 9.3 CI/CD Strategy with GitHub Actions, Garnix, and Cachix integration; Added direnv auto-activation example; Added devenv maintenance commands (update, gc, info); Updated devenv.yaml with version pinning patterns; Added Nix version clarification (2.31.2 current / 2.33.2 latest). |
 
