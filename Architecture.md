@@ -1,7 +1,5 @@
 # Architecture.md: Logical System Blueprint for OpenKraken
 
-> **Implementation Reference:** This document describes architectural decisions. Concrete technology versions and specifications are documented in [TechSpec.md](TechSpec.md).
-
 ## 1. Architectural Strategy
 
 ### Problem Context: What We're Responding To
@@ -50,7 +48,7 @@ OpenKraken is a **personal AI agent runtime** with the following bounded capabil
 
 ### Architectural Entities
 
-Four architectural entities appear throughout this document, each with distinct technology stacks, lifecycles, and trust boundaries. See TechSpec.md Section 1 for specific version bindings.
+Four architectural entities appear throughout this document, each with distinct technology stacks, lifecycles, and trust boundaries.
 
 **Project** — The framework itself, authored and maintained by the OpenKraken team. The Project defines platform skills, default policies, security constraints, and the "Constitution" (`SOUL.md`, `SAFETY.md`). The Project is the authority on _how_ the system works.
 
@@ -115,7 +113,7 @@ OpenKraken implements the **Open Responses API** as its primary interface contra
 - **Future-Proofing:** The Open Responses specification is backed by major AI providers and community contributors, reducing API fragmentation risk
 - **Extension Mechanism:** OpenKraken-specific features are exposed through the spec's extension prefix (`openkraken:*`) while maintaining base compliance
 
-The implementation follows the Open Responses specification with semantic streaming events, typed item models, and structured error responses. See [TechSpec.md Section 4](TechSpec.md#4-api-contract) for complete API documentation.
+The implementation follows the Open Responses specification with semantic streaming events, typed item models, and structured error responses.
 
 ### The Pattern: Layered Modular Monolith with Strict Boundary Enforcement
 
@@ -127,7 +125,7 @@ OpenKraken adopts a **Layered Modular Monolith** architecture that enforces stri
 
 **Third**, the cross-platform requirement (Linux and macOS) creates enough environmental variance without adding service distribution complexity. The architecture delegates platform abstraction to well-defined boundaries—the Platform Adapter and the Anthropic Sandbox Runtime—rather than distributing concerns across independently deployable services that must each handle platform differences.
 
-> **Technology Bindings:** The Orchestrator runtime uses a JavaScript runtime with TypeScript. See [TechSpec.md Section 1.1](TechSpec.md#11-core-runtime-and-language) for specific version specifications and [TechSpec.md Section 1.2](TechSpec.md#12-agent-orchestration-framework) for agent orchestration framework versions.
+> **Technology Bindings:** The Orchestrator runtime uses a JavaScript runtime with TypeScript for agent orchestration.
 
 ### Justification: Why This Pattern Fits the PRD Constraints
 
@@ -137,7 +135,7 @@ The availability requirement of "session continuity across Orchestrator restarts
 
 The performance constraint of "sandbox invocation within 100ms" further favors monolithic deployment. Tool calls must traverse the Orchestrator-Sandbox RPC interface regardless of architecture, but adding service-to-service latency between Orchestrator components would violate the latency budget. The monolithic pattern keeps all Orchestrator components in the same process, eliminating network round-trips from the critical path.
 
-> **See Also:** [TechSpec.md Section 2](TechSpec.md#2-architecture-decision-records) for ADRs documenting these architectural decisions with full context and alternatives analysis.
+These architectural decisions are documented with full context and alternatives analysis in the ADR section.
 
 ---
 
@@ -169,8 +167,6 @@ The following containers constitute the deployable units of the OpenKraken syste
 
 **Sandbox Runtime**: Sandbox Runtime — Provides filesystem isolation through OS-native mechanisms and network isolation that routes all traffic through Egress Gateway. The Agent operates inside this boundary with no awareness of its existence. Sandbox configuration is platform-agnostic; the runtime handles translation to optimal native mechanisms.
 
-> **Platform Implementation:** See [TechSpec.md Section 1.3](TechSpec.md#13-protocol-and-integration-libraries) for runtime details and [Section 7.3](TechSpec.md#73-sandboxing-guarantees) for platform-specific guarantees.
-
 ### Layer 2: Middleware Stack
 
 **Middleware Components**: LangChain middleware extensions that intercept, modify, or respond to Agent operations. The middleware stack is organized into three tiers: Policy (foundational security enforcement), Capabilities (tool and context injection), and Operational (cross-cutting concerns like summarization and human-in-the-loop). Middleware executes in defined order, with later middleware operating on outputs of earlier middleware.
@@ -193,31 +189,21 @@ The following containers constitute the deployable units of the OpenKraken syste
 
 **Summarization Middleware**: Compresses older messages when context exceeds token thresholds to prevent context overflow.
 
-> **Middleware Implementation:** See [TechSpec.md Section 5.5](TechSpec.md#55-middleware-composition-order) for composition order and [TechSpec.md Section 5.6](TechSpec.md#56-callback-execution-order) for callback execution order.
+**Middleware Implementation:** Middleware composition order and callback execution patterns are defined in the architecture.
 
 ### Layer 3: The Orchestrator
 
 **Orchestrator**: JavaScript runtime managing agent execution — Central orchestration component owning session management, tool dispatch, prompt injection, and policy enforcement. Uses agent orchestration framework APIs for stateful workflow management. Runs as system-managed service with independent lifecycle from Egress Gateway.
 
-> **Version Reference:** See [TechSpec.md Section 1.2](TechSpec.md#12-agent-orchestration-framework) for complete stack specification.
-
 **Telegram Adapter**: Telegram Bot API integration — Primary interaction channel receiving Owner messages via webhook (cryptographically verified) and delivering Agent responses.
-
-> **Technology Details:** See [TechSpec.md Section 1.3](TechSpec.md#13-protocol-and-integration-libraries) for specific library versions.
 
 **MCP Adapter**: Model Context Protocol integration — Provides access to MCP servers for Slack, Discord, email, calendar, and custom services.
 
-> **Technology Details:** See [TechSpec.md Section 1.2](TechSpec.md#12-agent-orchestration-framework) for adapter specifications.
-
-**Checkpointer**: Custom database checkpointer — Persists agent state across Orchestrator restarts. Maintains checkpoint tables for conversation state and writes tables for metadata.
-
-> **Technology:** Relational database with Write-Ahead Logging mode. See [TechSpec.md Section 3](TechSpec.md#3-database-schema) for schema specifications and ADR-004 for implementation rationale.
+**Checkpointer**: Custom database checkpointer — Persists agent state across Orchestrator restarts. Maintains checkpoint tables for conversation state and writes tables for metadata. Implementation uses relational database with Write-Ahead Logging mode.
 
 **Structured Logger**: SQLite-based logging subsystem with automatic rotation — Captures all Agent operations including tool invocations, model calls, and middleware execution.
 
-**OpenTelemetry Handler**: Custom callback implementation for distributed tracing — Intercepts LLM calls, tool invocations, chain executions, and memory operations.
-
-> **Tracing Implementation:** Custom observability callback. See [TechSpec.md Section 8.1](TechSpec.md#81-observability-integration) for implementation details.
+**OpenTelemetry Handler**: Custom callback implementation for distributed tracing — Intercepts LLM calls, tool invocations, chain executions, and memory operations. Implementation follows observability patterns defined in the architecture.
 
 ### Middleware Components
 
@@ -229,8 +215,6 @@ The following containers constitute the deployable units of the OpenKraken syste
 
 **Browser Middleware**: Provides browser automation tools, managing isolated browser profiles per session and routing traffic through Egress Gateway.
 
-> **Browser Technology:** See [TechSpec.md Section 1.3](TechSpec.md#13-protocol-and-integration-libraries) for browser implementation details.
-
 **Memory Middleware**: Manages three-tier recall system — Retrieves relevant memories before model calls using embedding-based retrieval and consolidates memories after agent completion. The Memory Middleware is a plug-and-play component developed independently by the Owner. The Orchestrator provides the middleware interface contract and storage schema; the consolidation algorithm, decay strategy, and retrieval heuristics are encapsulated within the middleware implementation and are not defined by this architecture.
 
 **Skill Loader Middleware**: Injects skill manifests into Agent context based on task — Reads skill folders and loads SKILL.md content.
@@ -239,7 +223,7 @@ The following containers constitute the deployable units of the OpenKraken syste
 
 **Summarization Middleware**: Compresses older messages when context exceeds token thresholds to prevent context overflow.
 
-> **Middleware Implementation:** See [TechSpec.md Section 5.5](TechSpec.md#55-middleware-composition-order) for composition order and [TechSpec.md Section 5.6](TechSpec.md#56-callback-execution-order) for callback execution order.
+**Middleware Implementation:** Middleware composition order and callback execution patterns are defined in the architecture.
 
 ---
 
@@ -408,9 +392,7 @@ sequenceDiagram
   end
 ```
 
-**Flow Analysis**: This sequence reveals several architectural commitments. The Policy Middleware sits at the entry point, meaning every conversation passes through security validation before Agent invocation. The Memory Middleware operates invisibly to the Agent—the Agent receives consolidated context but has no awareness of memory operations. The PII Middleware sits in the response path, ensuring no credential leak or policy violation reaches the Owner. Each checkpoint write blocks until confirmed, ensuring session continuity is not compromised by write failures.
-
-> **Error Handling:** All external dependencies (LLM, MCP, Checkpointer) implement retry with exponential backoff and circuit breaker patterns. See [TechSpec.md Section 4.1](TechSpec.md#41-gateway-http-api) for error response schemas.
+**Flow Analysis**: This sequence reveals several architectural commitments. The Policy Middleware sits at the entry point, meaning every conversation passes through security validation before Agent invocation. The Memory Middleware operates invisibly to the Agent—the Agent receives consolidated context but has no awareness of memory operations. The PII Middleware sits in the response path, ensuring no credential leak or policy violation reaches the Owner. Each checkpoint write blocks until confirmed, ensuring session continuity is not compromised by write failures. All external dependencies implement retry with exponential backoff and circuit breaker patterns for resilience.
 
 ### Flow 2: Terminal Command Execution in Sandbox
 
@@ -517,8 +499,6 @@ sequenceDiagram
 
 **Flow Analysis**: This flow exposes the defense-in-depth strategy. The package allowlist is checked before any resource allocation. The credential is retrieved from the vault and exists only in runtime memory—never written to environment variables. The Egress Gateway allowlist is explicitly modified to add the npm registry, used for the command duration, then removed. The Sandbox applies filesystem zones that prevent the command from accessing anything outside `/sandbox/work/`. In the chained proxy architecture, the Sandbox Runtime's built-in HTTP/SOCKS5 proxy routes all traffic through the Go Egress Gateway, which enforces the domain allowlist and logs every connection attempt. Every action is logged before and after execution, enabling complete audit trails.
 
-> **Cross-Platform Implementation:** See [TechSpec.md Section 7.3](TechSpec.md#73-sandboxing-guarantees) for platform-specific isolation details.
-
 ### Flow 3: Browser Automation with Network Enforcement
 
 ```mermaid
@@ -621,8 +601,6 @@ sequenceDiagram
 
 **Flow Analysis**: Browser automation presents unique risks because web content can contain malicious JavaScript attempting network connections, filesystem access, or credential theft. The architecture mitigates these risks through multiple layers. The domain allowlist is checked before navigation begins. The Agent Browser runs in an isolated profile per session, preventing state leakage between conversations. All browser traffic routes through the Egress Gateway, ensuring the same allowlist rules apply to browser-initiated connections as to command-line tools. Each navigation is logged for security audit.
 
-> **Browser Technology:** See [TechSpec.md Section 1.3](TechSpec.md#13-protocol-and-integration-libraries) for browser implementation and [TechSpec.md Section 4.1](TechSpec.md#41-gateway-http-api) for browser tool API specifications.
-
 ---
 
 ## 5. Cross-Cutting Concerns
@@ -665,9 +643,7 @@ Fallback: age-encrypted file
 Error: Credential provisioning required
 ```
 
-See [TechSpec.md Section 8.8](TechSpec.md#88-headless-linux-credential-fallback) for implementation details.
-
-> **Credential Technology:** See [TechSpec.md Section 1.5](TechSpec.md#15-infrastructure-and-build) for Egress Gateway implementation and [TechSpec.md Section 8.4](TechSpec.md#84-encryption-key-management-lifecycle) for credential handling details.
+Credential handling follows platform-specific patterns for Linux and macOS.
 
 ### 5.2 Observability
 
@@ -679,7 +655,7 @@ The observability strategy in OpenKraken addresses three distinct needs: operati
 
 **Health and Metrics Endpoints**: The Orchestrator exposes standardized endpoints for operational monitoring. The `/health` endpoint returns HTTP 200 indicating the process is running. The `/ready` endpoint performs dependency checks (SQLite connectivity, MCP server availability, Egress Gateway responsiveness) and returns 200 only when all dependencies are healthy. The `/metrics` endpoint serves Prometheus-compatible metrics including HTTP request counts, tool invocation counts, and proxy dispositions.
 
-> **Logging Schema:** See [TechSpec.md Section 3.4](TechSpec.md#34-audit-log-database-auditdb) for audit log schema and [TechSpec.md Section 3.5](TechSpec.md#35-proxy-access-log-database-proxydb) for proxy access log schema.
+**Logging Schema:** Audit log and proxy access log schemas are defined in the architecture.
 
 **Operational Alerting**: The Orchestrator includes an Alert Emitter — a system health component that evaluates infrastructure conditions on a configurable interval (default: 60 seconds) and delivers alerts to the Owner through multiple channels. This is a cross-cutting system concern, not an agent lifecycle or middleware component. The Agent has no awareness of the Alert Emitter.
 
@@ -705,7 +681,7 @@ To prevent alert fatigue, identical alerts are suppressed for a configurable coo
 
 This design avoids external monitoring infrastructure (Prometheus + Grafana + PagerDuty) that is disproportionate for a single-tenant personal runtime while ensuring critical issues receive immediate attention. The Owner already has Telegram as a first-class channel; urgent alerting flows through it. Less urgent issues are batched in email digests.
 
-> **Alert Configuration:** See [TechSpec.md Section 6.2](TechSpec.md#62-configuration-file-schema) for alerting configuration schema.
+**Alert Configuration:** Alerting is configured through the configuration schema defined in the architecture.
 
 ### 5.3 Error Handling and Degradation
 
@@ -741,9 +717,9 @@ Health Check Failure (3rd) → CRITICAL Alert → Restart Service
 Health Check Success → INFO Alert → Resume Normal Operation
 ```
 
-See [TechSpec.md Section 8.7](TechSpec.md#87-egress-gateway-resilience) for implementation details.
+Egress Gateway resilience patterns are defined in the architecture.
 
-> **Error Response Schema:** See [TechSpec.md Section 4.1](TechSpec.md#41-gateway-http-api) for standardized error response formats.
+**Error Response:** Standardized error response formats are defined in the architecture.
 
 ---
 
@@ -843,8 +819,7 @@ The Nix packages are provisioned before sandbox invocation, ensuring reproducibl
 
 **Cross-Platform Substrate Differences**: The architecture claims "identical Agent capability semantics" across Linux and macOS, but the underlying mechanisms differ significantly (bubblewrap bind mounts vs. Seatbelt profiles). Edge cases around symlink handling and violation detection differ between platforms. Additionally, Apple's sandbox-exec (Seatbelt) mechanism is deprecated and receives minimal maintenance. Future macOS versions may remove or further restrict Seatbelt capabilities. The architecture should monitor alternative isolation mechanisms for macOS (e.g., Docker Desktop's hypervisor framework, nsjail via Homebrew) as potential migration paths.
 
-> **Platform-Specific Implementation Details:**
-> See [TechSpec.md Section 7.3](TechSpec.md#73-sandboxing-guarantees) for detailed platform-specific guarantees and [TechSpec.md Section 7.1](TechSpec.md#71-threat-model) for threat model per platform.
+**Platform-Specific Implementation Details:** Platform-specific isolation details and threat models are defined in the architecture.
 
 ### Technical Debt
 
@@ -856,7 +831,7 @@ The Nix packages are provisioned before sandbox invocation, ensuring reproducibl
 
 **Documentation-Implementation Drift**: Without automated verification that implementation matches architecture, the document becomes a historical record rather than a specification.
 
-**Schema Upgrade Path**: Database schema migrations are forward-only (TechSpec.md §3.6). LangGraph checkpoint compatibility is managed through the checkpoint `v` field (currently `v: 4`), which LangGraph uses to handle deserialization across versions. The Orchestrator validates checkpoint version compatibility at startup and refuses to load checkpoints from incompatible future versions. Schema migrations are applied before the Orchestrator accepts requests, ensuring the database is always at the expected version.
+**Schema Upgrade Path**: Database schema migrations are forward-only. LangGraph checkpoint compatibility is managed through the checkpoint `v` field (currently `v: 4`), which LangGraph uses to handle deserialization across versions. The Orchestrator validates checkpoint version compatibility at startup and refuses to load checkpoints from incompatible future versions. Schema migrations are applied before the Orchestrator accepts requests, ensuring the database is always at the expected version.
 
 ---
 
@@ -873,7 +848,7 @@ The Nix packages are provisioned before sandbox invocation, ensuring reproducibl
 | Callback-Based Observability | Minimal overhead on critical path; composable handlers | No automatic correlation—correlation IDs must be explicitly passed |
 | CLI First, Web UI Before Public | CLI enables rapid development iteration; Web UI required for production polish and Owner experience | Dual interface maintenance; Web UI technology selection pending |
 
-> **ADR References:** See [TechSpec.md Section 2](TechSpec.md#2-architecture-decision-records) for full ADR documentation with context, alternatives considered, and consequences analysis.
+**ADR Documentation:** Architecture decisions are documented with context, alternatives considered, and consequences analysis in the ADR section.
 >
 > **Owner Decision Pending (Implementation Phase):**
 > - CLI framework technology selection

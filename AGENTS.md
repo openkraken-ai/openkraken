@@ -51,13 +51,17 @@ These commitments have been made after investigation and debate. They would requ
 
 ## Core Philosophies
 
-These shape every decision.
+These philosophical commitments shape every architectural decision. Deviations require explicit justification and ADR documentation.
+
+OpenKraken operates according to foundational philosophical principles documented in **Architecture.md**. Key principles include:
 
 - **Trust the Sandbox, Not the Model.** Safety is enforced by the sandbox and tool-level validation, not by the System Prompt.
-- **Build on Proven Foundations.** Integrate battle-tested solutions for security-critical infrastructure. Custom logic only for Orchestrator-specific concerns.
-- **Everything is Middleware.** All capabilities (scheduling, web search, memory, MCP, observability) are composable LangChain extensions. No privileged internal mechanisms.
-- **Observable by Default.** Complete visibility into Agent behavior for debugging, audit, and optimization.
-- **Credential Isolation.** Credentials live in OS-level vaults, never exposed to the Agent or written to persistent storage.
+- **Build on Proven Foundations.** Integrate battle-tested solutions for security-critical infrastructure.
+- **Everything is Middleware.** All capabilities are composable LangChain extensions with no privileged internal mechanisms.
+- **Observable by Default.** Complete visibility into Agent behavior for debugging and audit.
+- **Credential Isolation.** Credentials live in OS-level vaults, never exposed to the Agent.
+
+For the complete list of 18 Core Philosophies, see **Architecture.md Section 1.3**.
 
 ## Important Distinctions
 
@@ -99,7 +103,7 @@ Following v0.13.0, terminology was updated:
 
 | File | Purpose |
 |------|---------|
-| **ARCHITECTURE.md** | Authoritative source for architectural decisions |
+| **Architecture.md** | Authoritative source for architectural decisions |
 | **CHANGELOG.md** | Recent architectural changes with context |
 | **SOUL.md** | Agent identity and values (injected into system prompt) |
 | **SAFETY.md** | Safety constraints governing Agent behavior |
@@ -107,7 +111,7 @@ Following v0.13.0, terminology was updated:
 
 ## How to Approach Your Work
 
-1. **Orient yourself.** Read AGENTS.md for context. Read relevant sections of ARCHITECTURE.md. Check CHANGELOG.md for recent changes.
+1. **Orient yourself.** Read AGENTS.md for context. Read relevant sections of Architecture.md. Check CHANGELOG.md for recent changes.
 2. **Investigate before implementing.** Verify technology status, maintenance, and compatibility. Use the Librarian CLI. Do not assume your training data is current.
 3. **Question assumptions.** If a requirement conflicts with core philosophies, raise the concern.
 4. **Update documentation.** If you discover something that contradicts the architecture, update it.

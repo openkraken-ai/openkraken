@@ -705,9 +705,225 @@ Scripts check:
 
 ---
 
+### ADR-012: Langfuse v4 for Observability
+
+**Status:** Accepted  
+**Date:** 2026-02-08
+
+**Context:**
+OpenKraken requires comprehensive observability for debugging Agent behavior, security auditing, and performance optimization. The observability layer must provide distributed tracing, structured logging, and metrics while adhering to the "Build on Proven Foundations" philosophy. We evaluated multiple observability solutions compatible with LangChain.js and the Bun runtime.
+
+**Alternatives Considered:**
+
+| Solution | Pros | Cons |
+|----------|------|------|
+| Custom OpenTelemetry implementation | Full control, no external dependencies | Significant development effort, maintenance burden |
+| LangSmith | Excellent LangChain integration | PRD explicitly excludes LangSmith support; requires OpenAI-specific patterns |
+| **Langfuse v4** | Built on OpenTelemetry (meets OTLP requirement), maintained LangChain.js CallbackHandler, Bun-compatible, cloud and self-hosted options | External service dependency (mitigated by self-hosted option) |
+
+**Decision:**
+Use Langfuse v4 as the primary observability solution. Langfuse is built on OpenTelemetry, meeting the OTLP requirement while providing LangChain-specific instrumentation out of the box.
+
+**Implementation:**
+
+1. **Langfuse CallbackHandler** (`@langfuse/langchain`):
+   - Automatic tracing of LangChain operations (model calls, tool invocations)
+   - Captures input/output for debugging
+   - Token usage and cost tracking
+
+2. **OTLP Export**:
+   - Traces export to any OTLP-compatible backend
+   - Self-hosted Langfuse for data sovereignty
+   - Cloud option for convenience
+
+3. **Security Considerations**:
+   - Langfuse credentials stored in OS-level vault
+   - Automatic PII scrubbing via LangChain built-in patterns
+   - Additional middleware-based scrubbing for sensitive content
+
+**Consequences:**
+
+**Positive:**
+- Production-ready LangChain integration with minimal development effort
+- OpenTelemetry foundation provides flexibility in backend selection
+- Langfuse UI provides excellent debugging experience for Agent behavior
+- Cost and token tracking built-in
+
+**Negative:**
+- External dependency (mitigated by self-hosted option)
+- Additional credential management for Langfuse access
+
+**Mitigation:**
+- Self-hosted Langfuse option for complete control
+- Credentials managed via CredentialVault
+- Langfuse configured to scrub PII before export
+
+---
+
+### ADR-013: Vercel Skills CLI Integration
+
+**Status:** Accepted  
+**Date:** 2026-02-08
+
+**Context:**
+The skill ingestion pipeline requires a tool to resolve, validate, and manage skills from various sources (GitHub, npm, local). Vercel provides a mature Skills CLI with support for multiple resolution patterns (GitHub shorthand, full URLs, direct paths). We evaluated whether to build custom resolution logic or integrate with the Vercel ecosystem.
+
+**Alternatives Considered:**
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| Custom resolution logic | Full control, no external dependency | Significant development effort, maintenance burden |
+| Vercel Skills CLI | Mature, well-tested, supports all resolution patterns | External dependency, Vercel ecosystem lock-in |
+| Combination | Leverage Vercel for resolution, custom security pipeline | Integration complexity |
+
+**Decision:**
+Integrate Vercel Skills CLI bundled as a Nix package (not `npx`) for reproducible builds. Apply OpenKraken's security pipeline (source validation, LLM analysis, Owner approval) while leveraging Vercel's resolution capabilities.
+
+**Implementation:**
+
+1. **Bundling**:
+   - Vercel Skills CLI bundled via Nix flake
+   - Not invoked via `npx` (avoids runtime npm resolution)
+   - Version pinned for reproducibility
+
+2. **Security Pipeline**:
+   - Source validation against trusted domains
+   - LLM-based security analysis (prompt injection, credential access detection)
+   - Owner approval workflow with analysis report review
+   - Dependency resolution via Nix for isolation
+
+3. **Commands**:
+   - `openkraken skills add <source>` - Add skill from Vercel-resolvable source
+   - `openkraken skills list` - List installed skills
+   - `openkraken skills remove <name>` - Remove skill
+   - `openkraken skills update` - Update skills within approved bounds
+
+**Consequences:**
+
+**Positive:**
+- Leverages mature, well-tested resolution logic
+- Supports GitHub shorthand, URLs, and local paths
+- Vercel ecosystem provides curated skills
+- Nix bundling ensures reproducibility
+
+**Negative:**
+- External dependency on Vercel ecosystem
+- Security pipeline must validate Vercel-resolved content
+
+**Mitigation:**
+- Vercel CLI bundled via Nix for version control
+- Security pipeline validates all resolved content
+- Owner approval required before skill activation
+- Skills execute in sandbox regardless of source
+
+---
+
+### ADR-014: RMM (Reflective Memory Management) Middleware Integration
+
+**Status:** Accepted  
+**Date:** 2026-02-08
+
+**Context:**
+The Agent requires long-term memory capabilities for persistent context across sessions. Memory management must prevent prompt injection attacks while providing useful recall. We evaluated custom implementation versus integration with existing memory frameworks.
+
+**Alternatives Considered:**
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| Custom memory implementation | Full control, no external dependencies | Significant development effort, security risk if flawed |
+| RMM Middleware (arXiv:2503.08026v2) | Research-backed approach, similar to Google Memory Bank | External dependency, requires integration |
+| Vector database + custom logic | Flexible, scalable | Additional infrastructure, security integration complexity |
+
+**Decision:**
+Implement RMM (Reflective Memory Management) Middleware based on research (arXiv:2503.08026v2) and architecture similar to Google Vertex AI Memory Bank. The middleware handles memory extraction, consolidation, retrieval, and decay while the Orchestrator provides storage schema and interface contracts.
+
+**Memory Operations:**
+
+1. **Extraction**: Automatically identifies salient information from Agent conversations
+2. **Consolidation**: LLM-based merging of related memories, deduplication
+3. **Retrieval**: Embedding-based semantic similarity search before model calls
+4. **Decay**: Time-based importance adjustment for memory relevance
+
+**Security Considerations:**
+
+- Agent cannot directly access memory storage (memory middleware handles all access)
+- Memories encrypted at rest using AES-256-GCM with vault-stored keys
+- Owner can view, edit, or purge memories for transparency
+- Embedding generation happens in Orchestrator, not Agent
+
+**Consequences:**
+
+**Positive:**
+- Research-backed memory architecture prevents common pitfalls
+- Pluggable implementation allows Owner to customize algorithms
+- Agent cannot manipulate memories (middleware-only access)
+- Complete Owner visibility and control
+
+**Negative:**
+- Additional complexity in memory pipeline
+- LLM costs for consolidation operations
+- Embedding generation requires model calls
+
+**Mitigation:**
+- Memory middleware is optional (disabled by default)
+- Owner controls consolidation frequency and decay parameters
+- Transparent memory review UI for Owner
+
+---
+
+### ADR-015: Open Responses API Adoption
+
+**Status:** Accepted  
+**Date:** 2026-02-08
+
+**Context:**
+OpenKraken requires a well-defined API contract for external integration. We evaluated proprietary versus standardized approaches, ultimately selecting the Open Responses API as the primary interface contract. This positions OpenKraken as an Open Responses Provider in the emerging ecosystem.
+
+**Alternatives Considered:**
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| Custom API design | Full control, tailored to OpenKraken | Ecosystem lock-in, client must implement custom protocol |
+| OpenAPI without specification | Some standardization | Fragmented ecosystem, no guaranteed client compatibility |
+| **Open Responses API** | Standardized contract, ecosystem compatibility, multiple clients | Must implement specification correctly |
+
+**Decision:**
+Adopt Open Responses API as the primary interface contract. Telegram and other input sources are implemented as adapters converting platform-specific protocols to Open Responses input items.
+
+**Compliance Requirements:**
+
+1. **Semantic Streaming**: Events follow Open Responses event model (not raw text deltas)
+2. **Thread Model**: Use `thread_id` and `previous_response_id` mapping to LangGraph checkpoints
+3. **Tool Execution**: Formalized as externally-hosted tools (executed in sandbox)
+4. **Error Handling**: Structured error responses per specification
+
+**Extension Mechanism:**
+
+OpenKraken-specific features exposed through `openkraken:*` extension prefix while maintaining base specification compliance.
+
+**Consequences:**
+
+**Positive:**
+- Any Open Responses-compatible client can consume OpenKraken
+- Ecosystem compatibility (HuggingFace Inference Providers, NVIDIA integrations)
+- Client-agnostic positioning reduces API fragmentation risk
+- Standardized contract simplifies external tooling
+
+**Negative:**
+- Must maintain specification compliance
+- Extension mechanism requires careful design to avoid fragmentation
+- Specification evolution requires monitoring
+
+**Mitigation:**
+- Regular specification compliance testing
+- Extension mechanism documented and versioned
+- Community engagement for specification evolution
+
+---
+
 ## 3. Database Schema
 
-This section defines the physical database schema using Mermaid ERD syntax. All tables use SQLite-compatible types. Primary keys, foreign keys, and critical indices are explicitly defined. Database schema implements the persistence layer defined in [Architecture.md Section 5.3](Architecture.md#53-persistence-layer).
+This section defines the physical database schema using Mermaid ERD syntax. All tables use SQLite-compatible types. Primary keys, foreign keys, and critical indices are explicitly defined. This schema implements the persistence layer design described in the Architecture documentation.
 
 ### 3.1 Checkpoints Tables
 
@@ -2769,7 +2985,7 @@ interface MiddlewareOutput {
 
 ### 5.6 Callback Execution Order
 
-Callbacks execute in parallel across all middleware layers. Callbacks do not modify behavior—they observe and record. The callback system implements observability as specified in [Architecture.md Section 5.2](Architecture.md#52-observability).
+Callbacks execute in parallel across all middleware layers. Callbacks do not modify behavior—they observe and record. The callback system implements observability as described in Architecture.md Section 5.2.
 
 #### 5.6.1 Complete Event Types List
 
@@ -3613,19 +3829,176 @@ All benchmarks produce structured output stored in `audit.db` for trend analysis
 
 ### 8.1 Threat Model
 
-| Threat | Mitigation |
-|--------|------------|
-| Prompt injection leading to credential access | Credentials never in sandbox context. CredentialVault abstraction prevents exposure. |
-| Sandbox escape via Unix domain sockets | Seccomp BPF (Linux) and Seatbelt profiles (macOS) block `socket(AF_UNIX)` syscalls. |
-| Network exfiltration to C2 servers | All egress through domain-allowlisted proxy. Direct internet access blocked by sandbox. |
-| Credential leakage in logs | Content scanning callback handler inspects all output. Structured logging scrubs sensitive fields. |
-| Session hijacking | Unix domain socket authentication via process ID verification. Local-only network binding. |
-| Supply chain attacks | Pin all dependencies in package.json. Hash verification via Nix. Skill script LLM pre-analysis. |
-| Egress Gateway management API abuse | Filesystem permissions (0660) on Unix socket + HMAC-SHA256 request signing with ±30s timestamp window. |
-| Unauthorized CLI/API access | Vault-stored bearer token with constant-time comparison. Local-only binding (127.0.0.1). |
-| Encryption key compromise | Master key in OS-level vault, never on disk. HKDF-derived subkeys per domain. Recovery code is Owner's offline responsibility. |
-| Replay attacks on Egress Gateway | HMAC signature includes timestamp; requests older than ±30 seconds are rejected. |
-| Backup data exposure | Backups contain encrypted fields but not the encryption key. Decryption requires vault access or recovery code. |
+This section provides a comprehensive threat analysis using the STRIDE framework (Spoofing, Tampering, Repudiation, Information Disclosure, Denial of Service, Elevation of Privilege). STRIDE is a well-established threat modeling methodology that categorizes threats by the type of attack they represent. For each STRIDE category, we identify potential threats to the OpenKraken system and document the architectural mitigations that ensure deterministic safety.
+
+#### 8.1.1 STRIDE Overview
+
+The STRIDE framework provides a systematic approach to threat identification by considering what an attacker might accomplish against each system component:
+
+| STRIDE Category | Description | Applicability to OpenKraken |
+|----------------|-------------|----------------------------|
+| **S**poofing | Impersonating users or components | Agent identity, Owner authentication |
+| **T**ampering | Unauthorized modification of data | Messages, memories, checkpoints, configuration |
+| **R**epudiation | Denying actions without proof | Audit logging, cryptographic signing |
+| **I**nformation Disclosure | Unauthorized access to information | Credentials, memories, Agent prompts |
+| **D**enial of Service | Making services unavailable | Egress Gateway, Orchestrator, sandbox |
+| **E**levation of Privilege | Gaining capabilities beyond intended | Agent escaping sandbox, credential access |
+
+#### 8.1.2 Spoofing Threats
+
+Spoofing threats involve an attacker falsely identifying as a legitimate user or component. OpenKraken addresses spoofing through multiple identity verification mechanisms.
+
+**Threat S1: Agent Identity Spoofing**
+- **Scenario**: An unauthorized process attempts to impersonate the Agent to receive messages or execute tools
+- **Architectural Mitigation**: Agent identity is established through Unix domain socket connection to the Orchestrator. The sandboxed Agent process has a verifiable process ID that the Orchestrator validates before dispatching messages. No authentication token is exposed to the Agent, preventing token-based spoofing
+- **Verification**: Verify that only processes with valid PID can connect to the Agent domain socket
+
+**Threat S2: Owner Identity Spoofing**
+- **Scenario**: An attacker attempts to impersonate the Owner to issue commands or modify configuration
+- **Architectural Mitigation**: Telegram bot API includes native user identification. All Owner commands are verified against Telegram's user ID. CLI commands require the vault-stored bearer token. HMAC signatures on Egress Gateway requests prevent replay of management commands
+- **Verification**: Review Telegram webhook verification implementation; verify HMAC validation on all management API calls
+
+**Threat S3: Orchestrator Component Spoofing**
+- **Scenario**: A malicious process attempts to impersonate the Egress Gateway or Checkpointer
+- **Architectural Mitigation**: All inter-process communication uses Unix domain sockets with filesystem permissions (0660). Processes cannot connect to protected sockets without appropriate group membership
+- **Verification**: Verify socket file permissions restrict access to authorized processes only
+
+#### 8.1.3 Tampering Threats
+
+Tampering threats involve unauthorized modification of data, configuration, or code. OpenKraken's immutability principles and capability-based security prevent most tampering attacks.
+
+**Threat T1: Message Tampering**
+- **Scenario**: An attacker modifies messages in transit or at rest
+- **Architectural Mitigation**: Messages are transmitted over Unix domain sockets within the same host, not over the network. Messages at rest in SQLite use WAL mode with file permissions preventing unauthorized access. Integrity is verified through the checkpoint mechanism that includes message hashes in the serialized state
+- **Verification**: Review SQLite file permissions; verify checkpoint serialization includes message integrity checks
+
+**Threat T2: Memory Tampering**
+- **Scenario**: An attacker modifies long-term memories to influence Agent behavior
+- **Architectural Mitigation**: Memories are encrypted at rest using AES-256-GCM with keys derived from the master vault key. Any unauthorized modification results in decryption failure. Memory modifications require vault access or recovery code
+- **Verification**: Verify AES-256-GCM implementation; test decryption failure on tampered data
+
+**Threat T3: Checkpoint Tampering**
+- **Scenario**: An attacker modifies agent state to cause dangerous behavior across restarts
+- **Architectural Mitigation**: Checkpoints use Bun's native SQLite implementation with WAL mode. The database file permissions restrict access to the Orchestrator process. Any tampering would violate the checkpoint structure and prevent deserialization
+- **Verification**: Review checkpoint deserialization validation; verify database file permissions
+
+**Threat T4: Configuration Tampering**
+- **Scenario**: An attacker modifies the config.yaml to disable security controls
+- **Architectural Mitigation**: Configuration is validated at load time. Critical security settings (sandbox enabled, credential vault required) have no disable switches in the configuration schema. Configuration is owned by the Owner with filesystem permissions preventing unauthorized modification
+- **Verification**: Review configuration validation schema; verify security-critical settings cannot be disabled
+
+#### 8.1.4 Repudiation Threats
+
+Repudiation threats involve actors denying actions they performed. OpenKraken's comprehensive audit logging ensures all significant actions are recorded with cryptographic evidence.
+
+**Threat R1: Agent Action Repudiation**
+- **Scenario**: The Agent denies performing a specific action or the Owner disputes Agent behavior
+- **Architectural Mitigation**: All Agent operations are logged with structured fields including request ID, timestamp, operation type, target resource, and result. Logs are stored in the audit_events table with the checkpoint mechanism ensuring durability. The Owner can review complete trace history through the observability layer
+- **Verification**: Verify all Agent operations are logged; test log completeness against Agent tool invocations
+
+**Threat R2: Owner Command Repudiation**
+- **Scenario**: The Owner denies issuing a specific command or configuration change
+- **Architectural Mitigation**: Telegram commands include user ID and timestamp. CLI commands require authentication token. All configuration changes are logged to the audit_events table with actor identification
+- **Verification**: Review audit log schema for actor tracking; verify Telegram user ID capture
+
+**Threat R3: Egress Gateway Action Repudiation**
+- **Scenario**: A network request is denied or disputed
+- **Architectural Mitigation**: Egress Gateway logs all connection attempts to proxy_logs table with domain, timestamp, and disposition (allowed/blocked). HMAC signatures on management API requests provide non-repudiation for administrative actions
+- **Verification**: Review proxy_logs completeness; verify HMAC signatures on management endpoints
+
+#### 8.1.5 Information Disclosure Threats
+
+Information disclosure threats involve unauthorized access to sensitive data. OpenKraken's credential isolation and memory encryption protect against disclosure.
+
+**Threat I1: Credential Disclosure**
+- **Scenario**: Credentials are exposed to the Agent or written to persistent storage
+- **Architectural Mitigation**: Credentials are stored in OS-level vaults (Keychain on macOS, secret-service on Linux). Credentials are never materialized in the sandbox or written to persistent storage. Content scanning middleware inspects all output for credential patterns. Structured logging scrubs sensitive fields before storage
+- **Verification**: Review CredentialVault implementation; test content scanning for credential detection; audit logs for credential exposure
+
+**Threat I2: Memory Disclosure**
+- **Scenario**: Memories are accessed by unauthorized parties or the Agent reads memories not relevant to the current task
+- **Architectural Mitigation**: Memories are encrypted at rest with AES-256-GCM. The Agent receives only consolidated context from the Memory Middleware, not raw memory access. Embedding-based retrieval returns only semantically relevant memories
+- **Verification**: Review memory encryption implementation; verify Agent cannot access raw memory storage
+
+**Threat I3: Agent Prompt Disclosure**
+- **Scenario**: The Agent's system prompt (SOUL.md) is exfiltrated
+- **Architectural Mitigation**: SOUL.md is injected directly into the system prompt at runtime, never materialized as a file in the sandbox. The Agent has no filesystem access that could read configuration files. The prompt is transmitted over local Unix domain sockets only
+- **Verification**: Verify SOUL.md is never written to sandbox filesystem; review prompt injection mechanism
+
+**Threat I4: Conversation Disclosure**
+- **Scenario**: Conversations are accessed by unauthorized parties
+- **Architectural Mitigation**: Messages are encrypted at rest using AES-256-GCM. Messages are transmitted over local Unix domain sockets. The single-tenant deployment model means no multi-user access concerns
+- **Verification**: Review message encryption; verify filesystem permissions on message storage
+
+#### 8.1.6 Denial of Service Threats
+
+Denial of service threats involve making the system unavailable. OpenKraken's resilience patterns mitigate most DoS scenarios.
+
+**Threat D1: Egress Gateway DoS**
+- **Scenario**: Attacker floods the Egress Gateway to block legitimate network access
+- **Architectural Mitigation**: The Egress Gateway is a separate process with independent lifecycle. The sandbox routes through the Gateway but cannot overwhelm it due to resource limits. Gateway health monitoring restarts the service on failure. Queue-based degradation handles temporary unavailability
+- **Verification**: Review Gateway resource limits; test health monitoring and recovery
+
+**Threat D2: Orchestrator DoS**
+- **Scenario**: Attacker overwhelms the Orchestrator with requests
+- **Architectural Mitigation**: Rate limiting middleware restricts request frequency per session. Maximum concurrent sessions are configurable. The single-tenant model limits attack surface. Long-running operations time out
+- **Verification**: Review rate limiting configuration; test timeout enforcement
+
+**Threat D3: Sandbox DoS**
+- **Scenario**: Agent executes operations that consume infinite resources
+- **Architectural Mitigation**: Bubblewrap/seatbelt enforce memory and CPU limits. Session timeouts terminate long-running operations. The Sandbox work directory is cleared at session boundaries, preventing resource accumulation
+- **Verification**: Review sandbox resource limits; test timeout enforcement
+
+**Threat D4: Checkpoint DoS**
+- **Scenario**: Checkpoint storage fills with malicious data
+- **Architectural Mitigation**: Checkpoint size limits prevent unbounded growth. Old checkpoints are cleaned up based on retention policies. Database size monitoring alerts before capacity exhaustion
+- **Verification**: Review checkpoint size limits; test cleanup policies
+
+#### 8.1.7 Elevation of Privilege Threats
+
+Elevation of privilege threats involve gaining capabilities beyond intended access. The sandbox and credential isolation are the primary defenses.
+
+**Threat E1: Sandbox Escape**
+- **Scenario**: Agent escapes the sandbox to access host resources or credentials
+- **Architectural Mitigation**: Bubblewrap on Linux and Seatbelt on macOS enforce strict isolation. Seccomp BPF filters block dangerous syscalls including socket(AF_UNIX) for Unix domain socket creation. Network isolation routes all traffic through the Egress Gateway. No host filesystem access except through explicit mounts
+- **Verification**: Test bubblewrap/seatbelt configuration; verify syscall filtering; review mount restrictions
+
+**Threat E2: Credential Access via Prompt Injection**
+- **Scenario**: Attacker crafts a prompt that tricks the Agent into revealing credentials
+- **Architectural Mitigation**: Credentials are never in the sandbox context. The Agent has no awareness of credential existence. Content scanning middleware blocks any output containing credential-like patterns. Memory middleware prevents credential persistence
+- **Verification**: Test prompt injection attempts; verify credential isolation; review content scanning
+
+**Threat E3: Memory Manipulation via Injection**
+- **Scenario**: Attacker injects false memories to influence Agent behavior
+- **Architectural Mitigation**: Memory extraction, consolidation, and retrieval are handled by Orchestrator middleware. The Agent receives only consolidated context, never raw memory access. Memories are encrypted at rest with vault-stored keys
+- **Verification**: Review memory middleware implementation; verify Agent cannot directly access memories
+
+**Threat E4: Tool Escalation**
+- **Scenario**: Attacker uses tools beyond intended capabilities
+- **Architectural Mitigation**: All tools are wrapped by the Orchestrator with strict input validation. Capability-based security limits available tools per configuration. Tools execute in the sandbox with resource limits
+- **Verification**: Review tool wrapper validation; test capability restrictions
+
+#### 8.1.8 Security Properties
+
+The following security properties are verified through the threat model:
+
+1. **Credential Isolation**: Credentials are never accessible to the Agent under any configuration
+2. **Sandbox Integrity**: The Agent cannot escape isolation boundaries regardless of input
+3. **Memory Confidentiality**: Memories are encrypted at rest and accessible only through middleware
+4. **Audit Completeness**: All significant actions are logged with actor identification
+5. **Non-Repudiation**: Actions cannot be plausibly denied due to cryptographic evidence
+6. **Configuration Integrity**: Security-critical settings cannot be disabled or bypassed
+
+#### 8.1.9 Threat Model Maintenance
+
+This threat model is a living document that must be updated when:
+
+1. New components are added to the architecture
+2. External dependencies are integrated (e.g., new LLM providers, MCP servers)
+3. Significant changes are made to the security model
+4. New attack vectors are discovered in the threat landscape
+
+The threat model should be reviewed quarterly and after any major architectural changes.
 
 ### 8.2 Credential Handling
 
