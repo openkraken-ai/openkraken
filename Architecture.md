@@ -157,6 +157,12 @@ The following containers constitute the deployable units of the OpenKraken syste
 
 **Platform Manager**: Infrastructure-as-code tooling — Generates platform-appropriate service definitions from unified configuration, manages atomic updates through generation switching, establishes credential boundaries between build-time and runtime, and orchestrates service lifecycle across platforms. This layer operates below all application code, ensuring reproducibility and consistent deployment across platforms.
 
+**Canonical Service Configuration**: The Platform Manager defines a platform-agnostic service configuration schema that captures all service requirements in canonical form. This schema serves as the single source of truth from which platform-specific service units are derived. The canonical schema includes lifecycle directives, resource bounds, security constraints, and environment specifications that translate appropriately to each target platform's service management system.
+
+**Platform-Specific Service Generation**: The Platform Manager contains platform-specific generators that transform the canonical configuration into native service definitions. On Linux systems, this generates systemd unit files with appropriate security hardening, resource limits, and namespace isolation directives. On macOS systems, this generates launchd plist configurations with sandbox profiles, keep-alive semantics, and resource constraints. Each generator produces native configuration that follows platform best practices while maintaining semantic equivalence with the canonical specification.
+
+**Graceful Shutdown Coordination**: The Platform Manager establishes shutdown coordination between the host's service supervision system and the application's runtime. This includes configuring appropriate signal propagation, ensuring checkpoint persistence before termination, and coordinating with dependent services through proper ordering. The application runtime must respond to termination signals with graceful shutdown behavior, and the service configuration must allow sufficient time for checkpoint operations to complete.
+
 ### Layer 0: The Host
 
 **Credential Vault**: Platform-specific abstraction layer — Provides unified interface to OS-level credential storage, exposing `store(service, secret)`, `retrieve(service)`, and `rotate(service)` methods. The abstraction integrates with platform-native credential storage mechanisms. Credentials never leave runtime memory; the vault abstraction prevents any code path from writing secrets to filesystem, logs, or network connections.
@@ -799,6 +805,14 @@ metadata:
 
 The Nix packages are provisioned before sandbox invocation, ensuring reproducible execution without runtime package installation.
 
+### 5.5 Service Lifecycle Management
+
+**Graceful Shutdown Protocol**: The system implements a graceful shutdown protocol that ensures consistent state preservation when the service receives termination signals. When SIGTERM or SIGINT is received, the application must cease accepting new requests, complete any in-flight operations, persist checkpoints and logs, and then exit. The shutdown protocol prioritizes data integrity over shutdown speed, with configurable timeout windows that allow for complex checkpoint operations.
+
+**Signal Handling Architecture**: The Orchestrator registers handlers for termination signals that trigger the graceful shutdown sequence. These handlers coordinate with the Checkpointer to ensure all agent state is persisted before process termination. Signal handlers must not perform blocking operations; instead, they initiate asynchronous shutdown workflows and return control to the runtime. The shutdown workflow executes with sufficient privileges to complete persistence operations.
+
+**Checkpoint Persistence Before Termination**: The system guarantees that agent state is persisted before process termination. The shutdown sequence explicitly waits for checkpoint writes to complete, with timeout handling for cases where persistence operations hang. If checkpoint persistence fails, the shutdown sequence logs the failure and terminates anyway, preferring clean process exit over indefinite hanging.
+
 ---
 
 ## 6. Risks and Technical Debt
@@ -818,6 +832,8 @@ The Nix packages are provisioned before sandbox invocation, ensuring reproducibl
 **MCP Adapter State Management**: The MCP adapter maintains persistent connections to MCP servers via `@langchain/mcp-adapters`, which owns connection lifecycle management, reconnection logic, and health checking. If an MCP server crashes, recovery behavior is determined by the LangChain MCP connector implementation. OpenKraken monitors MCP connection status through the Orchestrator's readiness endpoint (`/ready`) and emits alerts via the Alert Emitter when MCP servers become unreachable.
 
 **Cross-Platform Substrate Differences**: The architecture claims "identical Agent capability semantics" across Linux and macOS, but the underlying mechanisms differ significantly (bubblewrap bind mounts vs. Seatbelt profiles). Edge cases around symlink handling and violation detection differ between platforms. Additionally, Apple's sandbox-exec (Seatbelt) mechanism is deprecated and receives minimal maintenance. Future macOS versions may remove or further restrict Seatbelt capabilities. The architecture should monitor alternative isolation mechanisms for macOS (e.g., Docker Desktop's hypervisor framework, nsjail via Homebrew) as potential migration paths.
+
+**Service Generation Divergence**: The Platform Manager generates platform-specific service configurations from a canonical schema. If the canonical schema fails to capture all semantic differences between systemd and launchd, the generated configurations may have behavioral inconsistencies. Additionally, changes to platform service conventions (e.g., new systemd hardening directives) require updates to the generator logic. The architecture must maintain parity between generators and validate generated output against platform expectations.
 
 **Platform-Specific Implementation Details:** Platform-specific isolation details and threat models are defined in the architecture.
 
@@ -845,6 +861,7 @@ The Nix packages are provisioned before sandbox invocation, ensuring reproducibl
 | Local IPC for RPC | Provides authentication through filesystem permissions; avoids network exposure | Communication limited to same host; socket file must be protected |
 | Callback-Based Observability | Minimal overhead on critical path; composable handlers | No automatic correlation—correlation IDs must be explicitly passed |
 | CLI First, Web UI Before Public | CLI enables rapid development iteration; Web UI required for production polish and Owner experience | Dual interface maintenance; Web UI technology selection pending |
+| Cross-Platform Service Management | Platform-specific service generation from canonical configuration ensures portability while respecting native conventions | Requires maintaining parallel generators; canonical schema must capture all platform differences |
 
 **ADR Documentation:** Architecture decisions are documented with context, alternatives considered, and consequences analysis in the ADR section.
 
