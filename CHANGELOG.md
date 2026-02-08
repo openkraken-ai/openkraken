@@ -157,7 +157,7 @@ Architecture update following comprehensive research phase to verify technology 
 * LangGraph.js: 1.1.3 (@langchain/langgraph core) / 1.0.19 (langgraph wrapper)
 * @langchain/mcp-adapters: 1.1.2 (Model Context Protocol integration)
 * grammY: Supports Telegram Bot API 9.3 (December 2025 release)
-* @anthropic-ai/sandbox-runtime: 0.0.35 (Beta Research Preview)
+* @anthropic-ai/sandbox-runtime: 0.0.34 (Beta Research Preview)
 * Vercel Agent Browser: 0.9.0 (headless browser automation)
 * All dependencies declared in `package.json` with exact semver ranges; transitive dependencies pinned via lockfile.
 
@@ -186,7 +186,7 @@ Architecture update following comprehensive research phase to verify technology 
 * Added port and network configuration specifications (127.0.0.1 binding, default ports)
 
 **Sandbox Runtime Maturity Note:**
-* Added explicit documentation that Anthropic Sandbox Runtime is at version 0.0.35 (Beta Research Preview)
+* Added explicit documentation that Anthropic Sandbox Runtime is at version 0.0.34 (Beta Research Preview)
 * Documented 0.x.y versioning indicates potential breaking changes before 1.0.0
 * Clarified defense-in-depth measures ensure sandbox failures do not result in credential exposure or unauthorized network access
 

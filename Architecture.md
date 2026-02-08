@@ -203,7 +203,7 @@ The following containers constitute the deployable units of the OpenKraken syste
 
 **Structured Logger**: SQLite-based logging subsystem with automatic rotation — Captures all Agent operations including tool invocations, model calls, and middleware execution.
 
-**OpenTelemetry Handler**: Custom callback implementation for distributed tracing — Intercepts LLM calls, tool invocations, chain executions, and memory operations. Implementation follows observability patterns defined in the architecture.
+**OpenTelemetry Handler**: Langfuse v4 (OpenTelemetry) callback handler — Intercepts LLM calls, tool invocations, chain executions, and memory operations. Implementation follows observability patterns defined in the architecture.
 
 ### Middleware Components
 
@@ -805,7 +805,7 @@ The Nix packages are provisioned before sandbox invocation, ensuring reproducibl
 
 ### High-Priority Risks
 
-**Sandbox Runtime Maturity**: The Anthropic Sandbox Runtime (`@anthropic-ai/sandbox-runtime`) is currently version 0.0.35 and labeled "Beta Research Preview." While the project is actively maintained, the `0.x.y` versioning indicates potential breaking changes before 1.0.0. OpenKraken pins to specific versions and monitors changelogs, but the dependency on an evolving runtime creates upgrade risk. A breaking change in the sandbox API could require significant Orchestrator adaptation.
+**Sandbox Runtime Maturity**: The Anthropic Sandbox Runtime (`@anthropic-ai/sandbox-runtime`) is currently version 0.0.34 and labeled "Beta Research Preview." While the project is actively maintained, the `0.x.y` versioning indicates potential breaking changes before 1.0.0. OpenKraken pins to specific versions and monitors changelogs, but the dependency on an evolving runtime creates upgrade risk. A breaking change in the sandbox API could require significant Orchestrator adaptation.
 
 **Egress Gateway Single Point of Failure**: The Egress Gateway is a mandatory chokepoint for all sandbox network traffic. If the Gateway crashes or becomes unresponsive, no sandboxed operation requiring network access can proceed. The current architecture does not include Gateway redundancy appropriate for high-availability requirements.
 
@@ -824,8 +824,6 @@ The Nix packages are provisioned before sandbox invocation, ensuring reproducibl
 ### Technical Debt
 
 **Manual Middleware Configuration**: The middleware stack is currently configured through code with explicit ordering. Adding new middleware requires code changes rather than configuration updates.
-
-**Single-File Configuration Schema**: The unified configuration file is a single YAML document without schema validation. Configuration errors are discovered at runtime rather than at load time.
 
 **Limited Integration Testing**: The current test coverage focuses on unit tests for individual components. Integration tests covering end-to-end flows are sparse, risking undetected component interaction failures.
 
@@ -849,11 +847,5 @@ The Nix packages are provisioned before sandbox invocation, ensuring reproducibl
 | CLI First, Web UI Before Public | CLI enables rapid development iteration; Web UI required for production polish and Owner experience | Dual interface maintenance; Web UI technology selection pending |
 
 **ADR Documentation:** Architecture decisions are documented with context, alternatives considered, and consequences analysis in the ADR section.
->
-> **Owner Decision Pending (Implementation Phase):**
-> - CLI framework technology selection
-> - Web UI framework technology selection  
-> - LLM Provider selection (Anthropic, OpenAI, etc.)
->
-> These implementation decisions are deferred to the third agent (Tech Lead) per role boundaries defined in AGENTS.md.
+
 

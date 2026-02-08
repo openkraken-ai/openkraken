@@ -29,7 +29,7 @@ These commitments have been made after investigation and debate. They would requ
 | Orchestrator Runtime | Bun (not Node.js) |
 | Agent Orchestration | LangChain.js v1 and LangGraph.js with MCP adapters |
 | Persistent State | SQLite with WAL mode |
-| Observability | Custom OpenTelemetry callback handler |
+| Observability | Langfuse v4 (OpenTelemetry) |
 
 ## What We Are NOT Building
 
@@ -163,7 +163,7 @@ Architecture.md names technology **categories**, not **instances**.
 | Category (Architecture) | Instance (TechSpec) |
 |-------------------------|---------------------|
 | "JavaScript runtime" | "Bun 1.3.8" |
-| "Sandboxing runtime" | "Anthropic Sandbox Runtime 0.0.35" |
+| "Sandboxing runtime" | "Anthropic Sandbox Runtime 0.0.34" |
 | "Relational database" | "SQLite 3.45.1 with WAL mode" |
 
 **Test:** Could I replace the technology with an equivalent alternative without changing the architecture's validity?
