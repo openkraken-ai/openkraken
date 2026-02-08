@@ -647,7 +647,27 @@ The OpenKraken architecture implements a layered authentication and authorizatio
 
 This design provides equivalent authentication guarantees to mTLS for same-host IPC without certificate management overhead. The HMAC signing binds authentication to specific request content, ensuring intercepted signatures cannot be reused for different operations.
 
-> **Credential Technology:** See [TechSpec.md Section 1.5](TechSpec.md#15-infrastructure-and-build) for Egress Gateway implementation and [TechSpec.md Section 7.2](TechSpec.md#72-credential-handling) for credential handling details.
+**Credential Vault Fallback:**
+
+For Linux systems without secret-service (servers, containers, WSL), the CredentialVault uses an encrypted file-based fallback:
+
+1. **Encrypted Storage**: `$OPENKRAKEN_HOME/credentials.enc` (age-encrypted)
+2. **Key Derivation**: Master key (from vault or recovery code) decrypts age key
+3. **Security**: File permissions 0600, encrypted at rest
+4. **Migration**: Automatic detection and fallback when secret-service unavailable
+
+**Fallback Flow:**
+```
+Primary: secret-service (D-Bus)
+    ↓ (unavailable)
+Fallback: age-encrypted file
+    ↓ (missing)
+Error: Credential provisioning required
+```
+
+See [TechSpec.md Section 8.8](TechSpec.md#88-headless-linux-credential-fallback) for implementation details.
+
+> **Credential Technology:** See [TechSpec.md Section 1.5](TechSpec.md#15-infrastructure-and-build) for Egress Gateway implementation and [TechSpec.md Section 8.4](TechSpec.md#84-encryption-key-management-lifecycle) for credential handling details.
 
 ### 5.2 Observability
 
@@ -661,13 +681,29 @@ The observability strategy in OpenKraken addresses three distinct needs: operati
 
 > **Logging Schema:** See [TechSpec.md Section 3.4](TechSpec.md#34-audit-log-database-auditdb) for audit log schema and [TechSpec.md Section 3.5](TechSpec.md#35-proxy-access-log-database-proxydb) for proxy access log schema.
 
-**Operational Alerting**: The Orchestrator includes an Alert Emitter — a system health component that evaluates infrastructure conditions on a configurable interval (default: 60 seconds) and delivers alerts to the Owner through the existing Telegram Adapter. This is a cross-cutting system concern, not an agent lifecycle or middleware component. The Agent has no awareness of the Alert Emitter.
+**Operational Alerting**: The Orchestrator includes an Alert Emitter — a system health component that evaluates infrastructure conditions on a configurable interval (default: 60 seconds) and delivers alerts to the Owner through multiple channels. This is a cross-cutting system concern, not an agent lifecycle or middleware component. The Agent has no awareness of the Alert Emitter.
+
+**Multi-Channel Alert Routing:**
+
+Alerts are routed based on severity to appropriate channels:
+
+| Severity | Channel | Delivery | Example |
+|----------|---------|----------|---------|
+| CRITICAL | Telegram | Immediate | Gateway failure, vault inaccessible |
+| ERROR | Telegram | Immediate | Backup failure, database corruption |
+| WARN | Email | Hourly digest | High memory usage, approaching limits |
+| INFO | Email | Daily digest | Successful backup, skill update |
+
+**Rationale:**
+- Telegram: Immediate attention for urgent issues requiring Owner action
+- Email: Non-urgent informational summaries to reduce alert fatigue
+- Both channels: Prometheus metrics at `/metrics` for Owners with external monitoring
 
 The Alert Emitter evaluates conditions against internal metrics and system state: database size approaching limits (WARN at configurable threshold, default 8GB), database integrity check failures (CRITICAL), Egress Gateway health (ERROR after 3 consecutive failures, INFO on recovery), backup success or failure (configurable), LLM provider error rates (WARN above threshold), credential vault accessibility (CRITICAL), checkpoint storage growth (WARN), scheduled task failures (ERROR), and skill auto-updates (INFO).
 
-To prevent alert fatigue, identical alerts are suppressed for a configurable cooldown period (default: 30 minutes). Recovery alerts reset the suppression window for corresponding failure alerts. INFO-level alerts (backup success, skill updates) are individually configurable by the Owner. All alerts are logged to the audit log regardless of Telegram delivery status.
+To prevent alert fatigue, identical alerts are suppressed for a configurable cooldown period (default: 30 minutes). Recovery alerts reset the suppression window for corresponding failure alerts. INFO-level alerts (backup success, skill updates) are individually configurable by the Owner. All alerts are logged to the audit log regardless of channel delivery status.
 
-This design avoids external monitoring infrastructure (Prometheus + Grafana + PagerDuty) that is disproportionate for a single-tenant personal runtime. The Owner already has Telegram as a first-class channel; alerting flows through it. Prometheus metrics remain available at `/metrics` for Owners who choose to integrate external monitoring.
+This design avoids external monitoring infrastructure (Prometheus + Grafana + PagerDuty) that is disproportionate for a single-tenant personal runtime while ensuring critical issues receive immediate attention. The Owner already has Telegram as a first-class channel; urgent alerting flows through it. Less urgent issues are batched in email digests.
 
 > **Alert Configuration:** See [TechSpec.md Section 6.2](TechSpec.md#62-configuration-file-schema) for alerting configuration schema.
 
@@ -687,6 +723,25 @@ The architecture implements a comprehensive error handling strategy that ensures
 - Dependency resolution failure: Skill marked as "requires dependencies", blocked from activation
 - Version drift (approved version vs. latest): Auto-update triggers for approved skills with notification
 - Vercel CLI unavailable: Bundled Nix package provides offline fallback for cached sources
+
+**Egress Gateway Failure Recovery:**
+
+The Egress Gateway is a single point of failure for sandbox network access. The architecture includes automatic recovery mechanisms:
+
+1. **Health Monitoring**: Orchestrator polls Gateway health endpoint every 30 seconds
+2. **Automatic Restart**: Nix/systemd restart on 3 consecutive failures
+3. **Graceful Degradation**: Queue outbound requests during Gateway recovery (max 100 queued)
+4. **Owner Alert**: CRITICAL alert via Telegram on Gateway failure, INFO on recovery
+
+**Recovery Flow:**
+```
+Health Check Failure (1st) → Log Warning
+Health Check Failure (2nd) → Log Warning
+Health Check Failure (3rd) → CRITICAL Alert → Restart Service
+Health Check Success → INFO Alert → Resume Normal Operation
+```
+
+See [TechSpec.md Section 8.7](TechSpec.md#87-egress-gateway-resilience) for implementation details.
 
 > **Error Response Schema:** See [TechSpec.md Section 4.1](TechSpec.md#41-gateway-http-api) for standardized error response formats.
 

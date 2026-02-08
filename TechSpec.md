@@ -549,6 +549,162 @@ Use devenv for all development environment orchestration:
 
 ---
 
+### ADR-010: Configuration Schema Validation with CUE
+
+**Status:** Accepted  
+**Date:** 2026-02-08
+
+**Context:**
+Configuration errors discovered at runtime create poor UX and potential security issues. The `config.yaml` file (defined in Section 6.2) lacks schema validation, causing errors to surface only when the Orchestrator attempts to use invalid configuration values. We need validation that works at build time (Nix) and runtime (Bun) with a single source of truth.
+
+**Alternatives Considered:**
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| JSON Schema + Zod | Good TypeScript integration | Requires maintaining two schemas (JSON Schema for YAML, Zod for runtime) |
+| Pure Zod | Native TypeScript | Runtime only, no build-time validation in Nix |
+| **CUE** | Single schema source, validates at build and runtime, excellent error messages | Additional CLI dependency |
+
+**Decision:**
+Use CUE for schema validation. CUE is already available in nixpkgs, provides excellent validation error messages, and supports both build-time (via `cue vet` in Nix) and runtime (via Bun shell invocation) validation.
+
+**Implementation:**
+
+1. **Schema Definition** (`nix/schema/config.cue`):
+   - Single source of truth for configuration structure
+   - Type constraints, required fields, and validation rules
+   - Matches TechSpec Section 6.2 YAML schema exactly
+
+2. **Build-Time Validation** (Nix):
+   ```nix
+   checkPhase = ''
+     cue vet -c ${./schema/config.cue} $out/config.yaml
+   '';
+   ```
+
+3. **Runtime Validation** (Bun):
+   ```typescript
+   import { $ } from "bun";
+   
+   async function validateConfig(configPath: string): Promise<void> {
+     const result = await $`cue vet -c ${import.meta.dir}/schema/config.cue ${configPath}`
+       .nothrow();
+     
+     if (result.exitCode !== 0) {
+       throw new Error(`Configuration validation failed:\n${result.stderr}`);
+     }
+   }
+   ```
+
+4. **Development CLI**:
+   ```bash
+   openkraken config validate --strict  # Validates config.yaml against schema
+   ```
+
+**Dependencies:**
+- CUE CLI via Nix: `pkgs.cue`
+- Bun shell API for runtime validation
+
+**Consequences:**
+
+**Positive:**
+- Single schema definition used everywhere
+- Build fails on invalid configuration
+- Runtime validation prevents startup with bad configuration
+- Clear, actionable error messages with line numbers
+
+**Negative:**
+- Additional CUE CLI dependency (~30MB)
+- Learning curve for CUE syntax
+
+**Mitigation:**
+- CUE syntax is similar to JSON/YAML with type annotations
+- Schema only needs modification when configuration structure changes
+- CUE provides comprehensive documentation
+
+---
+
+### ADR-011: Documentation-Implementation Drift Prevention
+
+**Status:** Accepted  
+**Date:** 2026-02-08
+
+**Context:**
+Without active maintenance, architecture documentation becomes stale as implementation evolves. This leads to new developers following outdated patterns, architecture decisions being unknowingly violated, and documentation becoming untrusted reference material. The OpenKraken project has three layers of documentation (PRD, Architecture, TechSpec) that must stay synchronized with implementation.
+
+**Decision:**
+Implement three-layer drift prevention:
+
+#### Layer 1: PR Checklist (Immediate Enforcement)
+All PRs must complete the following checklist:
+- [ ] Architecture.md updated if changing documented behavior or component boundaries
+- [ ] ADR created for new architectural decisions
+- [ ] TechSpec.md updated for API changes, schema modifications, or version bumps
+- [ ] CHANGELOG.md updated for breaking changes
+- [ ] PR description references affected documentation sections
+
+#### Layer 2: CI Validation (Automated Checks)
+```yaml
+# GitHub Actions workflow
+- name: Check Documentation Compliance
+  run: |
+    # Verify ADRs are updated for architectural changes
+    ./scripts/check-architecture-compliance.sh
+    
+    # Verify TechSpec matches implementation
+    ./scripts/check-techspec-sync.sh
+```
+
+Scripts check:
+- ADR references in code comments match existing ADRs
+- Configuration schema in code matches TechSpec
+- API endpoints match OpenAPI specs in TechSpec
+
+#### Layer 3: Quarterly Review (Scheduled Maintenance)
+- Architecture review meeting with maintainers
+- Update ADRs with implementation status (proposed/accepted/deprecated)
+- Deprecate obsolete patterns with migration guides
+- Archive outdated documentation to `docs/archive/`
+
+### Document Boundaries
+
+**PRD.md** — Business capabilities and user stories
+- Update when: Adding/removing features, changing requirements
+- Do not update when: Implementation details change, bug fixes
+
+**Architecture.md** — Design patterns and component relationships
+- Update when: Component boundaries change, new middleware added, data flows change
+- Do not update when: Internal refactoring without behavioral change, bug fixes
+
+**TechSpec.md** — Concrete contracts and specifications
+- Update when: API changes, schema changes, version bumps, configuration changes
+- Do not update when: Internal implementation details change
+
+**CHANGELOG.md** — Version history and breaking changes
+- Update when: Breaking changes, new features, deprecations
+- Do not update when: Bug fixes, documentation-only changes
+
+**Consequences:**
+
+**Positive:**
+- Documentation remains accurate and trusted
+- New contributors follow current patterns
+- Architectural decisions are preserved and visible
+- Easier onboarding for new developers
+
+**Negative:**
+- PR overhead increased (checklist completion)
+- Requires discipline to maintain
+- Quarterly reviews require time investment
+
+**Mitigation:**
+- PR template with embedded checklist
+- Automated checks reduce manual review burden
+- Quarterly review distributes maintenance across team
+- Documentation updates can be batched for minor changes
+
+---
+
 ## 3. Database Schema
 
 This section defines the physical database schema using Mermaid ERD syntax. All tables use SQLite-compatible types. Primary keys, foreign keys, and critical indices are explicitly defined. Database schema implements the persistence layer defined in [Architecture.md Section 5.3](Architecture.md#53-persistence-layer).
@@ -2697,101 +2853,232 @@ Sanitization applies to:
 
 ### 5.7 Testing Strategy
 
-> **TODO**: This is a large scope area requiring dedicated work. The following outline defines the approach, but full implementation is deferred until after initial foundation is established.
+OpenKraken follows **Test-Driven Development (TDD)**: Red → Green → Refactor. All code changes must include tests meeting the requirements below.
 
 #### Methodology
 
-OpenKraken follows **Test-Driven Development (TDD)**: Red → Green → Refactor.
+**TDD Cycle (Mandatory):**
+1. **Red**: Write failing test describing expected behavior
+2. **Green**: Implement minimal code to make test pass
+3. **Refactor**: Improve code without breaking tests
 
-- **Red**: Write failing test describing expected behavior
-- **Green**: Implement minimal code to make test pass
-- **Refactor**: Improve code without breaking tests
+**Requirements:**
+- All PRs must include tests for changed code
+- Tests pass in CI before merge
+- Coverage reports generated on every build
 
-#### Testing Scope
+#### Test Categories
 
-1. **Unit Tests** (Priority 1)
-   - Individual components and functions in isolation
-   - External dependencies mocked (LLM providers, sandbox, MCP servers)
-   - Fast execution (no external service calls)
-   
-2. **Integration Tests** (Priority 2)
-   - Cross-component interactions with real dependencies
-   - Minimal sandbox mocking (safe test environments only)
-   - Database operations with in-memory SQLite
-   
-3. **End-to-End Tests** (Priority 3 - DEFERRED)
-   - Full system flows including actual sandbox isolation
-   - Out of current scope due to complexity and execution time
-   - Add after unit/integration test coverage is stable
+**Unit Tests** (Mandatory, ≥90% coverage)
+- Domain logic in `src/orchestrator/domain/`
+- Pure functions and business rules
+- Mock all external dependencies
+- Location: `__tests__/` alongside source files
+- Execution: Fast (<100ms per test file)
 
-#### Test Structure
+**Integration Tests** (Mandatory for data layer)
+- Database repository implementations
+- Middleware stack composition
+- MCP adapter connections
+- Use in-memory SQLite or temp database
+- Location: `src/orchestrator/infrastructure/__tests__/`
+- Execution: Moderate (<1s per test file)
 
-> **Note:** Directory structure is conceptual. Actual implementation deferred to development phase.
-
-```
-src/
-├── orchestrator/
-│   ├── agent/
-│   │   └── __tests__/
-│   │       ├── createAgent.test.ts
-│   │       └── tools.test.ts
-│   ├── middleware/
-│   │   └── __tests__/
-│   │       ├── policy.test.ts
-│   │       └── memory.test.ts
-│   └── database/
-│       └── __tests__/
-│           ├── migrations.test.ts
-│           └── repositories.test.ts
-```
+**E2E Tests** (Recommended, not mandatory)
+- Full request flows (Telegram webhook → response)
+- Sandbox command execution
+- Require running services
+- Location: `test/e2e/`
+- Execution: Slow (full system startup)
 
 #### Test Tooling
 
-- **Test Runner**: Bun test runner (built-in, `bun test`)
-- **Mocking**: Built-in `bun:test` mock capabilities
-- **Coverage**: TBD (evaluate options after initial implementation)
+| Tool | Purpose | Command |
+|------|---------|---------|
+| Bun Test | Test runner | `bun test` |
+| Bun Coverage | Coverage reports | `bun test --coverage` |
+| bun:test | Mocking utilities | `import { mock } from "bun:test"` |
+| Snapshot | Regression testing | `bun test --snapshot` |
 
-#### Coverage Targets
+#### Coverage Requirements
 
-- Unit tests: **80% minimum** coverage
-- Integration tests: **60% minimum** coverage
-- E2E tests: Deferred initially, 40% target when implemented
+| Layer | Minimum | Target |
+|-------|---------|--------|
+| Domain | 90% | 95% |
+| Application | 80% | 90% |
+| Infrastructure | 70% | 80% |
+| Integration | 60% | 75% |
+
+**CI Enforcement:**
+```yaml
+- name: Test with Coverage
+  run: |
+    bun test --coverage
+    # Fail if domain coverage < 90%
+    npx coverage-thresholds --domain 90 --application 80
+```
+
+#### Test Patterns
+
+**Unit Test Example:**
+```typescript
+// src/orchestrator/domain/__tests__/policy.test.ts
+import { describe, it, expect } from "bun:test";
+import { PolicyService } from "../policy";
+
+describe("PolicyService", () => {
+  it("should reject paths outside allowlist", () => {
+    const service = new PolicyService(["/sandbox/work"]);
+    expect(service.validatePath("/etc/passwd")).toBe(false);
+    expect(service.validatePath("/sandbox/work/file.txt")).toBe(true);
+  });
+  
+  it("should block dangerous command patterns", () => {
+    const service = new PolicyService();
+    expect(service.validateCommand("rm -rf /")).toBe(false);
+    expect(service.validateCommand("ls -la")).toBe(true);
+  });
+});
+```
+
+**Integration Test Example:**
+```typescript
+// src/orchestrator/infrastructure/__tests__/message-repository.test.ts
+import { describe, it, expect, beforeAll, afterAll } from "bun:test";
+import { Database } from "bun:sqlite";
+import { SqliteMessageRepository } from "../database/message-repository";
+import { runMigrations } from "../database/migrations";
+
+describe("MessageRepository Integration", () => {
+  let db: Database;
+  let repo: SqliteMessageRepository;
+  
+  beforeAll(() => {
+    db = new Database(":memory:");
+    runMigrations(db);
+    repo = new SqliteMessageRepository(db);
+  });
+  
+  afterAll(() => {
+    db.close();
+  });
+  
+  it("should persist and retrieve messages", () => {
+    const message = {
+      id: crypto.randomUUID(),
+      threadId: "2026-02-08",
+      role: "user" as const,
+      content: "test message",
+      createdAt: Date.now()
+    };
+    
+    repo.create(message);
+    const retrieved = repo.findById(message.id);
+    
+    expect(retrieved).toEqual(message);
+  });
+  
+  it("should find messages by thread with pagination", () => {
+    // Create multiple messages
+    for (let i = 0; i < 10; i++) {
+      repo.create(createTestMessage({ threadId: "test-thread" }));
+    }
+    
+    const messages = repo.findByThreadId("test-thread", 5);
+    expect(messages).toHaveLength(5);
+  });
+});
+```
+
+#### Test Data Factories
+
+Use factory functions instead of fixtures:
+
+```typescript
+// test/factories.ts
+export function createTestMessage(overrides?: Partial<Message>): Message {
+  return {
+    id: crypto.randomUUID(),
+    threadId: "2026-02-08",
+    role: "user",
+    content: "Test message content",
+    contentType: "text",
+    metadata: {},
+    createdAt: Date.now(),
+    tokenCount: 0,
+    ...overrides
+  };
+}
+
+export function createTestCheckpoint(overrides?: Partial<Checkpoint>): Checkpoint {
+  return {
+    threadId: crypto.randomUUID(),
+    checkpointId: crypto.randomUUID(),
+    timestamp: Date.now(),
+    ...overrides
+  };
+}
+```
+
+#### CI Integration
+
+**GitHub Actions:**
+```yaml
+- name: Unit Tests
+  run: bun test --coverage --testPathPattern="__tests__"
+
+- name: Integration Tests  
+  run: bun test --testPathPattern="infrastructure/__tests__"
+  env:
+    DATABASE_URL: ":memory:"
+
+- name: Coverage Report
+  uses: codecov/codecov-action@v3
+  with:
+    files: ./coverage/lcov.info
+    fail_ci_if_error: true
+```
 
 #### Key Test Areas
 
-1. **Middleware Stack Composition**
-   - Test middleware order and chain execution
-   - Verify state propagation through middleware
-   - Test middleware interrupts (human-in-the-loop)
+| Area | Test Focus | Type |
+|------|-----------|------|
+| Middleware Stack | Order, state propagation, interrupts | Unit + Integration |
+| Checkpointer | Serialization, WAL recovery | Integration |
+| Credential Vault | Retrieval, caching, fallback | Unit + Integration |
+| Schema Migrations | Forward migration, idempotency | Integration |
+| Policy Enforcement | Path validation, command filtering | Unit |
+| Egress Gateway | Allowlist, health monitoring | Integration |
+| Alerting | Threshold evaluation, deduplication | Unit |
 
-2. **Checkpointer Serialization**
-   - Test state serialization/deserialization
-   - Verify WAL mode recovery
-   - Test concurrent access patterns
+#### Test Environment
 
-3. **Credential Vault Abstraction**
-   - Test credential retrieval and caching
-   - Mock OS-level vaults for testing
-   - Verify credential isolation per service
+**Development:**
+```bash
+# Run all tests
+bun test
 
-4. **Schema Migrations**
-   - Test migration forward application
-   - Verify schema integrity after migration
-   - Test migration idempotency
+# Run specific test file
+bun test src/orchestrator/domain/__tests__/policy.test.ts
 
-5. **Path Normalization**
-   - Test cross-platform path resolution
-   - Verify allowlist validation
-   - Test symlink handling
+# Run with coverage
+bun test --coverage
 
-#### Future Work
+# Watch mode
+bun test --watch
+```
 
-Detailed testing strategy expansion deferred to include:
-- Specific test patterns for asynchronous flows
-- Test fixtures and factory functions
-- Integration test environment setup
-- CI/CD test execution pipeline
-- Performance regression testing
+**Environment Variables:**
+```bash
+# Use in-memory database for tests
+DATABASE_URL=":memory:"
+
+# Disable external calls
+MOCK_EXTERNAL_SERVICES=true
+
+# Verbose test output
+TEST_VERBOSE=true
+```
 
 ---
 
@@ -3074,8 +3361,27 @@ storage:
 alerting:
   enabled: true
   evaluationIntervalSeconds: 60
-  channel: telegram  # Delivered through existing Telegram Adapter
   suppressionMinutes: 30  # Deduplicate identical alerts
+  
+  # Multi-channel routing by severity
+  channels:
+    telegram:
+      enabled: true
+      severity: ["CRITICAL", "ERROR"]  # Urgent alerts only
+      immediate: true                  # Send immediately
+    email:
+      enabled: true
+      severity: ["WARN", "INFO"]       # Informational alerts
+      digest: true                     # Batch non-urgent alerts
+      digestIntervalMinutes: 60        # Hourly digest
+      smtp:
+        host: "${SMTP_HOST}"           # From environment/vault
+        port: 587
+        username: "${SMTP_USER}"
+        password: "${SMTP_PASS}"
+        from: "openkraken@localhost"
+        to: "owner@example.com"
+  
   conditions:
     databaseSize:
       enabled: true
@@ -3099,6 +3405,163 @@ alerting:
     skillAutoUpdate:
       enabled: true
 ```
+
+### 6.3 Configuration Validation
+
+OpenKraken validates `config.yaml` against a CUE schema at startup and during Nix builds (per ADR-010).
+
+**CUE Schema Definition:**
+
+The schema is defined in `nix/schema/config.cue`:
+
+```cue
+package config
+
+// OpenKraken Configuration Schema v1.0
+#Config: {
+    version: "1.0"
+    
+    orchestrator: #OrchestratorConfig
+    sandbox: #SandboxConfig
+    egressGateway: #EgressGatewayConfig
+    credentials: #CredentialsConfig
+    channels: #ChannelsConfig
+    middleware: #MiddlewareConfig
+    skills: #SkillsConfig
+    observability: #ObservabilityConfig
+    storage: #StorageConfig
+    alerting: #AlertingConfig
+}
+
+#OrchestratorConfig: {
+    host: string & net.IPv4
+    port: int & >=1024 & <=65535
+    session: {
+        maxConcurrent: int & >0 & <=10
+        idleTimeoutMinutes: int & >=1
+        dayBoundaryEnabled: bool
+    }
+    context: {
+        maxTokens: int & >=1000 & <=200000
+        summarizationThreshold: int
+        summarizationPrompt?: string
+    }
+}
+
+#SandboxConfig: {
+    enabled: bool
+    timeoutSeconds: int & >=60
+    memoryLimitMb: int & >=512
+    cpuLimitPercent: int & >=10 & <=100
+    zones: {
+        skills: string
+        inputs: string
+        work: string
+        outputs: string
+    }
+}
+
+#EgressGatewayConfig: {
+    http: {
+        enabled: bool
+        port: int & >=1024 & <=65535
+    }
+    socks5: {
+        enabled: bool
+        port: int & >=1024 & <=65535
+    }
+    allowlist: {
+        system: [...string]
+        owner: [...string]
+        ttlSeconds: int & >=60
+    }
+}
+
+#ChannelsConfig: {
+    telegram?: {
+        enabled: bool
+        mode: "webhook" | "polling"
+        webhookUrl?: string
+        secretToken?: string
+    }
+    mcp?: {
+        enabled: bool
+        servers: [...#McpServerConfig]
+        connectionTimeoutSeconds: int
+    }
+}
+
+#AlertingConfig: {
+    enabled: bool
+    evaluationIntervalSeconds: int & >=10
+    suppressionMinutes: int & >=0
+    channels: {
+        telegram: #TelegramChannelConfig
+        email?: #EmailChannelConfig
+    }
+}
+
+#TelegramChannelConfig: {
+    enabled: bool
+    severity: ["CRITICAL", "ERROR", "WARN", "INFO"]
+    immediate: bool
+}
+
+#EmailChannelConfig: {
+    enabled: bool
+    severity: ["CRITICAL", "ERROR", "WARN", "INFO"]
+    digest: bool
+    digestIntervalMinutes: int
+}
+```
+
+**Validation Points:**
+
+1. **Build-Time Validation** (Nix):
+   ```nix
+   checkPhase = ''
+     cue vet -c ${./schema/config.cue} $out/config.yaml
+   '';
+   ```
+
+2. **Runtime Validation** (Orchestrator startup):
+   ```typescript
+   import { $ } from "bun";
+   
+   async function validateConfig(configPath: string): Promise<void> {
+     const result = await $`cue vet -c ${import.meta.dir}/schema/config.cue ${configPath}`
+       .nothrow();
+     
+     if (result.exitCode !== 0) {
+       throw new Error(`Configuration validation failed:\n${result.stderr}`);
+     }
+   }
+   ```
+
+3. **Development CLI**:
+   ```bash
+   openkraken config validate --strict
+   ```
+
+**Error Messages:**
+
+Validation errors provide clear path references:
+```
+config.yaml:42:15: conflicting values "abc" and int (mismatched types string and int):
+    ./nix/schema/config.cue:15:10
+    ./config.yaml:42:15
+```
+
+**Dependencies:**
+
+CUE is provided via Nix:
+```nix
+packages = with pkgs; [
+  cue  # Configuration validation
+];
+```
+
+---
 
 ## 7. Performance Requirements
 
@@ -3309,6 +3772,63 @@ Configured via `storage.backup.schedule` in `config.yaml` (default: `0 3 * * *`)
 
 Compressed SQLite databases typically achieve 3-5x compression with gzip. With default 7-day retention, total backup storage is bounded to approximately `7 × compressed_db_size`. The Alert Emitter warns when database size approaches the configured limit (default 8GB warning at 10GB max).
 
+**Automated Backup Verification:**
+
+Backups are automatically verified weekly to ensure restorability.
+
+**Verification Process:**
+1. Restore backup to temporary database (`:memory:` or temp file)
+2. Run `PRAGMA integrity_check`
+3. Decrypt sample encrypted field to verify key compatibility
+4. Report success/failure to Owner via configured alert channels
+5. Clean up temporary files
+
+**Configuration:**
+```yaml
+storage:
+  backup:
+    enabled: true
+    schedule: "0 3 * * *"  # Daily at 3 AM
+    retentionDays: 7
+    verifySchedule: "0 4 * * 0"  # Weekly on Sunday at 4 AM
+    verifyTimeoutMinutes: 5
+```
+
+**Verification Results:**
+| Result | Severity | Action |
+|--------|----------|--------|
+| Success | INFO | Logged, no alert |
+| Integrity failure | CRITICAL | Alert Owner immediately |
+| Decryption failure | CRITICAL | Alert Owner immediately |
+| Timeout | ERROR | Alert Owner, retry next cycle |
+
+**Implementation Pattern:**
+```typescript
+class BackupVerifier {
+  async verify(backupPath: string): Promise<VerificationResult> {
+    const tempDb = await this.decompressToTemp(backupPath);
+    
+    try {
+      // 1. Integrity check
+      const integrity = await this.checkIntegrity(tempDb);
+      if (!integrity.ok) {
+        return { ok: false, error: `Integrity check failed: ${integrity.error}` };
+      }
+      
+      // 2. Decryption test
+      const decryptTest = await this.testDecryption(tempDb);
+      if (!decryptTest.ok) {
+        return { ok: false, error: `Decryption test failed: ${decryptTest.error}` };
+      }
+      
+      return { ok: true };
+    } finally {
+      await this.cleanup(tempDb);
+    }
+  }
+}
+```
+
 ---
 
 ### 8.6 CLI and Web UI Authentication
@@ -3353,6 +3873,234 @@ The Web UI uses the same token, stored in an HTTP-only session cookie after init
 JWT/OAuth/OIDC are not used because the system binds to `127.0.0.1` with exactly one user. The threat model is "prevent unauthorized local processes from issuing commands," not federated identity. A static vault-stored token provides equivalent security without token signing, refresh flows, or identity provider infrastructure.
 
 Authentication is required (rather than passwordless) because in VPS deployments, other users on a shared host could access `127.0.0.1`. The token prevents unauthorized local access without per-invocation password entry.
+
+---
+
+### 8.7 Egress Gateway Resilience
+
+The Egress Gateway is a mandatory chokepoint for all sandbox network traffic. The following mitigations address the single point of failure risk.
+
+**Health Monitoring:**
+
+| Parameter | Value |
+|-----------|-------|
+| Check interval | 30 seconds |
+| Timeout | 5 seconds |
+| Failure threshold | 3 consecutive failures |
+| Recovery threshold | 2 consecutive successes |
+
+**Automatic Restart:**
+
+```nix
+# Nix service configuration
+services.openkraken-egress-gateway = {
+  serviceConfig = {
+    Restart = "always";
+    RestartSec = 5;
+    StartLimitIntervalSec = 60;
+    StartLimitBurst = 3;
+  };
+};
+```
+
+**Orchestrator Recovery Logic:**
+
+```typescript
+class EgressGatewayMonitor {
+  private consecutiveFailures = 0;
+  private readonly FAILURE_THRESHOLD = 3;
+  private readonly RECOVERY_THRESHOLD = 2;
+  private isHealthy = true;
+  
+  async checkHealth(): Promise<boolean> {
+    try {
+      const response = await fetch(`${EGRESS_URL}/health`, {
+        signal: AbortSignal.timeout(5000)
+      });
+      
+      if (response.ok) {
+        this.consecutiveFailures = 0;
+        if (!this.isHealthy) {
+          // Recovery detected
+          await this.handleRecovery();
+        }
+        return true;
+      }
+    } catch {
+      // Fall through to failure handling
+    }
+    
+    this.consecutiveFailures++;
+    
+    if (this.consecutiveFailures >= this.FAILURE_THRESHOLD && this.isHealthy) {
+      await this.handleFailure();
+    }
+    
+    return false;
+  }
+  
+  private async handleFailure(): Promise<void> {
+    this.isHealthy = false;
+    
+    // CRITICAL alert to Owner
+    await alertEmitter.send({
+      severity: "CRITICAL",
+      component: "egress_gateway",
+      message: "Egress Gateway health check failed - restarting"
+    });
+    
+    // Request restart via systemd
+    await $`systemctl restart openkraken-egress-gateway`;
+  }
+  
+  private async handleRecovery(): Promise<void> {
+    this.isHealthy = true;
+    this.consecutiveFailures = 0;
+    
+    // INFO alert on recovery
+    await alertEmitter.send({
+      severity: "INFO",
+      component: "egress_gateway",
+      message: "Egress Gateway recovered"
+    });
+  }
+}
+```
+
+**Graceful Degradation:**
+
+When Gateway is unavailable:
+- New sandbox network requests are queued (max queue: 100)
+- Queued requests timeout after 60 seconds
+- Agent receives `service_unavailable_error` for timed-out requests
+- Checkpointer persists any suspended sessions
+
+**Alerting:**
+
+| Event | Severity | Channel | Deduplication |
+|-------|----------|---------|---------------|
+| Gateway failure | CRITICAL | Telegram | 5 minutes |
+| Gateway recovery | INFO | Telegram | None |
+| Multiple restarts | ERROR | Email | 30 minutes |
+
+---
+
+### 8.8 Headless Linux Credential Fallback
+
+For Linux systems without secret-service (servers, containers, WSL), OpenKraken provides an encrypted file-based credential fallback.
+
+**Fallback Chain:**
+
+```
+1. Primary: secret-service (D-Bus)
+   ↓ (unavailable or fails)
+2. Fallback: age-encrypted file
+   ↓ (missing or corrupted)
+3. Error: Credential provisioning required
+```
+
+**Encrypted File Storage:**
+
+| Property | Value |
+|----------|-------|
+| Location | `$OPENKRAKEN_HOME/credentials.enc` |
+| Encryption | age (modern alternative to PGP) |
+| Key derivation | HKDF from master key |
+| Permissions | 0600 (owner read/write only) |
+
+**Nix Integration:**
+
+```nix
+# Add age to dependencies
+packages = with pkgs; [
+  age  # For credential fallback encryption
+];
+```
+
+**Implementation:**
+
+```typescript
+interface CredentialVault {
+  retrieve(service: string): Promise<string | null>;
+}
+
+class SecretServiceVault implements CredentialVault {
+  // Primary: D-Bus secret-service API
+  async retrieve(service: string): Promise<string | null> {
+    // Implementation using libsecret or equivalent
+  }
+}
+
+class AgeFileVault implements CredentialVault {
+  private readonly credsPath: string;
+  private ageKey: Buffer | null = null;
+  
+  async retrieve(service: string): Promise<string | null> {
+    if (!this.ageKey) {
+      // Derive age key from master key using HKDF
+      const masterKey = await this.getMasterKey();
+      this.ageKey = await deriveSubkey(masterKey, "openkraken-credentials-v1");
+    }
+    
+    // Decrypt credentials.enc
+    const encrypted = await Bun.file(this.credsPath).text();
+    const decrypted = await ageDecrypt(encrypted, this.ageKey);
+    const creds = JSON.parse(decrypted);
+    
+    return creds[service] || null;
+  }
+}
+
+class CompositeVault implements CredentialVault {
+  private primary = new SecretServiceVault();
+  private fallback = new AgeFileVault();
+  
+  async retrieve(service: string): Promise<string | null> {
+    // Try primary first
+    try {
+      const secret = await this.primary.retrieve(service);
+      if (secret) return secret;
+    } catch (error) {
+      logger.warn("secret-service unavailable, using fallback", { error });
+    }
+    
+    // Fall back to encrypted file
+    return this.fallback.retrieve(service);
+  }
+}
+```
+
+**Credential File Format:**
+
+```yaml
+# credentials.enc (age-encrypted)
+openkraken-master-key: "base64-encoded-key"
+openkraken-egress-hmac-key: "base64-encoded-key"
+openkraken-api-token: "ok_..."
+telegram-token: "..."
+anthropic-api-key: "..."
+```
+
+**Provisioning:**
+
+```bash
+# Initialize fallback storage
+openkraken credentials init-fallback
+
+# Add credential to fallback
+openkraken credentials set --fallback <service>
+
+# Rotate fallback encryption key
+openkraken credentials rotate-fallback-key
+```
+
+**Security Considerations:**
+
+- Age key never written to disk, derived on-demand from master key
+- File permissions strictly enforced (0600)
+- Master key still required (from vault or recovery code) to decrypt
+- Falls back to file storage only when secret-service unavailable
+- Logs WARNING when using fallback (non-default path)
 
 ---
 
