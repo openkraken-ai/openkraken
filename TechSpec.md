@@ -11,21 +11,167 @@ This section defines the concrete technology stack for OpenKraken, specifying ex
 
 ### 1.1 Core Runtime and Language
 
-| Component | Version | Justification |
-|-----------|---------|---------------|
-| **Bun Runtime** | 1.3.8 | Latest stable as of February 2026. Provides native SQLite support, TypeScript compilation, and superior cold-start performance compared to Node.js. Verified Node.js API compatibility (~95% coverage). |
-| **TypeScript** | 5.9.3 (bundled with Bun) | Strict type checking enabled. All source code written in TypeScript with strict mode activated. |
-| **Go Runtime** | 1.25.6 | Egress Gateway implementation. Systems programming language for HTTP CONNECT proxy with domain allowlisting. Selected for mature stdlib networking, simple concurrency (goroutines), and battle-tested reliability. |
-| **Node.js Compatibility** | 20.x LTS (runtime detection only) | Required for packages lacking Bun native support. Bun automatically handles Node.js compatibility layer. |
-| **SQLite** | 3.x (bundled with Bun runtime) | Native SQLite support via Bun.sqlite module. Provides durable state persistence with Write-Ahead Logging (WAL) mode. Zero-configuration persistence. |
+| Component | Version | Justification | API Surface & Critical Notes |
+|-----------|---------|---------------|----------------------------|
+| **Bun Runtime** | 1.3.8 | Latest stable as of February 2026. Provides native SQLite support, TypeScript compilation, and superior cold-start performance compared to Node.js. Verified Node.js API compatibility (~95% coverage). | **API Surface:** `bun:sqlite` (Database, Statement, Query APIs), `bun:ffi` (experimental), `bun:transpile`, N-API v9 with 200+ functions. **Key:** Use `bun:sqlite` for all SQLite operations (3-6x faster than better-sqlite3). **WARNING:** `bun:ffi` is experimental - avoid for production credential vault. JavaScriptCore engine provides faster cold-start than V8. |
+| **TypeScript** | 5.9.3 (bundled with Bun) | Strict type checking enabled. All source code written in TypeScript with strict mode activated. | Native compilation via Bun runtime - no build step required in production. |
+| **Go Runtime** | 1.25.6 | Egress Gateway implementation. Systems programming language for HTTP CONNECT proxy with domain allowlisting. Selected for mature stdlib networking, simple concurrency (goroutines), and battle-tested reliability. | **API Surface:** `net/http/transport.go` (dialConn, CONNECT tunneling), `net/http/server.go` (Hijacker.Hijack()), `log/slog` (structured logging). **Key:** Server-side CONNECT via `Hijacker.Hijack()` pattern; dual goroutine model for full-duplex I/O. **WARNING:** Domain allowlist and audit logging NOT in stdlib - requires custom middleware implementation. |
+| **Node.js Compatibility** | 20.x LTS (runtime detection only) | Required for packages lacking Bun native support. Bun automatically handles Node.js compatibility layer. | Via N-API v9 - packages must use N-API for native module support. |
+| **SQLite** | 3.x (bundled with Bun runtime) | Native SQLite support via Bun.sqlite module. Provides durable state persistence with Write-Ahead Logging (WAL) mode. Zero-configuration persistence. | **API:** `bun:sqlite.Database`, `bun:sqlite.Statement`. Prepared statement caching (up to 20 statements). Transaction support via `db.transaction()`. |
+
+### 1.1.1 Bun Runtime Integration Patterns
+
+**Cold-Start Performance:**
+```
+Bun's JavaScriptCore engine provides faster cold-start compared to V8-based runtimes.
+Native TypeScript compilation eliminates build step.
+Ideal for: Agent orchestration, CLI tools, development workflows.
+Based on subagent research: "JavaScriptCore engine provides faster cold-start compared to V8-based runtimes"
+```
+
+**SQLite Synchronous Operations:**
+```typescript
+import { Database } from "bun:sqlite";
+
+const db = new Database("openkraken.db", { readonly: false });
+const query = db.prepare("SELECT * FROM checkpoints WHERE thread_id = ?");
+
+// Synchronous execution - suitable for deterministic agent state
+const result = query.all("user-123");
+```
+
+**Node.js Compatibility via N-API:**
+```typescript
+// Bun auto-loads N-API compatible native modules
+// Example: keytar uses N-API and works with Bun
+import keytar from "keytar";
+await keytar.setPassword("openkraken", "anthropic-api-key", key);
+```
+
+**WARNING - bun:ffi Experimental Status:**
+```typescript
+// AVOID in production - bun:ffi is experimental
+import { ffi } from "bun:ffi";
+
+// Memory management must be manual
+// Risk of leaks and undefined behavior
+```
+
+### 1.1.2 Go HTTP CONNECT Proxy Implementation
+
+**Core Pattern (from research):**
+```go
+// Server-side CONNECT proxy using Hijacker.Hijack()
+func (s *Server) Serve(l net.Listener) error {
+    for {
+        conn, err := l.Accept()
+        if err != nil {
+            return err
+        }
+        go s.handleConnect(conn)
+    }
+}
+
+func (s *Server) handleConnect(conn net.Conn) {
+    hijacker, ok := conn.(http.Hijacker)
+    if !ok {
+        http.Error(conn, "Hijack not supported", http.StatusInternalServerError)
+        return
+    }
+    
+    clientConn, _, err := hijacker.Hijack()
+    if err != nil {
+        return
+    }
+    
+    // Dial target and pipe bidirectional
+    targetConn, err := net.Dial("tcp", targetAddr)
+    // io.Copy for full-duplex tunnel
+}
+```
+
+**Required Custom Implementations:**
+
+| Component | Status | Implementation Approach |
+|-----------|--------|------------------------|
+| Domain Allowlist | NOT IN STDLIB | `sync.RWMutex map[string]bool` with hot-reload from file |
+| Audit Logging | NOT IN STDLIB | `log/slog` with structured JSON: `{timestamp, event, source_ip, host, port, user_agent, status}` |
+| Connection Pooling | STDlib LRU | `connLRU` with configurable pool size |
+| Timeout Guards | STDlib | Context-based timeouts for CONNECT handshake |
+
+**Recommended Configuration:**
+```go
+const (
+    CONNECT_TIMEOUT = 10 * time.Second
+    TUNNEL_TIMEOUT = 5 * time.Minute
+    BUFFER_SIZE    = 32 * 1024 // 32KB for high-throughput
+)
 
 ### 1.2 Agent Orchestration Framework
 
-| Component | Version | Justification |
-|-----------|---------|---------------|
-| **LangChain.js** | 1.2.18 (bindings) / 1.1.19 (core) | Stable v1 API with TypeScript bindings. Provides canonical `createAgent()` entry point. Extensive middleware ecosystem. Production-ready with active maintenance. Core library (@langchain/core) at 1.1.19 provides base abstractions. Uses SkrOYC's custom bun-sqlite-checkpointer for LangGraph state persistence (Bun-native, avoiding better-sqlite3 FFI issues). |
-| **LangGraph.js** | 1.1.2 | Stateful workflow management. Enables checkpoint persistence and state rollback. Used as peer dependency by LangChain bindings. |
-| **@langchain/mcp-adapters** | 1.1.2 | Model Context Protocol integration. Handles connection lifecycle and capability negotiation transparently. |
+| Component | Version | Justification | API Surface & Critical Notes |
+|-----------|---------|---------------|----------------------------|
+| **LangChain.js** | 1.2.18 (bindings) / 1.1.19 (core) | Stable v1 API with TypeScript bindings. Provides canonical `createAgent()` entry point. Extensive middleware ecosystem. Production-ready with active maintenance. | **API Surface:** `createAgent()` at `libs/langchain/src/agents/index.ts`, `SqliteSaver` in `@langchain/community`, `MultiServerMCPClient` in `@langchain/mcp-adapters`. **Middleware Hooks:** `WrapToolCallHook`, `BeforeAgentHook`, `BeforeModelHook`, `WrapModelCallHook`, `AfterModelHook`, `AfterAgentHook`. **Bun Gap:** Subagent found "Limited documentation on Bun runtime compatibility" - verify in staging. |
+| **LangGraph.js** | 1.1.2 | Stateful workflow management. Enables checkpoint persistence and state rollback. Used as peer dependency by LangChain bindings. | **State Persistence:** `SqliteSaver` with WAL mode. Checkpointer interface for thread_id isolation. |
+| **@langchain/mcp-adapters** | 1.1.2 | Model Context Protocol integration. Handles connection lifecycle and capability negotiation transparently. | **Connection Types:** `stdio`, `streamable_http`, `sse`. `MultiServerMCPClient` for unified tool interface. |
+
+### 1.2.1 LangChain.js createAgent() Implementation
+
+**Canonical Entry Point (from research):**
+```typescript
+import { createAgent } from "@langchain/langgraph";
+
+const agent = createAgent({
+  model: "anthropic:claude-sonnet:latest",
+  tools: [filesystemTool, githubTool, databaseTool],
+  systemPrompt: "You are a helpful agent with access to secure tools.",
+  responseFormat: undefined, // or Zod schema for structured output
+  stateSchema: undefined, // Custom state for memory persistence
+  checkpointer: sqliteCheckpointer, // BaseCheckpointSaver
+  store: memoryStore, // BaseStore for long-term memory
+  middleware: [authMiddleware, loggingMiddleware],
+  version: "v2", // Graph version
+});
+```
+
+**Middleware Hooks (from research):**
+```typescript
+// Hook execution order: BeforeAgent → BeforeModel → WrapModelCall → AfterModel → AfterAgent
+// WrapToolCallHook: Intercept/modify tool calls before execution
+const toolHook = createMiddleware({
+  name: "ToolSafety",
+  async wrapToolCall(request, handler) {
+    // Validate tool parameters
+    // Check permissions
+    return await handler(request);
+  },
+});
+
+// BeforeModelHook: Run before each model invocation
+const modelPrep = createMiddleware({
+  name: "ContextPrep",
+  async beforeModel(request) {
+    // Inject context, update system prompt
+    return request;
+  },
+});
+```
+
+**SQLite Checkpointer Integration:**
+```typescript
+import { SqliteSaver } from "@langchain/community/checkpointers/sqlite";
+
+const checkpointer = new SqliteSaver({
+  tableName: "agent_checkpoints",
+  dbPath: "./data/openkraken.db",
+});
+
+const agent = createAgent({
+  model,
+  tools,
+  checkpointer,
+});
+```
 
 ### 1.3 Protocol and Integration Libraries
 
@@ -44,16 +190,111 @@ This section defines the concrete technology stack for OpenKraken, specifying ex
 
 ### 1.5 Infrastructure and Build
 
-| Component | Version | Justification |
-|-----------|---------|---------------|
-| **Nix** | 2.31.2 (current) or 2.33.2 (latest stable) | Reproducible builds via Nix Flakes. Cross-platform package management. Use 2.18.x+ for flake support. |
-| **nixpkgs** | 25.11 (stable channel) | Declarative system configuration. Generates systemd units (Linux) and launchd plists (macOS). |
-| **devenv** | 1.5+ (via Flake Hub) | Fast, reproducible development environments for multi-language monorepo. |
-| **direnv** | 2.35+ (via Nix, optional) | Automatic shell activation for devenv environments. |
-| **git** | 2.47+ (via devenv packages) | Version control for all environments. |
-| **just** | 1.36+ (via devenv packages) | Command runner for task orchestration at repo root. |
-| **Egress Gateway** | Go 1.25.6 | Systems programming language for network proxy. Selected for faster implementation velocity, simpler concurrency (goroutines), and mature HTTP CONNECT proxy ecosystem. |
-| **Vercel Skills CLI** | Bundled via Nix | Integrated Agent Skills CLI implementation. Bundled as Nix package for reproducibility (not `npx`). Enables access to curated skills ecosystem while applying OpenKraken's security pipeline. |
+| Component | Version | Justification | API Surface & Critical Notes |
+|-----------|---------|---------------|----------------------------|
+| **Nix** | 2.31.2 (current) or 2.33.2 (latest stable) | Reproducible builds via Nix Flakes. Cross-platform package management. Use 2.18.x+ for flake support. | **Key Modules:** `nix.lang`, `flake-utils.lib.eachSystem`. **WARNING:** Devenv uses runtime socket activation (LISTEN_FDS) - does NOT generate systemd units or launchd plists. Custom Nix module required for service generation. |
+| **nixpkgs** | 25.11 (stable channel) | Declarative system configuration. Generates systemd units (Linux) and launchd plists (macOS). | **Go Cross-Compilation:** `buildGoModule.override({ GOOS, GOARCH })`. **Platforms:** x86_64-linux, aarch64-linux, x86_64-darwin, aarch64-darwin. |
+| **devenv** | 1.5+ (via Flake Hub) | Fast, reproducible development environments for multi-language monorepo. | **Process Management:** Native socket activation via sd_notify protocol. **Languages:** `languages.javascript.bun.enable`, `languages.go.enable`. **WARNING:** No systemd/launchd generation - requires custom module. |
+| **direnv** | 2.35+ (via Nix, optional) | Automatic shell activation for devenv environments. | Integrated via `devenv/direnvrc`. |
+| **git** | 2.47+ (via devenv packages) | Version control for all environments. | Standard tooling. |
+| **just** | 1.36+ (via devenv packages) | Command runner for task orchestration at repo root. | Task orchestration. |
+| **Egress Gateway** | Go 1.25.6 | Systems programming language for network proxy. Selected for faster implementation velocity, simpler concurrency (goroutines), and mature HTTP CONNECT proxy ecosystem. | See ADR-016 for implementation details. |
+| **Vercel Skills CLI** | Bundled via Nix | Integrated Agent Skills CLI implementation. Bundled as Nix package for reproducibility (not `npx`). | See ADR-013 for integration patterns. **WARNING:** No Owner approval workflow, no content validation - OpenKraken must implement. |
+
+### 1.5.1 Nix + Devenv Integration Patterns (from Research)
+
+**Multi-Language Orchestration:**
+```nix
+# devenv.nix
+{ pkgs, ... }:
+
+{
+  languages.javascript.bun.enable = true;
+  languages.go.enable = true;
+  
+  processes = {
+    orchestrator.exec = "bun run src/orchestrator/index.ts";
+    gateway.exec = "go run cmd/gateway/main.go";
+  };
+  
+  env = {
+    OPENKRAKEN_ENV = "development";
+    DATABASE_PATH = "${config.env.DATA_DIR}/openkraken.db";
+  };
+}
+```
+
+**Cross-Platform Build Matrix:**
+```nix
+# flake.nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
+    flake-utils.url = "github:numtide/flake-utils";
+  };
+  
+  outputs = { self, nixpkgs, flake-utils }:
+    flake-utils.lib.eachSystem [
+      "x86_64-linux"
+      "aarch64-linux"
+      "x86_64-darwin"
+      "aarch64-darwin"
+    ] (system:
+      let
+        pkgs = import nixpkgs { inherit system; };
+      in
+      {
+        packages = {
+          egress-gateway = pkgs.buildGoModule {
+            pname = "egress-gateway";
+            version = "0.1.0";
+            src = ./gateway;
+            vendorHash = "sha256-...";
+            overrideAttrs = (old: {
+              GOOS = if pkgs.stdenv.isDarwin then "darwin" else "linux";
+              GOARCH = if pkgs.stdenv.isAarch64 then "arm64" else "amd64";
+            });
+          };
+        };
+      }
+    );
+}
+```
+
+**CRITICAL - Systemd/Launchd Generation Gap:**
+```nix
+# WARNING: Devenv does NOT generate systemd units or launchd plists
+# Required: Custom Nix module for service generation
+
+# Pattern for custom service generation:
+{ config, lib, ... }:
+let
+  processConfig = config.devenv.processes;
+in
+{
+  # Generate systemd units from devenv process definitions
+  systemd.services = lib.mapAttrs' (name: proc:
+    lib.nameValuePair "openkraken-${name}" {
+      Unit.Description = "OpenKraken ${name} process";
+      Service.ExecStart = proc.exec;
+      Install.WantedBy = [ "multi-user.target" ];
+    }
+  ) processConfig;
+}
+```
+
+**Runtime Socket Activation Pattern:**
+```nix
+# Devenv uses sd_notify protocol for socket activation
+# LISTEN_FDS, LISTEN_PID, LISTEN_FDNAMES environment variables
+processes = {
+  orchestrator = {
+    exec = "bun run src/orchestrator/index.ts";
+    notify.enable = true;  # Enable sd_notify
+    watchdog.enable = true;  # Automatic restart on failure
+  };
+};
+```
 
 ### 1.6 Dependency Management Strategy
 
@@ -555,72 +796,107 @@ Use devenv for all development environment orchestration:
 **Date:** 2026-02-08
 
 **Context:**
-Configuration errors discovered at runtime create poor UX and potential security issues. The `config.yaml` file (defined in Section 6.2) lacks schema validation, causing errors to surface only when the Orchestrator attempts to use invalid configuration values. We need validation that works at build time (Nix) and runtime (Bun) with a single source of truth.
+Configuration errors discovered at runtime create poor UX and potential security issues. The `config.yaml` file lacks schema validation, causing errors to surface only when the Orchestrator attempts to use invalid configuration values. Research confirms CUE provides superior validation for this use case.
 
 **Alternatives Considered:**
 
 | Approach | Pros | Cons |
 |----------|------|------|
-| JSON Schema + Zod | Good TypeScript integration | Requires maintaining two schemas (JSON Schema for YAML, Zod for runtime) |
-| Pure Zod | Native TypeScript | Runtime only, no build-time validation in Nix |
-| **CUE** | Single schema source, validates at build and runtime, excellent error messages | Additional CLI dependency |
+| JSON Schema + Zod | Good TypeScript integration | Requires maintaining two schemas |
+| Pure Zod | Native TypeScript | Runtime only, no build-time validation |
+| **CUE** | Single schema source, validates at build and runtime | Additional CLI dependency |
 
-**Decision:**
-Use CUE for schema validation. CUE is already available in nixpkgs, provides excellent validation error messages, and supports both build-time (via `cue vet` in Nix) and runtime (via Bun shell invocation) validation.
+**Implementation (from research):**
 
-**Implementation:**
+**Schema Definition:**
+```cue
+// schema/config.cue
+#AppConfig: {
+  name:        string & =~"^[a-z][a-z0-9-]*$"
+  version:     string
+  environment: "development" | "staging" | "production"
+  
+  sandbox: {
+    type:     "bubblewrap" | "sandbox-exec"
+    proxies: {
+      httpPort:  int & >=1 & <=65535
+      socksPort: int & >=1 & <=65535
+    }
+    allowedDomains: [...string]
+  }
+  
+  credentials: {
+    anthropic?:   string
+    openai?:      string
+    google?:      string
+  }
+  
+  observability: {
+    langfuse?: {
+      publicKey?:  string
+      secretKey?:  string
+      baseUrl?:    string & =~"^https?://"
+    }
+  }
+  
+  // Closed struct - no additional fields allowed
+  ...
+}
 
-1. **Schema Definition** (`nix/schema/config.cue`):
-   - Single source of truth for configuration structure
-   - Type constraints, required fields, and validation rules
-   - Matches TechSpec Section 6.2 YAML schema exactly
+// Required fields validation
+#AppConfig & {
+  name:        string
+  version:     string
+  environment: string
+}
+```
 
-2. **Build-Time Validation** (Nix):
-   ```nix
-   checkPhase = ''
-     cue vet -c ${./schema/config.cue} $out/config.yaml
-   '';
-   ```
+**Build-Time Validation:**
+```nix
+checkPhase = ''
+  cue vet -c ${./schema/config.cue} $out/config.yaml
+'';
+```
 
-3. **Runtime Validation** (Bun):
-   ```typescript
-   import { $ } from "bun";
-   
-   async function validateConfig(configPath: string): Promise<void> {
-     const result = await $`cue vet -c ${import.meta.dir}/schema/config.cue ${configPath}`
-       .nothrow();
-     
-     if (result.exitCode !== 0) {
-       throw new Error(`Configuration validation failed:\n${result.stderr}`);
-     }
-   }
-   ```
+**Runtime Validation:**
+```typescript
+import * as cue from "cue";
 
-4. **Development CLI**:
-   ```bash
-   openkraken config validate --strict  # Validates config.yaml against schema
-   ```
+async function validateConfig(configPath: string): Promise<void> {
+  const result = await $`cue vet -c ${import.meta.dir}/schema/config.cue ${configPath}`
+    .nothrow();
+  
+  if (result.exitCode !== 0) {
+    throw new Error(`Configuration validation failed:\n${result.stderr}`);
+  }
+}
+```
 
-**Dependencies:**
-- CUE CLI via Nix: `pkgs.cue`
-- Bun shell API for runtime validation
+**Key Commands (from CUE research):**
+| Command | Purpose |
+|---------|---------|
+| `cue vet` | Validate JSON/YAML/TOML against schema |
+| `cue def` | Print consolidated definitions |
+| `cue export` | Export to JSON, YAML, Go code |
+| `cue import jsonschema` | Import existing JSON Schema |
 
 **Consequences:**
 
 **Positive:**
-- Single schema definition used everywhere
-- Build fails on invalid configuration
-- Runtime validation prevents startup with bad configuration
-- Clear, actionable error messages with line numbers
+- Single schema definition for build and runtime
+- Closed structs prevent configuration drift
+- Excellent error messages with file positions
+- Import/export with JSON Schema
 
 **Negative:**
 - Additional CUE CLI dependency (~30MB)
 - Learning curve for CUE syntax
+- Requires Go SDK for runtime validation
 
 **Mitigation:**
-- CUE syntax is similar to JSON/YAML with type annotations
-- Schema only needs modification when configuration structure changes
-- CUE provides comprehensive documentation
+- CUE syntax similar to JSON with type annotations
+- Schema only modified when configuration structure changes
+- Comprehensive CUE documentation available
 
 ---
 
@@ -766,55 +1042,123 @@ Use Langfuse v4 as the primary observability solution. Langfuse is built on Open
 **Date:** 2026-02-08
 
 **Context:**
-The skill ingestion pipeline requires a tool to resolve, validate, and manage skills from various sources (GitHub, npm, local). Vercel provides a mature Skills CLI with support for multiple resolution patterns (GitHub shorthand, full URLs, direct paths). We evaluated whether to build custom resolution logic or integrate with the Vercel ecosystem.
+The skill ingestion pipeline requires a tool to resolve, validate, and manage skills from various sources (GitHub, npm, local). Vercel Skills CLI provides mature resolution with support for GitHub shorthand, full URLs, and direct paths. Research identified critical gaps that OpenKraken must address.
 
 **Alternatives Considered:**
 
 | Approach | Pros | Cons |
 |----------|------|------|
-| Custom resolution logic | Full control, no external dependency | Significant development effort, maintenance burden |
-| Vercel Skills CLI | Mature, well-tested, supports all resolution patterns | External dependency, Vercel ecosystem lock-in |
-| Combination | Leverage Vercel for resolution, custom security pipeline | Integration complexity |
+| Custom resolution logic | Full control | Significant development effort |
+| Vercel Skills CLI | Mature, supports all resolution patterns | External dependency |
+| Combination | Leverage Vercel, custom security | Integration complexity |
+
+**Resolution Patterns (from research):**
+```
+Stage 1: Local paths (./skills/*)
+Stage 2: Direct URLs (https://github.com/user/repo)
+Stage 3: GitHub tree (owner/repo@skill-name)
+Stage 4: GitHub shorthand (owner/repo)
+Stage 5: GitLab, Well-known providers
+Stage 6: git:// URLs
+```
 
 **Decision:**
-Integrate Vercel Skills CLI bundled as a Nix package (not `npx`) for reproducible builds. Apply OpenKraken's security pipeline (source validation, LLM analysis, Owner approval) while leveraging Vercel's resolution capabilities.
+Integrate Vercel Skills CLI with OpenKraken security pipeline.
 
-**Implementation:**
+**CRITICAL GAPS IDENTIFIED (from research):**
 
-1. **Bundling**:
-   - Vercel Skills CLI bundled via Nix flake
-   - Not invoked via `npx` (avoids runtime npm resolution)
-   - Version pinned for reproducibility
+| Gap | Impact | OpenKraken Implementation |
+|-----|--------|--------------------------|
+| **No Owner Approval Workflow** | HIGH | Add pre-install approval step |
+| **No Content Validation** | HIGH | Integrate security pipeline scanning |
+| **No Nix Bundling** | MEDIUM | Create Nix wrapper |
+| **No Git Token Management** | MEDIUM | External token injection |
 
-2. **Security Pipeline**:
-   - Source validation against trusted domains
-   - LLM-based security analysis (prompt injection, credential access detection)
-   - Owner approval workflow with analysis report review
-   - Dependency resolution via Nix for isolation
+**OpenKraken Security Pipeline:**
+```typescript
+// skill-approval-workflow.ts
+interface ApprovalRequest {
+  source: string;
+  sourceType: "github" | "gitlab" | "local" | "url";
+  skillName: string;
+  files: SkillFile[];
+  hash: string;
+  requestedBy: "agent" | "owner";
+}
 
-3. **Commands**:
-   - `openkraken skills add <source>` - Add skill from Vercel-resolvable source
-   - `openkraken skills list` - List installed skills
-   - `openkraken skills remove <name>` - Remove skill
-   - `openkraken skills update` - Update skills within approved bounds
+async function skillApprovalWorkflow(request: ApprovalRequest): Promise<Approval> {
+  // 1. Validate against approved-sources.json
+  const allowed = await approvedSources.check(request.source);
+  if (!allowed) {
+    return { approved: false, reason: "Source not in approved-sources.json" };
+  }
+  
+  // 2. Security scanning
+  const scanResult = await securityScanner.scan(request.files);
+  if (scanResult.violations.length > 0) {
+    return { 
+      approved: false, 
+      reason: `Security violations: ${scanResult.violations.join(", ")}` 
+    };
+  }
+  
+  // 3. LLM analysis for prompt injection
+  const analysis = await llmSecurityAnalyzer.analyze(request.files);
+  if (analysis.riskLevel > "low") {
+    return { 
+      approved: false, 
+      reason: `LLM analysis flagged risk: ${analysis.riskLevel}` 
+    };
+  }
+  
+  // 4. Owner notification for high-risk
+  if (analysis.riskLevel === "medium") {
+    await notifyOwner(request);
+    return { approved: false, reason: "Pending owner review" };
+  }
+  
+  return { approved: true };
+}
+```
+
+**Skill Lock File:**
+```json
+{
+  "version": "1",
+  "skills": {
+    "filesystem": {
+      "source": "github.com/anthropic/mcp-server-filesystem",
+      "sourceType": "github",
+      "skillPath": "./skills/filesystem",
+      "skillFolderHash": "sha256-abc123...",
+      "installedAt": "2026-02-08T10:00:00Z",
+      "updatedAt": "2026-02-08T10:00:00Z",
+      "approvedBy": "owner",
+      "securityScan": "passed"
+    }
+  }
+}
+```
 
 **Consequences:**
 
 **Positive:**
-- Leverages mature, well-tested resolution logic
-- Supports GitHub shorthand, URLs, and local paths
-- Vercel ecosystem provides curated skills
-- Nix bundling ensures reproducibility
+- Leverages mature Vercel resolution logic
+- Supports GitHub shorthand, URLs, local paths
+- Hash-based change detection (GitHub tree SHA)
+- Nix wrapper ensures reproducibility
 
 **Negative:**
 - External dependency on Vercel ecosystem
-- Security pipeline must validate Vercel-resolved content
+- **No built-in Owner approval workflow**
+- **No content security scanning**
+- No git token management
 
 **Mitigation:**
-- Vercel CLI bundled via Nix for version control
-- Security pipeline validates all resolved content
-- Owner approval required before skill activation
-- Skills execute in sandbox regardless of source
+- OpenKraken implements approval workflow before installation
+- Security pipeline validates all skill content
+- Nix wrapper for deterministic builds
+- External token injection via environment
 
 ---
 
@@ -918,6 +1262,954 @@ OpenKraken-specific features exposed through `openkraken:*` extension prefix whi
 - Regular specification compliance testing
 - Extension mechanism documented and versioned
 - Community engagement for specification evolution
+
+---
+
+### ADR-016: Go HTTP CONNECT Proxy for Egress Gateway
+
+**Status:** Accepted  
+**Date:** 2026-02-08
+
+**Context:**
+The Egress Gateway requires an HTTP CONNECT proxy implementation for domain allowlisting and audit logging. Go 1.25.6 provides mature stdlib support for HTTP CONNECT tunneling with goroutine-based concurrency. However, research confirmed that domain allowlist enforcement and structured audit logging are NOT part of Go's standard library and require custom implementation.
+
+**Decision:**
+Implement Go HTTP CONNECT proxy using standard library patterns with custom middleware for domain allowlisting and audit logging.
+
+**Core Implementation Pattern (from Go stdlib research):**
+```go
+// Server-side CONNECT proxy using Hijacker.Hijack() pattern
+func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
+    if r.Method != "CONNECT" {
+        http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+        return
+    }
+    
+    hijacker, ok := w.(http.Hijacker)
+    if !ok {
+        http.Error(w, "Hijack not supported", http.StatusInternalServerError)
+        return
+    }
+    
+    clientConn, bufReader, err := hijacker.Hijack()
+    if err != nil {
+        http.Error(w, err.Error(), http.StatusInternalServerError)
+        return
+    }
+    
+    // Check domain allowlist
+    targetHost := r.URL.Host
+    if !allowlist.Check(targetHost) {
+        clientConn.Close()
+        audit.Log(r, "BLOCKED", targetHost)
+        return
+    }
+    
+    // Connect to target
+    targetConn, err := net.Dial("tcp", targetHost)
+    if err != nil {
+        clientConn.Close()
+        return
+    }
+    
+    // Write 200 Connection Established
+    bufReader.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n")
+    bufReader.Flush()
+    
+    // Bidirectional pipe with dual goroutines
+    go io.Copy(clientConn, targetConn)
+    io.Copy(targetConn, clientConn)
+}
+```
+
+**Domain Allowlist Implementation:**
+```go
+type Allowlist struct {
+    mu   sync.RWMutex
+    m    map[string]bool
+    file string
+}
+
+func (a *Allowlist) Check(host string) bool {
+    a.mu.RLock()
+    defer a.mu.RUnlock()
+    
+    // Exact match
+    if a.m[host] {
+        return true
+    }
+    
+    // Wildcard match (*.example.com)
+    parts := strings.Split(host, ".")
+    for i := range parts {
+        wildcard := strings.Join(append(parts[i:], "*"), ".")
+        if a.m[wildcard] {
+            return true
+        }
+    }
+    
+    return false
+}
+```
+
+**Structured Audit Logging (using log/slog):**
+```go
+import "log/slog"
+
+type AuditEntry struct {
+    Timestamp   time.Time `json:"timestamp"`
+    Event       string    `json:"event"`       // CONNECT, BLOCKED, ERROR
+    SourceIP    string    `json:"source_ip"`
+    Host        string    `json:"host"`
+    Port        int       `json:"port"`
+    UserAgent   string    `json:"user_agent"`
+    Status      string    `json:"status"`      // SUCCESS, BLOCKED, ERROR
+    ErrorMsg    string    `json:"error_msg,omitempty"`
+}
+```
+
+**Configuration:**
+```go
+const (
+    CONNECT_TIMEOUT = 10 * time.Second
+    TUNNEL_TIMEOUT  = 5 * time.Minute
+    BUFFER_SIZE     = 32 * 1024 // 32KB for high-throughput
+)
+```
+
+**Consequences:**
+
+**Positive:**
+- Go stdlib provides battle-tested HTTP handling (transport.go, server.go)
+- Goroutine model handles concurrent connections efficiently (C10k pattern)
+- Context-based timeouts prevent goroutine leaks
+- LRU connection pooling reduces latency via connLRU
+
+**Negative:**
+- Domain allowlist requires custom sync.RWMutex implementation
+- Audit logging requires structured logging wrapper (log/slog)
+- No built-in Prometheus metrics (must add expvar/prometheus)
+- Requires maintenance as Go stdlib evolves
+
+**Mitigation:**
+- Implement allowlist as map[string]bool with file-based hot-reload
+- Use log/slog for JSON-structured logs compatible with log aggregation
+- Add metrics endpoint using expvar
+- Document Go version upgrade procedures
+
+---
+
+### ADR-017: Cross-Platform Credential Vault Abstraction
+
+**Status:** Accepted  
+**Date:** 2026-02-08
+
+**Context:**
+OpenKraken requires secure credential storage using OS-level vaults. Research identified three platform-specific solutions and cross-platform library options.
+
+**Alternatives Considered:**
+
+| Option | macOS | Linux | Bun Compatible | Maintenance |
+|--------|-------|-------|----------------|-------------|
+| **cross-keychain** | Keychain | Secret Service | Yes | Active (2025) |
+| **node-keytar** | Keychain | Secret Service | Partial | Archived (2022) |
+| **Custom FFI** | Security.framework | libsecret | Yes | High effort |
+| **node-keytar** fork | Keychain | Secret Service | Yes | Active |
+
+**Decision:**
+Implement `cross-keychain` for credential vault abstraction with custom platform-specific wrappers as fallback.
+
+**Implementation Architecture:**
+```typescript
+// src/infrastructure/credential-vault.ts
+
+interface CredentialVault {
+  getPassword(service: string, account: string): Promise<string | null>;
+  setPassword(service: string, account: string, password: string): Promise<void>;
+  deletePassword(service: string, account: string): Promise<boolean>;
+}
+
+class CrossPlatformVault implements CredentialVault {
+  private platformVault: PlatformVault;
+  
+  constructor() {
+    if (process.platform === "darwin") {
+      this.platformVault = new MacOSKeychainVault();
+    } else if (process.platform === "linux") {
+      this.platformVault = new LinuxSecretServiceVault();
+    } else {
+      this.platformVault = new FallbackVault();
+    }
+  }
+}
+```
+
+**macOS Keychain (kSecClassGenericPassword):**
+```swift
+import Security
+
+class MacOSKeychainVault {
+  private let service = "com.openkraken"
+  
+  func getPassword(account: String) throws -> String? {
+    let query: [String: Any] = [
+      kSecClass as String: kSecClassGenericPassword,
+      kSecAttrService as String: service,
+      kSecAttrAccount as String: account,
+      kSecReturnData as String: true,
+      kSecMatchLimit as String: kSecMatchLimitOne,
+    ]
+    
+    var result: AnyObject?
+    let status = SecItemCopyMatching(query as CFDictionary, &result)
+    return status == errSecSuccess ? String(data: result as! Data, encoding: .utf8) : nil
+  }
+}
+```
+
+**Linux Secret Service (org.freedesktop.Secrets):**
+```typescript
+// Uses D-Bus to communicate with GNOME Keyring, KWallet, or pass
+class LinuxSecretServiceVault {
+  async getPassword(service: string, account: string): Promise<string | null> {
+    const collection = await this.service.getDefaultCollection();
+    const items = await collection.getItems();
+    
+    for (const item of items) {
+      const attrs = await item.getAttributes();
+      if (attrs.service === service && attrs.account === account) {
+        return await item.getSecret();
+      }
+    }
+    return null;
+  }
+}
+```
+
+**Consequences:**
+
+**Positive:**
+- Unified API across platforms via cross-keychain
+- Keychain Services API provides encryption via Secure Enclave
+- Secret Service API works with GNOME Keyring, KWallet, pass
+- cross-keychain actively maintained (2025)
+
+**Negative:**
+- Native FFI required for Linux (libsecret dependency)
+- macOS requires Keychain Access Groups configuration
+- D-Bus session bus required on Linux
+- No single cross-platform binary
+
+**Mitigation:**
+- Package libsecret dependency in Nix/Devenv for Linux
+- Document Keychain Access Groups in deployment guide
+- Implement graceful degradation when vaults unavailable
+- Add environment variable fallback for development
+
+---
+
+### ADR-018: SvelteKit + LangChain SSE Streaming Integration
+
+**Status:** Accepted  
+**Date:** 2026-02-08
+
+**Context:**
+OpenKraken's Web UI requires real-time streaming of LangChain agent responses. Research identified SSE (Server-Sent Events) as the optimal pattern for LangChain + SvelteKit integration.
+
+**Decision:**
+Implement LangChain response streaming via SSE pattern in SvelteKit API routes.
+
+**Server Implementation:**
+```typescript
+// src/routes/api/agent/+server.ts
+import { langChainAgent } from "@/orchestrator/agent";
+
+export async function POST({ request }) {
+  const { messages, threadId } = await request.json();
+  
+  const stream = new ReadableStream({
+    async start(controller) {
+      const encoder = new TextEncoder();
+      
+      try {
+        for await (const chunk of langChainAgent.stream(
+          messages,
+          { configurable: { thread_id: threadId } }
+        )) {
+          const data = JSON.stringify({ chunk });
+          controller.enqueue(encoder.encode(`data: ${data}\n\n`));
+        }
+        controller.enqueue(encoder.encode(`data: [DONE]\n\n`));
+        controller.close();
+      } catch (error) {
+        controller.error(error);
+      }
+    },
+  });
+  
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+    },
+  });
+}
+```
+
+**Client Consumption:**
+```svelte
+<script lang="ts">
+  let messages = $state([]);
+  
+  async function sendMessage(content: string) {
+    const response = await fetch("/api/agent", {
+      method: "POST",
+      body: JSON.stringify({ messages: [...messages, { role: "user", content }] }),
+    });
+    
+    const reader = response.body?.getReader();
+    const decoder = new TextDecoder();
+    
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      
+      const chunk = decoder.decode(value);
+      const data = chunk.split("\n\n")[0].replace("data: ", "");
+      if (data !== "[DONE]") {
+        const { chunk: text } = JSON.parse(data);
+        messages[messages.length - 1].content += text;
+      }
+    }
+  }
+</script>
+```
+
+**Consequences:**
+
+**Positive:**
+- SSE works with any SvelteKit adapter (Bun, Node, Edge)
+- Automatic reconnection in browsers
+- Simple text-based protocol
+- Works with Bun runtime
+
+**Negative:**
+- SSE is unidirectional (server → client only)
+- Lower throughput than WebSocket
+- No native binary frame support
+- Requires custom parsing on client
+
+**Mitigation:**
+- Use for agent response streaming (unidirectional fits use case)
+- Implement client-side chunk aggregation
+- Add heartbeat for connection health monitoring
+
+---
+
+### ADR-019: Anthropic Sandbox Runtime Chained Proxy Architecture
+
+**Status:** Accepted  
+**Date:** 2026-02-08
+
+**Context:**
+Research confirmed Anthropic Sandbox Runtime provides OS-level isolation via bubblewrap (Linux) and sandbox-exec (macOS). The sandbox includes built-in HTTP and SOCKS5 proxy servers with domain allowlisting capability.
+
+**Decision:**
+Implement chained proxy architecture: Anthropic Sandbox Runtime proxy → Go Egress Gateway proxy.
+
+**Architecture Pattern (from research):**
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    OpenKraken Orchestrator                   │
+│                      (Bun Runtime)                          │
+└─────────────────────────┬───────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│              Anthropic Sandbox Runtime                        │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │ bubblewrap (Linux) / sandbox-exec (macOS)          │    │
+│  │                                                     │    │
+│  │ Network Isolation: --unshare-net                    │    │
+│  │ Filesystem: --bind-mount, --read-only              │    │
+│  │ Seccomp Filters: Pre-compiled BPF binaries          │    │
+│  └─────────────────────────────────────────────────────┘    │
+│                          │                                  │
+│              HTTP Proxy (port 3128)                         │
+│              SOCKS5 Proxy (port 1080)                       │
+└─────────────────────────┬───────────────────────────────────┘
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│                  Go Egress Gateway                           │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │ HTTP CONNECT Proxy with Domain Allowlist             │    │
+│  │                                                     │    │
+│  │ Audit Logging: Structured JSON via log/slog         │    │
+│  │ Allowlist: sync.RWMutex map[string]bool             │    │
+│  │ Timeouts: CONNECT (10s), Tunnel (5m)                │    │
+│  └─────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Sandbox Configuration:**
+```typescript
+import { Sandbox } from "@anthropic-ai/sandbox-runtime";
+
+const sandbox = await Sandbox.create({
+  // Linux: bubblewrap options
+  // macOS: sandbox-exec profile (auto-generated)
+  
+  httpProxyPort: 3128,
+  socksProxyPort: 1080,
+  
+  allowedDomains: ["*.anthropic.com", "api.openai.com"],
+  
+  env: {
+    HTTP_PROXY: "http://localhost:3128",
+    HTTPS_PROXY: "http://localhost:3128",
+    NO_PROXY: "localhost,127.0.0.1",
+  },
+});
+```
+
+**Consequences:**
+
+**Positive:**
+- Defense-in-depth: Two independent proxy enforcement layers
+- Sandbox handles OS-level isolation (namespaces, syscalls)
+- Go proxy provides structured audit logging
+- Domain allowlist can be updated without sandbox restart
+
+**Negative:**
+- Two proxy hops add negligible latency (single-tenant)
+- More complex configuration
+- Requires both components healthy
+
+**Mitigation:**
+- Monitor both proxy health endpoints
+- Graceful degradation if Go proxy unavailable
+- Configuration validation at startup
+
+---
+
+### ADR-020: Cross-Platform Service Management Strategy
+
+**Status:** Accepted  
+**Date:** 2026-02-08
+
+**Context:**
+Research confirmed that OpenKraken requires native service management for production deployment on Linux (systemd) and macOS (launchd). The project has a critical gap: no systemd/launchd generation in Devenv (per ADR-009). Bun runtime limitations prevent native sdnotify support and socket activation patterns. Security hardening differs significantly between platforms—systemd provides namespace isolation while launchd relies on sandbox profiles.
+
+**Decision:**
+Implement dual-platform configuration generation with a canonical TypeScript schema and platform-specific template functions. Avoid generic cross-platform abstraction libraries that normalize away security differences.
+
+**Architecture Pattern (from research):**
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Canonical ServiceConfig                      │
+│                 (TypeScript Schema Interface)                   │
+└───────────────────────────┬─────────────────────────────────────┘
+                            │
+              ┌─────────────┴─────────────┐
+              ▼                           ▼
+┌─────────────────────────┐   ┌─────────────────────────┐
+│   systemd Generator     │   │   launchd Generator     │
+│   (.service file)       │   │   (.plist file)         │
+├─────────────────────────┤   ├─────────────────────────┤
+│ Namespace Isolation     │   │ Sandbox Profiles        │
+│ Capability Bounding     │   │ Entitlement Files       │
+│ Resource Controls       │   │ Resource Limits         │
+│ NoNewPrivileges=true   │   │ KeepAlive               │
+│ ProtectSystem=strict   │   │ RunAtLoad               │
+└─────────────────────────┘   └─────────────────────────┘
+              │                           │
+              ▼                           ▼
+┌─────────────────────────┐   ┌─────────────────────────┐
+│ /etc/systemd/system/     │   │ ~/Library/LaunchAgents/  │
+│ openkraken.service      │   │ com.openkraken.agent    │
+└─────────────────────────┘   └─────────────────────────┘
+```
+
+**ServiceConfig TypeScript Schema (from research):**
+```typescript
+export interface ServiceConfig {
+  name: string;
+  description: string;
+  executable: string;
+  args: string[];
+  user: string;
+  group: string;
+  workingDirectory: string;
+  environment: Record<string, string>;
+  ports: number[];
+  logDirectory: string;
+  dataDirectory: string;
+  restartPolicy: "always" | "on-failure" | "no";
+  timeout: {
+    start: number;
+    stop: number;
+  };
+  resources: {
+    memoryMax: string;
+    cpuQuota: number;
+    maxFiles: number;
+    maxProcesses: number;
+  };
+  security: {
+    privateTmp: boolean;
+    protectSystem: boolean;
+    protectHome: boolean;
+    noNewPrivileges: boolean;
+    readOnlyPaths: string[];
+    readWritePaths: string[];
+  };
+}
+
+export const defaultConfig: ServiceConfig = {
+  name: "openkraken",
+  description: "OpenKraken Deterministic Agent Runtime",
+  executable: "/usr/local/bin/openkraken",
+  args: ["start"],
+  user: "openkraken",
+  group: "openkraken",
+  workingDirectory: "/var/lib/openkraken",
+  environment: {
+    OPENKRAKEN_HOME: "/var/lib/openkraken",
+    OPENKRAKEN_ENV: "production"
+  },
+  ports: [3000],
+  logDirectory: "/var/log/openkraken",
+  dataDirectory: "/var/lib/openkraken",
+  restartPolicy: "on-failure",
+  timeout: {
+    start: 60,
+    stop: 30
+  },
+  resources: {
+    memoryMax: "1G",
+    cpuQuota: 50,
+    maxFiles: 1024,
+    maxProcesses: 100
+  },
+  security: {
+    privateTmp: true,
+    protectSystem: true,
+    protectHome: true,
+    noNewPrivileges: true,
+    readOnlyPaths: ["/usr", "/boot", "/etc"],
+    readWritePaths: ["/var/lib/openkraken", "/var/log/openkraken"]
+  }
+};
+```
+
+**systemd Unit Configuration (from research):**
+```ini
+[Unit]
+Description=OpenKraken Deterministic Agent Runtime
+Documentation=https://github.com/openkraken/core
+After=network.target
+Wants=network.target
+
+[Service]
+Type=notify
+RuntimeDirectory=openkraken
+RuntimeDirectoryMode=0755
+StateDirectory=openkraken
+ConfigurationDirectory=openkraken
+WorkingDirectory=/var/lib/openkraken
+
+User=openkraken
+Group=openkraken
+
+Environment=OPENKRAKEN_HOME=/var/lib/openkraken
+Environment=OPENKRAKEN_ENV=production
+
+ExecStart=/usr/local/bin/openkraken start
+ExecStop=/usr/local/bin/openkraken stop
+ExecReload=/bin/kill -HUP $MAINPID
+
+Restart=on-failure
+RestartSec=5
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+DevicePolicy=closed
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectControlGroups=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=true
+RestrictSUIDSGID=true
+MemoryDenyWriteExecute=true
+LockPersonality=true
+ReadOnlyPaths=/usr /boot /etc
+ReadWritePaths=/var/lib/openkraken /var/log/openkraken /run
+
+# Resource limits
+MemoryMax=1G
+MemoryHigh=800M
+CPUQuota=50%
+TasksMax=100
+LimitNOFILE=1024
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=openkraken
+
+# Shutdown
+TimeoutStopSec=30
+SendSIGKILL=no
+
+[Install]
+WantedBy=multi-user.target
+```
+
+**launchd Plist Configuration (from research):**
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.openkraken.agent</string>
+    
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/openkraken</string>
+        <string>start</string>
+    </array>
+    
+    <key>WorkingDirectory</key>
+    <string>/var/db/openkraken</string>
+    
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>OPENKRAKEN_HOME</key>
+        <string>/var/db/openkraken</string>
+        <key>OPENKRAKEN_ENV</key>
+        <string>production</string>
+    </dict>
+    
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    
+    <key>RunAtLoad</key>
+    <true/>
+    
+    <key>ExitTimeOut</key>
+    <integer>30</integer>
+    
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>1024</integer>
+        <key>NumberOfProcesses</key>
+        <integer>100</integer>
+        <key>ResidentSetSize</key>
+        <integer>1073741824</integer>
+    </dict>
+    
+    <key>StandardOutPath</key>
+    <string>/var/db/openkraken/logs/stdout.log</string>
+    
+    <key>StandardErrorPath</key>
+    <string>/var/db/openkraken/logs/stderr.log</string>
+    
+    <key>UserName</key>
+    <string>openkraken</string>
+</dict>
+</plist>
+```
+
+**Bun Signal Handler for Graceful Shutdown (from research):**
+```typescript
+// src/signals.ts
+import { server } from "./server";
+import { db } from "./db";
+import { agent } from "./agent";
+
+let isShuttingDown = false;
+
+export function setupSignalHandlers(): void {
+  process.on("SIGTERM", handleShutdown);
+  process.on("SIGINT", handleShutdown);
+  process.on("SIGHUP", handleReload);
+}
+
+async function handleShutdown(signal: string): Promise<void> {
+  if (isShuttingDown) {
+    console.log(`Received ${signal} again, exiting immediately`);
+    process.exit(1);
+  }
+  
+  isShuttingDown = true;
+  console.log(`Received ${signal}, starting graceful shutdown`);
+  
+  try {
+    // Stop accepting new connections
+    console.log("Closing HTTP server...");
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+    
+    // Complete in-flight requests with timeout
+    console.log("Waiting for in-flight requests to complete...");
+    await Promise.race([
+      waitForIdle(10000),
+      delay(10000)
+    ]);
+    
+    // Close database connections
+    console.log("Closing database connections...");
+    await db.close();
+    
+    // Save agent state
+    console.log("Saving agent state...");
+    await agent.saveState();
+    
+    console.log("Graceful shutdown complete");
+    process.exit(0);
+  } catch (error) {
+    console.error("Error during shutdown:", error);
+    process.exit(1);
+  }
+}
+
+function waitForIdle(timeoutMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    const checkInterval = setInterval(() => {
+      if (server.getConnections() === 0) {
+        clearInterval(checkInterval);
+        resolve();
+      }
+    }, 100);
+    
+    setTimeout(() => {
+      clearInterval(checkInterval);
+      resolve();
+    }, timeoutMs);
+  });
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+```
+
+**NixOS Module Integration (from research):**
+```nix
+{ config, lib, pkgs, ... }:
+let
+  cfg = config.services.openkraken;
+in
+{
+  options.services.openkraken = {
+    enable = lib.mkEnableOption "OpenKraken agent runtime";
+    package = lib.mkOption {
+      type = lib.types.path;
+      default = ../package.nix;
+      description = "OpenKraken package to use";
+    };
+    user = lib.mkOption {
+      type = lib.types.str;
+      default = "openkraken";
+      description = "User to run OpenKraken as";
+    };
+    dataDir = lib.mkOption {
+      type = lib.types.path;
+      default = "/var/lib/openkraken";
+      description = "Data directory for OpenKraken state";
+    };
+    port = lib.mkOption {
+      type = lib.types.port;
+      default = 3000;
+      description = "Port for OpenKraken HTTP interface";
+    };
+  };
+
+  config = lib.mkIf cfg.enable {
+    users.users.openkraken = lib.mkIf (cfg.user == "openkraken") {
+      isSystemUser = true;
+      group = "openkraken";
+      home = cfg.dataDir;
+    };
+    
+    users.groups.openkraken = {};
+    
+    systemd.services.openkraken = {
+      description = "OpenKraken Deterministic Agent Runtime";
+      after = [ "network.target" ];
+      wants = [ "network.target" ];
+      
+      serviceConfig = {
+        Type = "notify";
+        RuntimeDirectory = "openkraken";
+        StateDirectory = "openkraken";
+        ConfigurationDirectory = "openkraken";
+        User = cfg.user;
+        Group = "openkraken";
+        WorkingDirectory = cfg.dataDir;
+        
+        Environment = [
+          "OPENKRAKEN_HOME=${cfg.dataDir}"
+          "OPENKRAKEN_PORT=${toString cfg.port}"
+        ];
+        
+        ExecStart = "${cfg.package}/bin/openkraken start";
+        ExecStop = "${cfg.package}/bin/openkraken stop";
+        
+        Restart = "on-failure";
+        RestartSec = 5;
+        
+        # Security hardening
+        NoNewPrivileges = true;
+        PrivateTmp = true;
+        ProtectSystem = "strict";
+        ProtectHome = "read-only";
+        ReadWritePaths = "${cfg.dataDir} /var/log/openkraken";
+        
+        # Resource limits
+        MemoryMax = "1G";
+        MemoryHigh = "800M";
+        CPUQuota = "50%";
+        
+        # Logging
+        StandardOutput = "journal";
+        StandardError = "journal";
+        SyslogIdentifier = "openkraken";
+        
+        # Shutdown
+        TimeoutStopSec = 30;
+      };
+    };
+    
+    environment.systemPackages = [ cfg.package ];
+  };
+}
+```
+
+**Installation Script Pattern (from research):**
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+detect_platform() {
+  case "$(uname -s)" in
+    Linux*)
+      if command -v systemctl &> /dev/null; then
+        echo "systemd"
+      else
+        echo "sysvinit"
+      fi
+      ;;
+    Darwin*)
+      echo "launchd"
+      ;;
+    *)
+      echo "unsupported"
+      ;;
+  esac
+}
+
+install_systemd() {
+  local service_file="$1"
+  local unit_path="/etc/systemd/system/openkraken.service"
+  
+  echo "Installing systemd service to ${unit_path}..."
+  sudo cp "$service_file" "$unit_path"
+  sudo chmod 644 "$unit_path"
+  
+  echo "Reloading systemd daemon..."
+  sudo systemctl daemon-reload
+  
+  echo "Enabling OpenKraken service..."
+  sudo systemctl enable openkraken.service
+  
+  echo "Starting OpenKraken service..."
+  sudo systemctl start openkraken.service
+}
+
+install_launchd() {
+  local plist_file="$1"
+  local plist_path="$HOME/Library/LaunchAgents/com.openkraken.agent.plist"
+  
+  echo "Installing launchd plist to ${plist_path}..."
+  cp "$plist_file" "$plist_path"
+  chmod 644 "$plist_path"
+  
+  echo "Loading OpenKraken launch agent..."
+  launchctl load "$plist_path"
+  
+  echo "Starting OpenKraken..."
+  launchctl start com.openkraken.agent
+}
+
+main() {
+  local platform
+  platform=$(detect_platform)
+  
+  case "$platform" in
+    systemd)
+      install_systemd "./service/openkraken.service"
+      ;;
+    launchd)
+      install_launchd "./service/openkraken.plist"
+      ;;
+    sysvinit)
+      echo "ERROR: sysvinit not supported. Use systemd or migrate to a supported platform."
+      exit 1
+      ;;
+    unsupported)
+      echo "ERROR: Unsupported platform: $(uname -s)"
+      exit 1
+      ;;
+  esac
+  
+  echo "OpenKraken installed and running successfully!"
+}
+
+main "$@"
+```
+
+**Consequences:**
+
+**Positive:**
+- Native security hardening on each platform (namespace isolation on Linux, sandbox profiles on macOS)
+- Full control over platform-specific features
+- No abstraction library overhead or compatibility issues
+- Clear separation of concerns between platform layers
+
+**Negative:**
+- Requires maintaining two configuration formats
+- Some security features not portable between platforms
+- Manual platform detection required in installation scripts
+- Bun runtime limitations prevent systemd Type=notify startup notification
+
+**Mitigation:**
+- Use canonical TypeScript schema to generate both formats
+- Document security differences between platforms
+- Implement graceful shutdown via signal handlers (SIGTERM/SIGINT)
+- Use Type=simple with manual readiness signaling for Bun
+
+**References:**
+- systemd.service man page: https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html
+- launchd.plist documentation: https://www.launchd.info/
+- Bun OS signals: https://bun.com/docs/guides/process/os-signals
+- NixOS Wiki Systemd/Hardening: https://wiki.nixos.org/wiki/Systemd/Hardening
+- Cross-platform service abstraction patterns: https://github.com/cross-org/service
 
 ---
 
@@ -4672,6 +5964,305 @@ extra_nix_config:
 
 ---
 
+## A. Research Findings Summary (v2.1.0)
+
+This appendix summarizes findings from comprehensive technology research conducted via Librarian CLI (15/16 agents successful) and web research (3/3 credential vault searches).
+
+### A.1 Swarm Research Results
+
+| Phase | Technologies | Success Rate | Key Findings |
+|-------|--------------|--------------|--------------|
+| 1: Core Orchestration | Bun Runtime, LangChain.js/LangGraph | 100% | bun:sqlite 3-6x faster; Bun FFI experimental |
+| 2: Security & Isolation | Anthropic Sandbox, Go HTTP CONNECT | 100% | Sandbox proxy chaining confirmed; Go allowlist NOT in stdlib |
+| 3: UI & Observability | SvelteKit, OpenTUI, Langfuse, OTel | 100% | SvelteKit OTel partial; OpenTUI missing HTTP client |
+| 4: Infrastructure | Nix/Devenv, CUE | 100% | ADR-020: Cross-Platform Service Management Strategy accepted |
+| 5: Integration | grammY, Skills CLI, Agent Browser | 100% | Skills CLI missing approval workflow |
+| 6: Credential Vaults | macOS Keychain, Linux Secret Service, cross-keychain | Web research | cross-keychain recommended (2025) |
+
+### A.2 Critical Implementation Gaps
+
+| Gap | ADR | Impact | Recommendation |
+|-----|-----|--------|----------------|
+| ~~Systemd/Launchd Generation~~ | ~~ADR-009~~ | ~~HIGH~~ | ~~Build custom Nix module for service generation~~ (RESOLVED: ADR-020 accepted) |
+| Go Domain Allowlist | ADR-016 | HIGH | Implement sync.RWMutex map[string]bool with file hot-reload |
+| Go Audit Logging | ADR-016 | HIGH | Use log/slog for structured JSON |
+| Skills Owner Approval | ADR-013 | HIGH | Implement pre-install approval workflow |
+| Skills Content Validation | ADR-013 | HIGH | Integrate security pipeline scanning |
+| OpenTUI HTTP Client | ADR-006 | MEDIUM | Build custom HTTP client wrapper |
+| Bun/LangChain Compatibility | ADR-001 | MEDIUM | Test and document edge cases |
+| Langfuse @langfuse/otel Node-only | ADR-012 | LOW | Use @langfuse/client instead |
+
+### A.3 Platform-Specific Implementation Details
+
+#### A.3.1 Anthropic Sandbox Runtime (from research)
+
+**Linux (bubblewrap):**
+```typescript
+const sandbox = await Sandbox.create({
+  // Process isolation
+  unshareNet: true,
+  unsharePid: true,
+  
+  // Network proxy
+  httpProxyPort: 3128,
+  socksProxyPort: 1080,
+  
+  // Filesystem
+  bindMounts: ["/data:rw", "/etc:ro"],
+});
+```
+
+**macOS (sandbox-exec):**
+```typescript
+// Auto-generated Seatbelt profile from config
+const profile = `
+(version 1)
+(allow default)
+(deny network*)
+(allow network http-proxy://localhost:3128)
+(allow network socks5-proxy://localhost:1080)
+`;
+```
+
+**Chained Proxy Architecture:**
+```
+Orchestrator → Sandbox HTTP (3128) → Go Egress (allowlist, audit) → Internet
+              ↘ Sandbox SOCKS (1088) ─────────────────────┘
+```
+
+#### A.3.2 Go HTTP CONNECT Proxy (from research)
+
+**Core API (net/http stdlib):**
+```go
+// Client-side CONNECT (transport.go)
+func (t *Transport) dialConn(ctx context.Context, cm connectMethod) (*persistConn, error) {
+    // CONNECT request to proxy
+    // TLS upgrade
+    // Return persistConn for request/response
+}
+
+// Server-side CONNECT (server.go via Hijacker)
+func (s *Server) Serve(l net.Listener) error {
+    for {
+        conn, _ := l.Accept()
+        go s.handleConnect(conn)
+    }
+}
+```
+
+**Performance Characteristics:**
+- Dual goroutine per connection (readLoop/writeLoop)
+- bufio.NewReaderSize 32KB (default 4KB too small)
+- connLRU for connection pooling
+- io.ReaderFrom zero-copy for file transfers
+
+#### A.3.3 Credential Vaults (from web research)
+
+**macOS Keychain:**
+```swift
+// kSecClassGenericPassword for API keys
+let query: [String: Any] = [
+    kSecClass as String: kSecClassGenericPassword,
+    kSecAttrService as String: "com.openkraken",
+    kSecAttrAccount as String: "anthropic-api-key",
+    kSecReturnData as String: true,
+];
+```
+
+**Linux Secret Service:**
+```typescript
+// org.freedesktop.Secrets via D-Bus
+import { SecretService } from "libsecret-service";
+
+const service = new SecretService(sessionBus);
+const collection = await service.getDefaultCollection();
+const item = await collection.createItem(
+    "anthropic-api-key",
+    { service: "openkraken", account: "anthropic" },
+    secret
+);
+```
+
+**cross-keychain Recommendation:**
+```json
+{
+  "dependencies": {
+    "cross-keychain": "^1.1.0"
+  }
+}
+```
+
+#### A.3.4 SvelteKit + LangChain Streaming (from research)
+
+**SSE Implementation:**
+```typescript
+// Server: SSE with chunked encoding
+export async function POST({ request }) {
+    const stream = new ReadableStream({
+        start(controller) {
+            for await (const chunk of agent.stream(messages)) {
+                controller.enqueue(`data: ${JSON.stringify(chunk)}\n\n`);
+            }
+            controller.enqueue(`data: [DONE]\n\n`);
+            controller.close();
+        },
+    });
+    return new Response(stream, { headers: { "Content-Type": "text/event-stream" } });
+}
+
+// Client: SSE consumption
+const reader = response.body.getReader();
+const decoder = new TextDecoder();
+while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const line = decoder.decode(value);
+    // Parse "data: {...}\n\n"
+}
+```
+
+### A.4 Nix + Devenv Critical Findings
+
+**CRITICAL - Service Generation Gap:**
+```nix
+# WARNING: Devenv does NOT generate systemd units or launchd plists
+# Devenv uses runtime socket activation: LISTEN_FDS, LISTEN_PID
+
+# Required: Custom Nix module
+systemd.services = lib.mapAttrs' (name: proc:
+    lib.nameValuePair "openkraken-${name}" {
+        Service.ExecStart = proc.exec;
+    }
+) config.devenv.processes;
+```
+
+**Cross-Platform Build Matrix:**
+```nix
+flake-utils.lib.eachSystem [
+    "x86_64-linux"
+    "aarch64-linux"
+    "x86_64-darwin"
+    "aarch64-darwin"
+] (system: { /* ... */ })
+```
+
+**Go Cross-Compilation:**
+```nix
+pkgs.buildGoModule {
+    overrideAttrs = (old: {
+        GOOS = if pkgs.stdenv.isDarwin then "darwin" else "linux";
+        GOARCH = if pkgs.stdenv.isAarch64 then "arm64" else "amd64";
+    });
+}
+```
+
+### A.5 LangChain.js Integration Details
+
+**createAgent() API:**
+```typescript
+// libs/langchain/src/agents/index.ts
+interface CreateAgentOptions {
+    model: LanguageModelLike;
+    tools: Tool[];
+    systemPrompt?: string;
+    responseFormat?: ZodSchema;
+    stateSchema?: Record<string, unknown>;
+    contextSchema?: Record<string, unknown>;
+    middleware?: Middleware[];
+    checkpointer?: BaseCheckpointSaver;
+    store?: BaseStore;
+    version?: "v1" | "v2";
+}
+```
+
+**SqliteSaver Checkpointer:**
+```typescript
+// @langchain/community checkpointer
+import { SqliteSaver } from "@langchain/community/checkpointers/sqlite";
+
+const checkpointer = new SqliteSaver({
+    tableName: "agent_checkpoints",
+    dbPath: "./data/openkraken.db",
+});
+```
+
+**MultiServerMCPClient:**
+```typescript
+// @langchain/mcp-adapters connection types
+type ConnectionType = "stdio" | "streamable_http" | "sse";
+
+const client = new MultiServerMCPClient({
+    mcpServers: {
+        filesystem: {
+            command: "npx",
+            args: ["@modelcontextprotocol/server-filesystem", "/data"],
+        },
+    },
+});
+```
+
+### A.6 CUE Validation Implementation
+
+**Schema Definition:**
+```cue
+// config.cue
+#AppConfig: {
+    name: string
+    version: string
+    sandbox: {
+        httpPort: int & >=1 & <=65535
+        socksPort: int & >=1 & <=65535
+        allowedDomains: [...string]
+    }
+}
+```
+
+**Commands:**
+| Command | Purpose |
+|---------|---------|
+| `cue vet` | Validate config.yaml against schema |
+| `cue def` | Print consolidated definitions |
+| `cue export` | Export to JSON/YAML |
+| `cue import jsonschema` | Import existing JSON Schema |
+
+### A.7 Vercel Agent Browser Integration
+
+**Client-Daemon Architecture:**
+```bash
+# CLI → Daemon (Node.js) → Browser (Playwright CDP)
+agent-browser launch --profile ephemeral
+agent-browser goto "https://example.com"
+agent-browser screenshot --out output.png
+```
+
+**Sandbox Integration:**
+```typescript
+// Daemon runs inside sandbox, exposes Unix socket
+const daemon = spawn("bun", ["daemon.ts"], {
+    stdio: "inherit",
+    env: { ...sandboxEnv, SOCKET_PATH: "/tmp/browser.sock" },
+});
+```
+
+**Session Isolation:**
+- Unique socket paths per session
+- Ephemeral profiles for single-use
+- Storage state import/export for persistence
+- Automatic cleanup on session termination
+
+### A.8 Documentation Gaps Identified
+
+| Technology | Gap | Action |
+|------------|-----|--------|
+| ~~Nix/Devenv~~ | ~~No systemd/launchd generation docs~~ | ~~Build custom module~~ (RESOLVED: ADR-020) |
+| Bun/LangChain | No explicit Bun compatibility docs | Test in staging |
+| OpenTUI | No HTTP client integration patterns | Build wrapper |
+| Skills CLI | No Owner approval workflow docs | Implement from scratch |
+| Langfuse | @langfuse/otel Node-only not documented | Use @langfuse/client |
+| OTel | LLM conventions in separate repo | Reference semantic-conventions |
+
+---
+
 ## 10. Appendix: Version History
 
 | Version | Date | Author | Changes |
@@ -4687,4 +6278,6 @@ extra_nix_config:
 | 1.8.0 | 2026-02-07 | Principal Software Engineer | Added §8.4 Encryption Key Management Lifecycle (HKDF key derivation, vault storage, rotation procedure); §8.5 Backup and Disaster Recovery (three-component strategy, recovery matrix); §8.6 CLI/Web UI Authentication (vault-stored static token). Added alerting configuration to §6.2. Removed HITL approval timeout (Checkpointer persists indefinitely). |
 | 1.9.0 | 2026-02-07 | Principal Software Engineer | **Structural fixes**: Removed duplicate Skill Schema Section (3.7); Removed malformed OpenAPI YAML duplicate event types; Removed duplicate YAML block in Request Schema. **Content updates**: Added concrete Langfuse v4 CallbackHandler implementation (§5.8); Clarified middleware stack responsibilities - Policy Middleware (rate limits, content scanning) vs PII Middleware (§5.5); Documented RMM (Reflective Memory Management) Middleware definition (§3.3); Added devenv-managed monorepo structure (§5.1); Standardized SQLite UUID type annotations across all ERDs (§3.x). |
 | 2.0.0 | 2026-02-07 | Principal Software Engineer | **Major Nix/Devenv Integration**: Fixed invalid process orchestration syntax (replaced depends_on with task-based before dependencies); Added Scripts vs Tasks distinction with comparison table; Added enterTest pattern for test environment setup; Updated Section 1.5 Stack Specification with devenv, direnv, git, just versions; Added ADR-009 (devenv over Docker Compose); Added Section 1.7 SBOM Generation & 2026 Regulatory Compliance with CRA, PCI DSS, FDA requirements; Added Section 9.3 CI/CD Strategy with GitHub Actions, Garnix, and Cachix integration; Added direnv auto-activation example; Added devenv maintenance commands (update, gc, info); Updated devenv.yaml with version pinning patterns; Added Nix version clarification (2.31.2 current / 2.33.2 latest). |
+| 2.1.0 | 2026-02-08 | Principal Software Engineer | **Research-Enhanced TechSpec**: Incorporated 16-agent swarm research findings; Enhanced §1.1 Core Runtime with Bun/Go API surfaces and warnings; Added §1.1.1 Bun Integration Patterns; Added §1.2.1 LangChain createAgent() implementation; Added §1.5.1 Nix/Devenv patterns with critical systemd/launchd gap warning; Added ADR-016 (Go HTTP CONNECT), ADR-017 (Credential Vaults), ADR-018 (SvelteKit SSE), ADR-019 (Sandbox Chained Proxy); Enhanced ADR-010 (CUE) with concrete schema examples; Enhanced ADR-013 (Skills CLI) with approval workflow gaps; Added Appendix A Research Findings Summary with platform-specific details. |
+| 2.2.0 | 2026-02-08 | Principal Software Engineer | **Cross-Platform Service Management**: Added ADR-020 (Service Management Strategy) with dual-platform generation pattern; Implemented systemd unit configuration with full security hardening (NoNewPrivileges, ProtectSystem, MemoryDenyWriteExecute); Implemented launchd plist with resource limits and KeepAlive; Added Bun signal handler for graceful shutdown (SIGTERM/SIGINT); Added NixOS module integration; Added installation script patterns with platform detection; Marked systemd/launchd generation gap as resolved.
 
