@@ -4,6 +4,13 @@
 
 version: "3.5"
 
-processes: {}
+processes:
+  orchestrator:
+    command: "bun run src/main.ts"
+    working_dir: "packages/orchestrator"
+    environment:
+      - ORCHESTRATOR_PORT=3000
+      - DATABASE_PATH=./storage/data/openkraken.db
+      - SANDBOX_PATH=./storage/sandbox
 
 services: {}
