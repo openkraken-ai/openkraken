@@ -1,16 +1,41 @@
-# Minimal process-compose configuration for local development
-# This satisfies the devenv process-compose requirement while allowing
-# the development environment to function without actual services
+# Process-compose configuration for OpenKraken local development
+# Basic process definitions only - startup coordination handled by devenv tasks
 
 version: "3.5"
 
 processes:
+  egress-gateway:
+    command: "go run ./src"
+    working_dir: "packages/egress-gateway"
+    environment:
+      - EGRESS_GATEWAY_PORT=3001
+      - EGRESS_SOCKET_PATH=/tmp/openkraken-egress.sock
+    health_check:
+      test: ["curl", "-f", "http://localhost:3001/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    shutdown: "SIGINT"
+    logs:
+      prefix: "egress-gateway"
+
   orchestrator:
     command: "bun run src/main.ts"
     working_dir: "packages/orchestrator"
     environment:
       - ORCHESTRATOR_PORT=3000
+      - EGRESS_GATEWAY_URL=unix:///tmp/openkraken-egress.sock
       - DATABASE_PATH=./storage/data/openkraken.db
       - SANDBOX_PATH=./storage/sandbox
+    health_check:
+      test: ["curl", "-f", "http://localhost:3000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+    shutdown: "SIGINT"
+    logs:
+      prefix: "orchestrator"
 
 services: {}
