@@ -1,12 +1,13 @@
 { pkgs, lib, config, ... }:
 {
-  # Common packages for all packages (including nix-tree for dependency visualization)
+  # Common packages for all packages
   packages = with pkgs; [
     git
     jq
     just # Command runner
     parallel # Parallel execution
-    nix-tree # Interactive Nix store dependency graph viewer
+    fd # Fast file finder
+    ripgrep # Fast line-oriented search
   ];
 
   # Pre-commit hooks
