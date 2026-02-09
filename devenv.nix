@@ -1,15 +1,12 @@
 { pkgs, lib, config, ... }:
 
 {
-  # Import shared configuration
-  imports = [ ./packages/shared/devenv.nix ];
+  # Import shared configuration and services
+  imports = [
+    ./packages/shared/devenv.nix
+    ./services/local-development.nix
+  ];
 
-  # Root-level scripts (environment variables inherited from shared)
-  scripts = {
-    build.exec = "just build";
-    test.exec = "just test";
-    lint.exec = "just lint";
-  };
-
+  # Root-level scripts are inherited from packages/shared/devenv.nix
   # https://devenv.sh/reference/options/
 }

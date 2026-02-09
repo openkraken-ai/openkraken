@@ -1,0 +1,9 @@
+# Minimal process-compose configuration for local development
+# This satisfies the devenv process-compose requirement while allowing
+# the development environment to function without actual services
+
+version: "3.5"
+
+processes: {}
+
+services: {}

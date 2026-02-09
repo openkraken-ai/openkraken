@@ -1,0 +1,18 @@
+# Typos configuration for OpenKraken
+# https://github.com/crate-ci/typos/blob/master/docs/reference.md
+
+[default]
+# Ignore markdown bold patterns in STRIDE tables like **I**nformation
+# where the tool strips ** and sees "nformation" as a typo
+extend-ignore-words-re = [
+  # Match "nformation" that appears after markdown bold patterns in STRIDE tables
+  "nformation"
+]
+
+[files]
+# Already excluded by default but being explicit
+extend-exclude = [
+  "*.lock",
+  ".git/**",
+  ".devenv/**"
+]
