@@ -9,6 +9,11 @@ extend-ignore-words-re = [
   "nformation"
 ]
 
+# Add words that are valid (not typos)
+[default.extend-words]
+# macOS version names - correctly spelled
+"Big_Sur" = "Big Sur"
+
 [files]
 # Already excluded by default but being explicit
 extend-exclude = [
