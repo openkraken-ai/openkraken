@@ -5,9 +5,9 @@
  * Supports YAML configuration files with environment variable overrides.
  */
 
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync } from "node:fs";
 import { parse } from "yaml";
-import { getConfigPath } from "./platform/index";
+import { getConfigPath } from "@/platform/resolver";
 
 /**
  * OpenKraken configuration structure
@@ -211,7 +211,7 @@ export class ConfigLoader {
     const egressPort = process.env.OPENKRAKEN_EGRESS_PORT;
     if (egressPort) {
       const port = Number.parseInt(egressPort, 10);
-      if (!isNaN(port)) {
+      if (!Number.isNaN(port)) {
         this.config.egress.port = port;
       }
     }

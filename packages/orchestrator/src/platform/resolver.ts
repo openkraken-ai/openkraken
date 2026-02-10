@@ -5,8 +5,8 @@
  * with proper detection, environment variable support, and path normalization.
  */
 
-import { homedir } from "os";
-import { isAbsolute, join, resolve } from "path";
+import { homedir } from "node:os";
+import { isAbsolute, join, resolve } from "node:path";
 import { detectEnvironment } from "./detection";
 import {
   APP_NAME,
@@ -68,7 +68,7 @@ function validateCustomBasePath(path: string, source: string): string {
  * Handles Linux FHS, macOS Cocoa, and XDG Base Directory Specification.
  */
 export class PlatformPathResolver {
-  private environment: ReturnType<typeof detectEnvironment>;
+  private readonly environment: ReturnType<typeof detectEnvironment>;
   private resolvedPaths: PlatformPaths | null = null;
 
   constructor() {

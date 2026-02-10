@@ -8,8 +8,11 @@
  */
 
 import { Database } from "bun:sqlite";
-import { existsSync } from "fs";
-import { ensureDirectories, getPlatformPaths } from "../src/platform/index";
+import { existsSync } from "node:fs";
+import {
+  ensureDirectories,
+  getPlatformPaths,
+} from "../src/platform/directories";
 
 const SCHEMA_VERSION = "001";
 
@@ -35,7 +38,9 @@ async function initializeDatabase(): Promise<void> {
     console.log("Directories created successfully");
   } else {
     console.warn("Some directories could not be created:");
-    dirResult.errors.forEach((err) => console.warn(`  - ${err}`));
+    for (const err of dirResult.errors) {
+      console.warn(`  - ${err}`);
+    }
   }
 
   // Initialize database if it doesn't exist
@@ -53,7 +58,7 @@ async function initializeDatabase(): Promise<void> {
 /**
  * Creates the database and initial schema
  */
-async function createDatabase(databasePath: string): Promise<void> {
+function createDatabase(databasePath: string): Promise<void> {
   console.log(`Creating database: ${databasePath}`);
 
   // Create database using bun:sqlite
@@ -85,7 +90,7 @@ async function createDatabase(databasePath: string): Promise<void> {
 /**
  * Verifies existing database schema
  */
-async function verifySchema(databasePath: string): Promise<void> {
+function verifySchema(databasePath: string): Promise<void> {
   console.log("Verifying database integrity...");
 
   const db = new Database(databasePath);

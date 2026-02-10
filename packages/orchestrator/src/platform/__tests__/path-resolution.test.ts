@@ -36,10 +36,10 @@ beforeEach(() => {
   };
 
   // Explicitly unset XDG variables for clean test environment
-  delete process.env.XDG_CONFIG_HOME;
-  delete process.env.XDG_DATA_HOME;
-  delete process.env.XDG_CACHE_HOME;
-  delete process.env.OPENKRAKEN_HOME;
+  process.env.XDG_CONFIG_HOME = undefined;
+  process.env.XDG_DATA_HOME = undefined;
+  process.env.XDG_CACHE_HOME = undefined;
+  process.env.OPENKRAKEN_HOME = undefined;
 
   // Reset singleton for test isolation
   resetResolverInstance();
@@ -388,16 +388,16 @@ describe("XDG Environment Variable Override in FHS Mode", () => {
     resolver = new PlatformPathResolver();
 
     // Ensure clean environment
-    delete process.env.XDG_CONFIG_HOME;
-    delete process.env.XDG_DATA_HOME;
-    delete process.env.XDG_CACHE_HOME;
+    process.env.XDG_CONFIG_HOME = undefined;
+    process.env.XDG_DATA_HOME = undefined;
+    process.env.XDG_CACHE_HOME = undefined;
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
-    delete process.env.XDG_CONFIG_HOME;
-    delete process.env.XDG_DATA_HOME;
-    delete process.env.XDG_CACHE_HOME;
+    process.env.XDG_CONFIG_HOME = undefined;
+    process.env.XDG_DATA_HOME = undefined;
+    process.env.XDG_CACHE_HOME = undefined;
   });
 
   it("should override config with XDG_CONFIG_HOME", () => {
@@ -477,12 +477,12 @@ describe("Custom Path Validation", () => {
 
   beforeEach(() => {
     resolver = new PlatformPathResolver();
-    delete process.env.OPENKRAKEN_HOME;
+    process.env.OPENKRAKEN_HOME = undefined;
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
-    delete process.env.OPENKRAKEN_HOME;
+    process.env.OPENKRAKEN_HOME = undefined;
   });
 
   it("should reject null bytes in custom path", () => {

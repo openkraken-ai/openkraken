@@ -1,17 +1,14 @@
 /**
  * Platform Detection Module
- *
- * Detects operating system platform, architecture, and runtime environment.
- * Supports Linux, macOS, Windows, WSL, and container detection.
  */
 
+import { execSync } from "node:child_process";
+import { readFileSync, statSync } from "node:fs";
 import type { EnvironmentInfo, OperatingSystem } from "./paths/types";
 import { isOperatingSystem } from "./paths/types";
 
 /**
  * Detects the current runtime environment
- *
- * @returns Environment information including platform, version, and special environments
  */
 export function detectEnvironment(): EnvironmentInfo {
   const platform = detectPlatform();
@@ -39,8 +36,6 @@ export function detectEnvironment(): EnvironmentInfo {
 
 /**
  * Detects the operating system platform
- *
- * @returns Operating system type
  */
 export function detectPlatform(): OperatingSystem {
   const platform = process.platform;
@@ -55,8 +50,6 @@ export function detectPlatform(): OperatingSystem {
 
 /**
  * Detects CPU architecture
- *
- * @returns Architecture string (e.g., 'x64', 'arm64')
  */
 export function detectArchitecture(): string {
   return process.arch;
@@ -64,13 +57,10 @@ export function detectArchitecture(): string {
 
 /**
  * Gets the Darwin kernel version by running uname
- *
- * @returns Darwin kernel version (e.g., '23.3.0') or null if unavailable
  */
 function getDarwinKernelVersion(): string | null {
   try {
-    const result = Bun.exec(["/usr/bin/uname", "-r"]);
-    const version = result.stdout.trim();
+    const version = execSync("/usr/bin/uname -r", { encoding: "utf-8" }).trim();
     return version || null;
   } catch {
     return null;
@@ -79,19 +69,13 @@ function getDarwinKernelVersion(): string | null {
 
 /**
  * Gets the platform version string
- *
- * @param platform - Operating system to get version for
- * @returns Version string for the platform
  */
 export function detectPlatformVersion(platform: OperatingSystem): string {
   switch (platform) {
-    case "linux":
-      // Return kernel version using Bun's os module
-      try {
-        return Bun.os?.release || process.platform;
-      } catch {
-        return process.platform;
-      }
+    case "linux": {
+      // Return kernel version
+      return process.platform;
+    }
     case "darwin": {
       // Get Darwin kernel version from uname
       const darwinVersion = getDarwinKernelVersion();
@@ -101,8 +85,9 @@ export function detectPlatformVersion(platform: OperatingSystem): string {
       // Fallback to a generic macOS version
       return "macOS (unknown version)";
     }
-    case "windows":
+    case "windows": {
       return process.platform;
+    }
     default:
       return process.platform;
   }
@@ -110,9 +95,6 @@ export function detectPlatformVersion(platform: OperatingSystem): string {
 
 /**
  * Maps Darwin kernel version to macOS release name
- *
- * @param darwinVersion - Darwin kernel version (e.g., '23.3.0')
- * @returns Human-readable macOS version
  */
 export function mapDarwinVersion(darwinVersion: string): string {
   const major = Number.parseInt(darwinVersion.split(".")[0], 10);
@@ -151,8 +133,6 @@ export function mapDarwinVersion(darwinVersion: string): string {
 
 /**
  * Detects Windows Subsystem for Linux
- *
- * @returns True if running in WSL
  */
 export function detectWSL(): boolean {
   // Check for WSL-specific environment variables
@@ -164,9 +144,9 @@ export function detectWSL(): boolean {
     return true;
   }
 
-  // Check for Microsoft-specific kernel version markers in Bun.version
+  // Check for Microsoft-specific kernel version markers
   try {
-    const bunVersion = Bun.version?.toLowerCase() || "";
+    const bunVersion = process.version?.toLowerCase() || "";
     if (bunVersion.includes("microsoft") || bunVersion.includes("wsl")) {
       return true;
     }
@@ -184,8 +164,6 @@ export function detectWSL(): boolean {
 
 /**
  * Detects Docker container environment
- *
- * @returns True if running in Docker
  */
 export function detectDocker(): boolean {
   // Check for Docker-specific environment variables
@@ -199,7 +177,7 @@ export function detectDocker(): boolean {
 
   // Check for Docker-specific cgroup information
   try {
-    const cgroup = Bun.readFileSync("/proc/self/cgroup", "utf8");
+    const cgroup = readFileSync("/proc/self/cgroup", "utf8");
     if (
       cgroup.includes("docker") ||
       cgroup.includes("containerd") ||
@@ -213,7 +191,7 @@ export function detectDocker(): boolean {
 
   // Check for .dockerenv file
   try {
-    Bun.statSync("/.dockerenv");
+    statSync("/.dockerenv");
     return true;
   } catch {
     // File doesn't exist
@@ -224,8 +202,6 @@ export function detectDocker(): boolean {
 
 /**
  * Detects if running with root privileges
- *
- * @returns True if running as root (UID 0)
  */
 export function detectRootPrivileges(): boolean {
   // On POSIX systems, UID 0 is root
@@ -243,12 +219,6 @@ export function detectRootPrivileges(): boolean {
 
 /**
  * Detects if running on NixOS
- *
- * NixOS has an immutable filesystem at /nix/store and uses
- * /run/current-system to identify itself. Configuration must
- * go to ~/.config instead of /etc.
- *
- * @returns True if running on NixOS
  */
 export function detectNixOS(): boolean {
   // Check for the NixOS system profile path
@@ -258,7 +228,7 @@ export function detectNixOS(): boolean {
 
   // Check for /run/current-system which exists on NixOS
   try {
-    Bun.statSync("/run/current-system");
+    statSync("/run/current-system");
     return true;
   } catch {
     // Not NixOS or /run not accessible
@@ -266,7 +236,7 @@ export function detectNixOS(): boolean {
 
   // Check for /etc/nixos/configuration.nix (NixOS config file location)
   try {
-    Bun.readFileSync("/etc/nixos/configuration.nix", "utf8");
+    readFileSync("/etc/nixos/configuration.nix", "utf8");
     return true;
   } catch {
     // Not NixOS
@@ -277,12 +247,6 @@ export function detectNixOS(): boolean {
 
 /**
  * Detects if D-Bus is available for secret-service operations
- *
- * D-Bus is the desktop inter-process communication system used by
- * GNOME Keyring and KWallet for secure credential storage.
- * Headless servers typically don't have D-Bus running.
- *
- * @returns True if D-Bus session bus is available
  */
 export function detectDBusAvailable(): boolean {
   // Check for D-Bus session bus address
@@ -300,7 +264,7 @@ export function detectDBusAvailable(): boolean {
 
   for (const socket of dbusSockets) {
     try {
-      Bun.statSync(socket);
+      statSync(socket);
       return true;
     } catch {
       // Socket doesn't exist or isn't accessible
@@ -310,8 +274,8 @@ export function detectDBusAvailable(): boolean {
   // Check for running D-Bus daemon
   try {
     // Check if dbus-daemon or dbus-broker is running
-    const result = Bun.exec(["pgrep", "-x", "dbus-daemon"]);
-    if (result.stdout.trim().length > 0) {
+    const result = execSync("pgrep -x dbus-daemon", { encoding: "utf-8" });
+    if (result.trim().length > 0) {
       return true;
     }
   } catch {
@@ -323,14 +287,6 @@ export function detectDBusAvailable(): boolean {
 
 /**
  * Detects if running in a headless environment
- *
- * Headless environments (servers, Docker containers without GUI) don't have
- * a desktop environment, which affects:
- * - D-Bus availability (typically not running)
- * - GUI-based credential prompts
- * - XDG directories (may have defaults, but no desktop integration)
- *
- * @returns True if running headless (no desktop environment)
  */
 export function detectHeadless(): boolean {
   // Check for common desktop environment indicators
@@ -356,8 +312,9 @@ export function detectHeadless(): boolean {
 
   // Check for graphical session type via systemd (loginctl)
   try {
-    const result = Bun.exec(["loginctl", "show-session", "-p", "Type", "c1"]);
-    const output = result.stdout.trim();
+    const output = execSync("loginctl show-session -p Type c1", {
+      encoding: "utf-8",
+    }).trim();
     // Graphical sessions are "x11" or "wayland"
     if (output === "x11" || output === "wayland") {
       return false;
@@ -372,8 +329,6 @@ export function detectHeadless(): boolean {
 
 /**
  * Gets a human-readable summary of the environment
- *
- * @returns Environment summary string
  */
 export function getEnvironmentSummary(): string {
   const env = detectEnvironment();
@@ -412,9 +367,6 @@ export function getEnvironmentSummary(): string {
 
 /**
  * Type guard for checking if platform is Linux
- *
- * @param platform - Platform to check
- * @returns True if platform is Linux
  */
 export function isLinux(platform: OperatingSystem): platform is "linux" {
   return platform === "linux";
@@ -422,9 +374,6 @@ export function isLinux(platform: OperatingSystem): platform is "linux" {
 
 /**
  * Type guard for checking if platform is macOS
- *
- * @param platform - Platform to check
- * @returns True if platform is Darwin/macOS
  */
 export function isMacOS(platform: OperatingSystem): platform is "darwin" {
   return platform === "darwin";
@@ -432,9 +381,6 @@ export function isMacOS(platform: OperatingSystem): platform is "darwin" {
 
 /**
  * Type guard for checking if platform is Windows
- *
- * @param platform - Platform to check
- * @returns True if platform is Windows
  */
 export function isWindows(platform: OperatingSystem): platform is "windows" {
   return platform === "windows";
@@ -442,8 +388,6 @@ export function isWindows(platform: OperatingSystem): platform is "windows" {
 
 /**
  * Checks if running on a Unix-like system (Linux or macOS)
- *
- * @returns True if running on Unix-like system
  */
 export function isUnixLike(): boolean {
   const platform = detectPlatform();

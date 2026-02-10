@@ -5,8 +5,9 @@
  * Uses Node.js/Bun built-in path.expanduser() with additional fallbacks.
  */
 
-import { homedir } from "os";
-import { join } from "path";
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 /**
  * Options for tilde expansion
@@ -130,7 +131,7 @@ function getHomeDirectoryForUser(username: string): string | null {
   // On POSIX systems, we can look up the home directory from /etc/passwd
   // This is a simplified implementation
   try {
-    const passwdContent = Bun.readFile("/etc/passwd");
+    const passwdContent = readFileSync("/etc/passwd", "utf-8");
     const lines = passwdContent.toString().split("\n");
 
     for (const line of lines) {

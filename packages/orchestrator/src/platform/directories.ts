@@ -52,8 +52,8 @@ const DEFAULT_OPTIONS: DirectoryCreationOptions = {
  * with appropriate permissions for the current platform.
  */
 export class DirectoryManager {
-  private resolver: ReturnType<typeof getPathResolver>;
-  private options: DirectoryCreationOptions;
+  private readonly resolver: ReturnType<typeof getPathResolver>;
+  private readonly options: DirectoryCreationOptions;
 
   constructor(options: DirectoryCreationOptions = {}) {
     this.resolver = getPathResolver();
@@ -128,6 +128,7 @@ export class DirectoryManager {
 
       // Verify permissions
       if (this.options.validatePermissions) {
+        // biome-ignore lint/suspicious/noBitwiseOperators: Permission bit extraction is intentional
         const currentMode = stats.mode & 0o777;
         if (currentMode !== mode) {
           if (this.options.autoFixPermissions) {
@@ -182,6 +183,7 @@ export class DirectoryManager {
 
       try {
         const stats = await stat(path);
+        // biome-ignore lint/suspicious/noBitwiseOperators: Permission bit extraction is intentional
         const currentMode = stats.mode & 0o777;
 
         if (currentMode !== definition.mode) {
@@ -192,7 +194,7 @@ export class DirectoryManager {
             severity: this.getSeverity(currentMode, definition.mode),
           });
         }
-      } catch (error) {
+      } catch (_error) {
         issues.push({
           path,
           expectedMode: definition.mode,
@@ -222,6 +224,7 @@ export class DirectoryManager {
 
       try {
         const stats = await stat(path);
+        // biome-ignore lint/suspicious/noBitwiseOperators: Permission bit extraction is intentional
         const currentMode = stats.mode & 0o777;
 
         if (currentMode !== definition.mode) {
@@ -233,7 +236,7 @@ export class DirectoryManager {
             severity: "warning",
           });
         }
-      } catch (error) {
+      } catch (_error) {
         issues.push({
           path,
           expectedMode: definition.mode,
@@ -267,7 +270,9 @@ export class DirectoryManager {
    */
   private getSeverity(actual: number, expected: number): "warning" | "error" {
     // Permissions that are too open are more serious than too restrictive
+    // biome-ignore lint/suspicious/noBitwiseOperators: Permission bit extraction is intentional
     const actualReadable = (actual & 0o004) !== 0;
+    // biome-ignore lint/suspicious/noBitwiseOperators: Permission bit extraction is intentional
     const expectedReadable = (expected & 0o004) !== 0;
 
     if (actualReadable && !expectedReadable) {
@@ -304,7 +309,7 @@ export class DirectoryManager {
 /**
  * Creates directories using default options
  */
-export async function ensureDirectories(
+export function ensureDirectories(
   pathOptions: PathResolutionOptions = {}
 ): Promise<DirectoryCreationResult> {
   const manager = new DirectoryManager();
@@ -314,7 +319,7 @@ export async function ensureDirectories(
 /**
  * Validates directory permissions
  */
-export async function validateDirectoryPermissions(
+export function validateDirectoryPermissions(
   paths: PlatformPaths
 ): Promise<PermissionValidationResult> {
   const manager = new DirectoryManager();
@@ -324,7 +329,7 @@ export async function validateDirectoryPermissions(
 /**
  * Fixes directory permissions if incorrect
  */
-export async function fixDirectoryPermissions(
+export function fixDirectoryPermissions(
   paths: PlatformPaths
 ): Promise<PermissionValidationResult> {
   const manager = new DirectoryManager({ autoFixPermissions: true });
@@ -334,7 +339,7 @@ export async function fixDirectoryPermissions(
 /**
  * Creates a specific directory with permissions
  */
-export async function createDirectory(
+export function createDirectory(
   path: string,
   mode: number,
   recursive = true

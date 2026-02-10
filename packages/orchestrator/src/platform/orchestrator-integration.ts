@@ -10,7 +10,7 @@ import {
   ensureDirectories,
   getPlatformPaths,
   type PlatformPaths,
-} from "./platform/index";
+} from "@/platform/detection";
 
 /**
  * Orchestrator configuration that uses platform paths
@@ -58,9 +58,9 @@ export async function initializeOrchestrator(): Promise<OrchestratorConfig> {
     console.log("All directories created successfully");
   } else {
     console.warn("Some directories could not be created:");
-    directoryResult.errors.forEach((error) => {
+    for (const error of directoryResult.errors) {
       console.warn(`  - ${error}`);
-    });
+    }
   }
 
   // Determine if running in development mode

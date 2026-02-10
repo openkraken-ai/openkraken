@@ -26,10 +26,10 @@ beforeEach(() => {
   };
 
   // Explicitly unset XDG variables for clean test environment
-  delete process.env.XDG_CONFIG_HOME;
-  delete process.env.XDG_DATA_HOME;
-  delete process.env.XDG_CACHE_HOME;
-  delete process.env.OPENKRAKEN_HOME;
+  process.env.XDG_CONFIG_HOME = undefined;
+  process.env.XDG_DATA_HOME = undefined;
+  process.env.XDG_CACHE_HOME = undefined;
+  process.env.OPENKRAKEN_HOME = undefined;
 
   // Reset singleton for test isolation
   resetResolverInstance();

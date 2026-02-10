@@ -13,6 +13,12 @@
     "verbatimModuleSyntax": true,
     "noEmit": true,
 
+    // Path alias
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"]
+    },
+
     // Best practices
     "strict": true,
     "skipLibCheck": true,

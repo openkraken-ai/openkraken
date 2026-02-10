@@ -174,6 +174,7 @@ describe("DirectoryManager Permission Validation", () => {
 
       // Verify it's wrong before fixing
       const statsBefore = await stat(join(testBaseDir, "config"));
+      // biome-ignore lint/suspicious/noBitwiseOperators: Permission bit extraction is intentional
       expect(statsBefore.mode & 0o777).toBe(0o777);
 
       const mockPaths: PlatformPaths = {
@@ -187,6 +188,7 @@ describe("DirectoryManager Permission Validation", () => {
 
       // Verify it's fixed
       const statsAfter = await stat(join(testBaseDir, "config"));
+      // biome-ignore lint/suspicious/noBitwiseOperators: Permission bit extraction is intentional
       expect(statsAfter.mode & 0o777).toBe(0o750);
 
       expect(result.issues.length).toBeGreaterThan(0);
@@ -248,7 +250,7 @@ describe("DirectoryManager Permission Validation", () => {
 
       const manager = new DirectoryManager({ autoFixPermissions: true });
 
-      const mockPaths: PlatformPaths = {
+      const _mockPaths: PlatformPaths = {
         config: join(testBaseDir, "config"),
         data: join(testBaseDir, "data"),
         logs: join(testBaseDir, "logs"),
@@ -256,10 +258,11 @@ describe("DirectoryManager Permission Validation", () => {
       };
 
       // ensureDirectories should fix permissions automatically
-      const result = await manager.ensureDirectories();
+      const _result = await manager.ensureDirectories();
 
       // Verify permissions were fixed
       const stats = await stat(join(testBaseDir, "logs"));
+      // biome-ignore lint/suspicious/noBitwiseOperators: Permission bit extraction is intentional
       expect(stats.mode & 0o777).toBe(0o750);
     });
 
