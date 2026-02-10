@@ -1,0 +1,16 @@
+{
+  "name": "@openkraken/orchestrator",
+  "version": "0.1.0",
+  "description": "OpenKraken Agent Orchestrator",
+  "private": true,
+  "scripts": {
+    "test": "bun test",
+    "check": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}
