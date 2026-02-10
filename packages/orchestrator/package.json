@@ -5,12 +5,15 @@
   "private": true,
   "scripts": {
     "test": "bun test",
-    "check": "tsc --noEmit"
+    "check": "bunx biome check --write",
+    "fix": "bunx biome check --write"
   },
   "peerDependencies": {
     "typescript": "^5"
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@biomejs/biome": "2.3.13",
+    "@types/bun": "latest",
+    "ultracite": "7.1.5"
   }
 }
