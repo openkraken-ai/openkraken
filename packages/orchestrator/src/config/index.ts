@@ -1,14 +1,13 @@
 /**
  * Configuration Loading Module
- * 
+ *
  * Loads and manages OpenKraken configuration using platform-appropriate paths.
  * Supports YAML configuration files with environment variable overrides.
  */
 
-import { existsSync, readFileSync } from 'fs';
-import { parse } from 'yaml';
-import { getConfigPath, getPlatformPaths, type PlatformPaths } from './platform/index';
-import { PLATFORM_ENV_VARS } from './platform/paths/types';
+import { existsSync, readFileSync } from "fs";
+import { parse } from "yaml";
+import { getConfigPath } from "./platform/index";
 
 /**
  * OpenKraken configuration structure
@@ -21,9 +20,9 @@ export interface OpenKrakenConfig {
     /** Application version */
     version: string;
     /** Environment (development, production) */
-    environment: 'development' | 'production';
+    environment: "development" | "production";
   };
-  
+
   /** Sandbox configuration */
   sandbox: {
     /** Sandbox type (bubblewrap, sandbox-exec, none) */
@@ -33,7 +32,7 @@ export interface OpenKrakenConfig {
     /** Network isolation */
     networkIsolation: boolean;
   };
-  
+
   /** Egress gateway configuration */
   egress: {
     /** Gateway host */
@@ -43,7 +42,7 @@ export interface OpenKrakenConfig {
     /** Allowed domains */
     allowedDomains: string[];
   };
-  
+
   /** Middleware configuration */
   middleware: {
     /** Enable human-in-the-loop */
@@ -53,7 +52,7 @@ export interface OpenKrakenConfig {
     /** Enable skill loader */
     skillLoader: boolean;
   };
-  
+
   /** Observability configuration */
   observability: {
     /** Enable Langfuse */
@@ -70,17 +69,17 @@ export interface OpenKrakenConfig {
  */
 const DEFAULT_CONFIG: OpenKrakenConfig = {
   app: {
-    name: 'OpenKraken',
-    version: '0.1.0',
-    environment: 'development',
+    name: "OpenKraken",
+    version: "0.1.0",
+    environment: "development",
   },
   sandbox: {
-    type: 'bubblewrap',
-    allowedOperations: ['read', 'write', 'execute'],
+    type: "bubblewrap",
+    allowedOperations: ["read", "write", "execute"],
     networkIsolation: true,
   },
   egress: {
-    host: 'localhost',
+    host: "localhost",
     port: 8080,
     allowedDomains: [],
   },
@@ -99,11 +98,11 @@ const DEFAULT_CONFIG: OpenKrakenConfig = {
  */
 export class ConfigLoader {
   private config: OpenKrakenConfig | null = null;
-  private configPath: string = '';
+  private configPath = "";
 
   /**
    * Loads configuration from platform-appropriate path
-   * 
+   *
    * @returns Loaded configuration
    */
   load(): OpenKrakenConfig {
@@ -116,16 +115,16 @@ export class ConfigLoader {
 
     if (existsSync(this.configPath)) {
       try {
-        const fileContent = readFileSync(this.configPath, 'utf-8');
+        const fileContent = readFileSync(this.configPath, "utf-8");
         this.config = this.parseAndMerge(parse(fileContent));
-        console.log('Configuration loaded successfully');
+        console.log("Configuration loaded successfully");
       } catch (error) {
         console.warn(`Failed to load configuration: ${error}`);
-        console.warn('Using default configuration');
+        console.warn("Using default configuration");
         this.config = { ...DEFAULT_CONFIG };
       }
     } else {
-      console.log('Configuration file not found, using defaults');
+      console.log("Configuration file not found, using defaults");
       this.config = { ...DEFAULT_CONFIG };
     }
 
@@ -137,20 +136,20 @@ export class ConfigLoader {
 
   /**
    * Gets the current configuration (must call load first)
-   * 
+   *
    * @returns Current configuration
    * @throws Error if configuration not loaded
    */
   get(): OpenKrakenConfig {
     if (!this.config) {
-      throw new Error('Configuration not loaded. Call load() first.');
+      throw new Error("Configuration not loaded. Call load() first.");
     }
     return this.config;
   }
 
   /**
    * Gets the path to the configuration file
-   * 
+   *
    * @returns Configuration file path
    */
   getConfigPath(): string {
@@ -163,10 +162,22 @@ export class ConfigLoader {
   private parseAndMerge(raw: Record<string, unknown>): OpenKrakenConfig {
     return {
       app: { ...DEFAULT_CONFIG.app, ...(raw.app as Record<string, unknown>) },
-      sandbox: { ...DEFAULT_CONFIG.sandbox, ...(raw.sandbox as Record<string, unknown>) },
-      egress: { ...DEFAULT_CONFIG.egress, ...(raw.egress as Record<string, unknown>) },
-      middleware: { ...DEFAULT_CONFIG.middleware, ...(raw.middleware as Record<string, unknown>) },
-      observability: { ...DEFAULT_CONFIG.observability, ...(raw.observability as Record<string, unknown>) },
+      sandbox: {
+        ...DEFAULT_CONFIG.sandbox,
+        ...(raw.sandbox as Record<string, unknown>),
+      },
+      egress: {
+        ...DEFAULT_CONFIG.egress,
+        ...(raw.egress as Record<string, unknown>),
+      },
+      middleware: {
+        ...DEFAULT_CONFIG.middleware,
+        ...(raw.middleware as Record<string, unknown>),
+      },
+      observability: {
+        ...DEFAULT_CONFIG.observability,
+        ...(raw.observability as Record<string, unknown>),
+      },
     };
   }
 
@@ -174,11 +185,13 @@ export class ConfigLoader {
    * Applies environment variable overrides
    */
   private applyEnvOverrides(): void {
-    if (!this.config) return;
+    if (!this.config) {
+      return;
+    }
 
     // OPENKRAKEN_ENV overrides environment
     const env = process.env.OPENKRAKEN_ENV;
-    if (env === 'development' || env === 'production') {
+    if (env === "development" || env === "production") {
       this.config.app.environment = env;
     }
 
@@ -197,7 +210,7 @@ export class ConfigLoader {
     // Egress port override
     const egressPort = process.env.OPENKRAKEN_EGRESS_PORT;
     if (egressPort) {
-      const port = parseInt(egressPort, 10);
+      const port = Number.parseInt(egressPort, 10);
       if (!isNaN(port)) {
         this.config.egress.port = port;
       }
@@ -205,7 +218,7 @@ export class ConfigLoader {
 
     // Langfuse overrides
     const langfuseEnabled = process.env.OPENKRAKEN_LANGFUSE_ENABLED;
-    if (langfuseEnabled === 'true') {
+    if (langfuseEnabled === "true") {
       this.config.observability.langfuse = true;
     }
 

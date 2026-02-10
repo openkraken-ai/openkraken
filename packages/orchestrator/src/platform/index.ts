@@ -1,64 +1,59 @@
 /**
  * Platform Abstraction Layer - Public API
- * 
+ *
  * Cross-platform storage path resolution for OpenKraken.
  * Supports Linux FHS, macOS Cocoa paths, and XDG Base Directory Specification.
- * 
+ *
  * @module platform
  */
 
-// Types
-export * from './paths/types';
-
-// Constants
-export * from './paths/constants';
-
-// Path resolution
-export {
-  PlatformPathResolver,
-  getPathResolver,
-  getPlatformPaths,
-  getConfigPath,
-  getDataPath,
-  getLogsPath,
-  getCachePath,
-  resolveDataSubpath,
-  setResolverInstance,
-  resetResolverInstance,
-} from './resolver';
-
 // Platform detection
 export {
+  detectArchitecture,
+  detectDocker,
   detectEnvironment,
   detectPlatform,
-  detectArchitecture,
   detectPlatformVersion,
-  detectWSL,
-  detectDocker,
   detectRootPrivileges,
+  detectWSL,
   getEnvironmentSummary,
   isLinux,
   isMacOS,
-  isWindows,
   isUnixLike,
+  isWindows,
   mapDarwinVersion,
-} from './detection';
-
+} from "./detection";
 // Directory creation
 export {
+  createDirectory,
   DirectoryManager,
   ensureDirectories,
-  validateDirectoryPermissions,
   fixDirectoryPermissions,
-  createDirectory,
-} from './directories';
-
+  validateDirectoryPermissions,
+} from "./directories";
+// Constants
+export * from "./paths/constants";
 // Tilde expansion
 export {
+  expandPathAll,
   expandTilde,
+  expandTildeBatch,
   expandTildeSafe,
   expandTildeValidated,
-  expandTildeBatch,
-  expandPathAll,
   needsTildeExpansion,
-} from './paths/expand';
+} from "./paths/expand";
+// Types
+export * from "./paths/types";
+// Path resolution
+export {
+  getCachePath,
+  getConfigPath,
+  getDataPath,
+  getLogsPath,
+  getPathResolver,
+  getPlatformPaths,
+  PlatformPathResolver,
+  resetResolverInstance,
+  resolveDataSubpath,
+  setResolverInstance,
+} from "./resolver";

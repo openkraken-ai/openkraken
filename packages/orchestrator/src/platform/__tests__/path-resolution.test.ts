@@ -1,27 +1,27 @@
 /**
  * Path Resolution Tests
- * 
+ *
  * Unit tests for the PlatformPathResolver and path resolution logic.
  * Uses Bun's native test runner.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'bun:test';
-import {
-  PlatformPathResolver,
-  getPathResolver,
-  getPlatformPaths,
-  getConfigPath,
-  getDataPath,
-  getLogsPath,
-  getCachePath,
-  resolveDataSubpath,
-  resetResolverInstance,
-} from '../resolver';
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import {
   LINUX_FHS_PATHS,
   MACOS_COCOA_PATHS,
   PERMISSIONS,
-} from '../paths/constants';
+} from "../paths/constants";
+import {
+  getCachePath,
+  getConfigPath,
+  getDataPath,
+  getLogsPath,
+  getPathResolver,
+  getPlatformPaths,
+  PlatformPathResolver,
+  resetResolverInstance,
+  resolveDataSubpath,
+} from "../resolver";
 
 // Store original environment for cleanup
 let originalEnv: Record<string, string | undefined>;
@@ -34,13 +34,13 @@ beforeEach(() => {
     XDG_CACHE_HOME: process.env.XDG_CACHE_HOME,
     OPENKRAKEN_HOME: process.env.OPENKRAKEN_HOME,
   };
-  
+
   // Explicitly unset XDG variables for clean test environment
   delete process.env.XDG_CONFIG_HOME;
   delete process.env.XDG_DATA_HOME;
   delete process.env.XDG_CACHE_HOME;
   delete process.env.OPENKRAKEN_HOME;
-  
+
   // Reset singleton for test isolation
   resetResolverInstance();
 });
@@ -51,210 +51,215 @@ afterEach(() => {
   process.env.XDG_DATA_HOME = originalEnv.XDG_DATA_HOME;
   process.env.XDG_CACHE_HOME = originalEnv.XDG_CACHE_HOME;
   process.env.OPENKRAKEN_HOME = originalEnv.OPENKRAKEN_HOME;
-  
+
   // Reset singleton
   resetResolverInstance();
 });
 
-describe('PlatformPathResolver', () => {
+describe("PlatformPathResolver", () => {
   let resolver: PlatformPathResolver;
 
   beforeEach(() => {
     resolver = new PlatformPathResolver();
   });
 
-  describe('resolvePaths', () => {
-    it('should return FHS paths when mode is fhs', () => {
-      const paths = resolver.resolvePaths({ mode: 'fhs' });
+  describe("resolvePaths", () => {
+    it("should return FHS paths when mode is fhs", () => {
+      const paths = resolver.resolvePaths({ mode: "fhs" });
 
-      expect(paths.config).toBe('/etc/openkraken/config.yaml');
-      expect(paths.data).toBe('/var/lib/openkraken');
-      expect(paths.logs).toBe('/var/log/openkraken');
-      expect(paths.cache).toBe('/var/cache/openkraken');
+      expect(paths.config).toBe("/etc/openkraken/config.yaml");
+      expect(paths.data).toBe("/var/lib/openkraken");
+      expect(paths.logs).toBe("/var/log/openkraken");
+      expect(paths.cache).toBe("/var/cache/openkraken");
     });
 
-    it('should return Cocoa paths when mode is cocoa', () => {
-      const paths = resolver.resolvePaths({ mode: 'cocoa' });
+    it("should return Cocoa paths when mode is cocoa", () => {
+      const paths = resolver.resolvePaths({ mode: "cocoa" });
 
       // Paths should contain expanded tilde for home directory with proper capitalization
-      expect(paths.config).toContain('Library/Application Support/Openkraken');
-      expect(paths.config).toContain('config.yaml');
-      expect(paths.logs).toContain('Library/Logs/Openkraken');
-      expect(paths.cache).toContain('Library/Caches/Openkraken');
+      expect(paths.config).toContain("Library/Application Support/Openkraken");
+      expect(paths.config).toContain("config.yaml");
+      expect(paths.logs).toContain("Library/Logs/Openkraken");
+      expect(paths.cache).toContain("Library/Caches/Openkraken");
     });
 
-    it('should respect OPENKRAKEN_HOME override', () => {
-      const paths = resolver.resolvePaths({ mode: 'custom', customBasePath: '/custom/path' });
+    it("should respect OPENKRAKEN_HOME override", () => {
+      const paths = resolver.resolvePaths({
+        mode: "custom",
+        customBasePath: "/custom/path",
+      });
 
-      expect(paths.config).toBe('/custom/path/config.yaml');
-      expect(paths.data).toBe('/custom/path/data');
-      expect(paths.logs).toBe('/custom/path/logs');
-      expect(paths.cache).toBe('/custom/path/cache');
-    });
-  });
-
-  describe('resolveConfigPath', () => {
-    it('should return only the config path', () => {
-      const configPath = resolver.resolveConfigPath({ mode: 'fhs' });
-
-      expect(configPath).toBe('/etc/openkraken/config.yaml');
+      expect(paths.config).toBe("/custom/path/config.yaml");
+      expect(paths.data).toBe("/custom/path/data");
+      expect(paths.logs).toBe("/custom/path/logs");
+      expect(paths.cache).toBe("/custom/path/cache");
     });
   });
 
-  describe('resolveDataPath', () => {
-    it('should return only the data path', () => {
-      const dataPath = resolver.resolveDataPath({ mode: 'fhs' });
+  describe("resolveConfigPath", () => {
+    it("should return only the config path", () => {
+      const configPath = resolver.resolveConfigPath({ mode: "fhs" });
 
-      expect(dataPath).toBe('/var/lib/openkraken');
+      expect(configPath).toBe("/etc/openkraken/config.yaml");
     });
   });
 
-  describe('resolveLogsPath', () => {
-    it('should return only the logs path', () => {
-      const logsPath = resolver.resolveLogsPath({ mode: 'fhs' });
+  describe("resolveDataPath", () => {
+    it("should return only the data path", () => {
+      const dataPath = resolver.resolveDataPath({ mode: "fhs" });
 
-      expect(logsPath).toBe('/var/log/openkraken');
+      expect(dataPath).toBe("/var/lib/openkraken");
     });
   });
 
-  describe('resolveCachePath', () => {
-    it('should return only the cache path', () => {
-      const cachePath = resolver.resolveCachePath({ mode: 'fhs' });
+  describe("resolveLogsPath", () => {
+    it("should return only the logs path", () => {
+      const logsPath = resolver.resolveLogsPath({ mode: "fhs" });
 
-      expect(cachePath).toBe('/var/cache/openkraken');
+      expect(logsPath).toBe("/var/log/openkraken");
     });
   });
 
-  describe('getEnvironment', () => {
-    it('should return environment info', () => {
+  describe("resolveCachePath", () => {
+    it("should return only the cache path", () => {
+      const cachePath = resolver.resolveCachePath({ mode: "fhs" });
+
+      expect(cachePath).toBe("/var/cache/openkraken");
+    });
+  });
+
+  describe("getEnvironment", () => {
+    it("should return environment info", () => {
       const env = resolver.getEnvironment();
 
-      expect(env).toHaveProperty('platform');
-      expect(env).toHaveProperty('arch');
-      expect(env).toHaveProperty('isRoot');
-      expect(env).toHaveProperty('isWSL');
-      expect(env).toHaveProperty('isDocker');
+      expect(env).toHaveProperty("platform");
+      expect(env).toHaveProperty("arch");
+      expect(env).toHaveProperty("isRoot");
+      expect(env).toHaveProperty("isWSL");
+      expect(env).toHaveProperty("isDocker");
     });
   });
 
-  describe('clearCache', () => {
-    it('should clear cached paths', () => {
-      resolver.resolvePaths({ mode: 'fhs' });
+  describe("clearCache", () => {
+    it("should clear cached paths", () => {
+      resolver.resolvePaths({ mode: "fhs" });
       resolver.clearCache();
-      
+
       // Should not throw when resolving with different mode
-      expect(() => resolver.resolvePaths({ mode: 'cocoa' })).not.toThrow();
+      expect(() => resolver.resolvePaths({ mode: "cocoa" })).not.toThrow();
     });
   });
 });
 
-describe('Convenience Functions', () => {
-  describe('getPlatformPaths', () => {
-    it('should return platform paths using default options', () => {
-      const paths = getPlatformPaths({ mode: 'fhs' });
+describe("Convenience Functions", () => {
+  describe("getPlatformPaths", () => {
+    it("should return platform paths using default options", () => {
+      const paths = getPlatformPaths({ mode: "fhs" });
 
-      expect(paths).toHaveProperty('config');
-      expect(paths).toHaveProperty('data');
-      expect(paths).toHaveProperty('logs');
-      expect(paths).toHaveProperty('cache');
+      expect(paths).toHaveProperty("config");
+      expect(paths).toHaveProperty("data");
+      expect(paths).toHaveProperty("logs");
+      expect(paths).toHaveProperty("cache");
     });
   });
 
-  describe('getConfigPath', () => {
-    it('should return config path', () => {
-      const path = getConfigPath({ mode: 'fhs' });
-      expect(path).toBe('/etc/openkraken/config.yaml');
+  describe("getConfigPath", () => {
+    it("should return config path", () => {
+      const path = getConfigPath({ mode: "fhs" });
+      expect(path).toBe("/etc/openkraken/config.yaml");
     });
   });
 
-  describe('getDataPath', () => {
-    it('should return data path', () => {
-      const path = getDataPath({ mode: 'fhs' });
-      expect(path).toBe('/var/lib/openkraken');
+  describe("getDataPath", () => {
+    it("should return data path", () => {
+      const path = getDataPath({ mode: "fhs" });
+      expect(path).toBe("/var/lib/openkraken");
     });
   });
 
-  describe('getLogsPath', () => {
-    it('should return logs path', () => {
-      const path = getLogsPath({ mode: 'fhs' });
-      expect(path).toBe('/var/log/openkraken');
+  describe("getLogsPath", () => {
+    it("should return logs path", () => {
+      const path = getLogsPath({ mode: "fhs" });
+      expect(path).toBe("/var/log/openkraken");
     });
   });
 
-  describe('getCachePath', () => {
-    it('should return cache path', () => {
-      const path = getCachePath({ mode: 'fhs' });
-      expect(path).toBe('/var/cache/openkraken');
+  describe("getCachePath", () => {
+    it("should return cache path", () => {
+      const path = getCachePath({ mode: "fhs" });
+      expect(path).toBe("/var/cache/openkraken");
     });
   });
 
-  describe('resolveDataSubpath', () => {
-    it('should resolve subpath within data directory', () => {
-      const subpath = resolveDataSubpath('subdir/file.txt', { mode: 'fhs' });
-      expect(subpath).toBe('/var/lib/openkraken/subdir/file.txt');
+  describe("resolveDataSubpath", () => {
+    it("should resolve subpath within data directory", () => {
+      const subpath = resolveDataSubpath("subdir/file.txt", { mode: "fhs" });
+      expect(subpath).toBe("/var/lib/openkraken/subdir/file.txt");
     });
   });
 });
 
-describe('Permission Constants', () => {
-  describe('PERMISSIONS', () => {
-    it('should have correct standard permission value', () => {
+describe("Permission Constants", () => {
+  describe("PERMISSIONS", () => {
+    it("should have correct standard permission value", () => {
       expect(PERMISSIONS.standard).toBe(0o755);
     });
 
-    it('should have correct restricted permission value', () => {
+    it("should have correct restricted permission value", () => {
       expect(PERMISSIONS.restricted).toBe(0o750);
     });
 
-    it('should have correct private permission value', () => {
+    it("should have correct private permission value", () => {
       expect(PERMISSIONS.private).toBe(0o700);
     });
   });
 });
 
-describe('Linux FHS Paths', () => {
-  it('should define correct config path', () => {
-    expect(LINUX_FHS_PATHS.config.path).toBe('/etc/openkraken');
+describe("Linux FHS Paths", () => {
+  it("should define correct config path", () => {
+    expect(LINUX_FHS_PATHS.config.path).toBe("/etc/openkraken");
     expect(LINUX_FHS_PATHS.config.mode).toBe(0o750);
   });
 
-  it('should define correct data path', () => {
-    expect(LINUX_FHS_PATHS.data.path).toBe('/var/lib/openkraken');
+  it("should define correct data path", () => {
+    expect(LINUX_FHS_PATHS.data.path).toBe("/var/lib/openkraken");
     expect(LINUX_FHS_PATHS.data.mode).toBe(0o755);
   });
 
-  it('should define correct logs path', () => {
-    expect(LINUX_FHS_PATHS.logs.path).toBe('/var/log/openkraken');
+  it("should define correct logs path", () => {
+    expect(LINUX_FHS_PATHS.logs.path).toBe("/var/log/openkraken");
     expect(LINUX_FHS_PATHS.logs.mode).toBe(0o750);
   });
 
-  it('should define correct cache path', () => {
-    expect(LINUX_FHS_PATHS.cache.path).toBe('/var/cache/openkraken');
+  it("should define correct cache path", () => {
+    expect(LINUX_FHS_PATHS.cache.path).toBe("/var/cache/openkraken");
     expect(LINUX_FHS_PATHS.cache.mode).toBe(0o755);
   });
 });
 
-describe('macOS Cocoa Paths', () => {
-  it('should define correct support path with proper capitalization', () => {
+describe("macOS Cocoa Paths", () => {
+  it("should define correct support path with proper capitalization", () => {
     // macOS Finder uses case-insensitive but case-preserving paths
     // The convention is Title Case for Application Support directories
-    expect(MACOS_COCOA_PATHS.data.path).toContain('Library/Application Support/Openkraken');
+    expect(MACOS_COCOA_PATHS.data.path).toContain(
+      "Library/Application Support/Openkraken"
+    );
     expect(MACOS_COCOA_PATHS.data.mode).toBe(0o755);
   });
 
-  it('should define correct logs path with proper capitalization', () => {
-    expect(MACOS_COCOA_PATHS.logs.path).toContain('Library/Logs/Openkraken');
+  it("should define correct logs path with proper capitalization", () => {
+    expect(MACOS_COCOA_PATHS.logs.path).toContain("Library/Logs/Openkraken");
     expect(MACOS_COCOA_PATHS.logs.mode).toBe(0o755);
   });
 
-  it('should define correct caches path with proper capitalization', () => {
-    expect(MACOS_COCOA_PATHS.cache.path).toContain('Library/Caches/Openkraken');
+  it("should define correct caches path with proper capitalization", () => {
+    expect(MACOS_COCOA_PATHS.cache.path).toContain("Library/Caches/Openkraken");
     expect(MACOS_COCOA_PATHS.cache.mode).toBe(0o755);
   });
 });
 
-describe('Singleton Pattern', () => {
-  it('should return same instance from getPathResolver', () => {
+describe("Singleton Pattern", () => {
+  it("should return same instance from getPathResolver", () => {
     const resolver1 = getPathResolver();
     const resolver2 = getPathResolver();
 
@@ -262,17 +267,17 @@ describe('Singleton Pattern', () => {
   });
 });
 
-describe('NixOS Path Resolution', () => {
+describe("NixOS Path Resolution", () => {
   let resolver: PlatformPathResolver;
 
   beforeEach(() => {
     resolver = new PlatformPathResolver();
 
     // Mock NixOS environment
-    vi.spyOn(resolver as any, 'getEnvironment').mockReturnValue({
-      platform: 'linux',
-      platformVersion: '6.0.0',
-      arch: 'x64',
+    vi.spyOn(resolver as any, "getEnvironment").mockReturnValue({
+      platform: "linux",
+      platformVersion: "6.0.0",
+      arch: "x64",
       isWSL: false,
       isDocker: false,
       isRoot: false,
@@ -286,48 +291,48 @@ describe('NixOS Path Resolution', () => {
     vi.restoreAllMocks();
   });
 
-  it('should use XDG paths on NixOS by default', () => {
+  it("should use XDG paths on NixOS by default", () => {
     // On NixOS without explicit mode, should use XDG (not FHS)
     // because /etc is immutable on NixOS
     const paths = resolver.resolvePaths();
 
     // XDG paths use ~/.config, ~/.local/share, ~/.cache
-    expect(paths.config).toContain('.config');
-    expect(paths.config).toContain('openkraken');
-    expect(paths.data).toContain('.local');
-    expect(paths.data).toContain('openkraken');
-    expect(paths.cache).toContain('.cache');
-    expect(paths.cache).toContain('openkraken');
+    expect(paths.config).toContain(".config");
+    expect(paths.config).toContain("openkraken");
+    expect(paths.data).toContain(".local");
+    expect(paths.data).toContain("openkraken");
+    expect(paths.cache).toContain(".cache");
+    expect(paths.cache).toContain("openkraken");
   });
 
-  it('should allow FHS mode override on NixOS', () => {
+  it("should allow FHS mode override on NixOS", () => {
     // Even on NixOS, user can force FHS mode if they have a writable /etc
-    const paths = resolver.resolvePaths({ mode: 'fhs' });
+    const paths = resolver.resolvePaths({ mode: "fhs" });
 
-    expect(paths.config).toBe('/etc/openkraken/config.yaml');
-    expect(paths.data).toBe('/var/lib/openkraken');
-    expect(paths.logs).toBe('/var/log/openkraken');
-    expect(paths.cache).toBe('/var/cache/openkraken');
+    expect(paths.config).toBe("/etc/openkraken/config.yaml");
+    expect(paths.data).toBe("/var/lib/openkraken");
+    expect(paths.logs).toBe("/var/log/openkraken");
+    expect(paths.cache).toBe("/var/cache/openkraken");
   });
 
-  it('should show NixOS in environment summary', () => {
+  it("should show NixOS in environment summary", () => {
     const env = resolver.getEnvironment();
 
     expect(env.isNixOS).toBe(true);
   });
 });
 
-describe('Headless Linux Path Resolution', () => {
+describe("Headless Linux Path Resolution", () => {
   let resolver: PlatformPathResolver;
 
   beforeEach(() => {
     resolver = new PlatformPathResolver();
 
     // Mock headless Linux environment (no desktop, no D-Bus)
-    vi.spyOn(resolver as any, 'getEnvironment').mockReturnValue({
-      platform: 'linux',
-      platformVersion: '6.0.0',
-      arch: 'x64',
+    vi.spyOn(resolver as any, "getEnvironment").mockReturnValue({
+      platform: "linux",
+      platformVersion: "6.0.0",
+      arch: "x64",
       isWSL: false,
       isDocker: false,
       isRoot: false,
@@ -341,39 +346,42 @@ describe('Headless Linux Path Resolution', () => {
     vi.restoreAllMocks();
   });
 
-  it('should use XDG paths for non-root headless Linux', () => {
+  it("should use XDG paths for non-root headless Linux", () => {
     // Headless Linux should still use XDG paths
     const paths = resolver.resolvePaths();
 
     // Should use XDG default locations
-    expect(paths.config).toContain('.config');
-    expect(paths.data).toContain('.local');
-    expect(paths.cache).toContain('.cache');
+    expect(paths.config).toContain(".config");
+    expect(paths.data).toContain(".local");
+    expect(paths.cache).toContain(".cache");
   });
 
-  it('should report headless in environment summary', () => {
+  it("should report headless in environment summary", () => {
     const env = resolver.getEnvironment();
 
     expect(env.isHeadless).toBe(true);
   });
 
-  it('should report no D-Bus in headless environment', () => {
+  it("should report no D-Bus in headless environment", () => {
     const env = resolver.getEnvironment();
 
     expect(env.isDBusAvailable).toBe(false);
   });
 
-  it('should still allow OPENKRAKEN_HOME override in headless', () => {
-    const paths = resolver.resolvePaths({ mode: 'custom', customBasePath: '/opt/openkraken' });
+  it("should still allow OPENKRAKEN_HOME override in headless", () => {
+    const paths = resolver.resolvePaths({
+      mode: "custom",
+      customBasePath: "/opt/openkraken",
+    });
 
-    expect(paths.config).toBe('/opt/openkraken/config.yaml');
-    expect(paths.data).toBe('/opt/openkraken/data');
-    expect(paths.logs).toBe('/opt/openkraken/logs');
-    expect(paths.cache).toBe('/opt/openkraken/cache');
+    expect(paths.config).toBe("/opt/openkraken/config.yaml");
+    expect(paths.data).toBe("/opt/openkraken/data");
+    expect(paths.logs).toBe("/opt/openkraken/logs");
+    expect(paths.cache).toBe("/opt/openkraken/cache");
   });
 });
 
-describe('XDG Environment Variable Override in FHS Mode', () => {
+describe("XDG Environment Variable Override in FHS Mode", () => {
   let resolver: PlatformPathResolver;
 
   beforeEach(() => {
@@ -392,79 +400,79 @@ describe('XDG Environment Variable Override in FHS Mode', () => {
     delete process.env.XDG_CACHE_HOME;
   });
 
-  it('should override config with XDG_CONFIG_HOME', () => {
-    process.env.XDG_CONFIG_HOME = '/custom/xdg/config';
+  it("should override config with XDG_CONFIG_HOME", () => {
+    process.env.XDG_CONFIG_HOME = "/custom/xdg/config";
 
     const paths = resolver.resolvePaths();
 
     // Config should use XDG_CONFIG_HOME
-    expect(paths.config).toBe('/custom/xdg/config/openkraken/config.yaml');
+    expect(paths.config).toBe("/custom/xdg/config/openkraken/config.yaml");
   });
 
-  it('should override data with XDG_DATA_HOME', () => {
-    process.env.XDG_DATA_HOME = '/custom/xdg/data';
+  it("should override data with XDG_DATA_HOME", () => {
+    process.env.XDG_DATA_HOME = "/custom/xdg/data";
 
     const paths = resolver.resolvePaths();
 
     // Data should use XDG_DATA_HOME with app name subdirectory
-    expect(paths.data).toBe('/custom/xdg/data/openkraken/data');
+    expect(paths.data).toBe("/custom/xdg/data/openkraken/data");
   });
 
-  it('should override cache with XDG_CACHE_HOME', () => {
-    process.env.XDG_CACHE_HOME = '/custom/xdg/cache';
+  it("should override cache with XDG_CACHE_HOME", () => {
+    process.env.XDG_CACHE_HOME = "/custom/xdg/cache";
 
     const paths = resolver.resolvePaths();
 
     // Cache should use XDG_CACHE_HOME with app name subdirectory
-    expect(paths.cache).toBe('/custom/xdg/cache/openkraken/cache');
+    expect(paths.cache).toBe("/custom/xdg/cache/openkraken/cache");
   });
 
-  it('should override multiple paths with multiple XDG variables', () => {
-    process.env.XDG_CONFIG_HOME = '/custom/config';
-    process.env.XDG_DATA_HOME = '/custom/data';
-    process.env.XDG_CACHE_HOME = '/custom/cache';
+  it("should override multiple paths with multiple XDG variables", () => {
+    process.env.XDG_CONFIG_HOME = "/custom/config";
+    process.env.XDG_DATA_HOME = "/custom/data";
+    process.env.XDG_CACHE_HOME = "/custom/cache";
 
     const paths = resolver.resolvePaths();
 
-    expect(paths.config).toBe('/custom/config/openkraken/config.yaml');
-    expect(paths.data).toBe('/custom/data/openkraken/data');
-    expect(paths.cache).toBe('/custom/cache/openkraken/cache');
+    expect(paths.config).toBe("/custom/config/openkraken/config.yaml");
+    expect(paths.data).toBe("/custom/data/openkraken/data");
+    expect(paths.cache).toBe("/custom/cache/openkraken/cache");
   });
 
-  it('should use XDG defaults for paths not overridden', () => {
+  it("should use XDG defaults for paths not overridden", () => {
     // Only set XDG_CONFIG_HOME, not others
-    process.env.XDG_CONFIG_HOME = '/custom/config';
+    process.env.XDG_CONFIG_HOME = "/custom/config";
 
     const paths = resolver.resolvePaths();
 
     // Config should use XDG_CONFIG_HOME
-    expect(paths.config).toBe('/custom/config/openkraken/config.yaml');
+    expect(paths.config).toBe("/custom/config/openkraken/config.yaml");
     // Data should use default XDG_DATA_HOME
-    expect(paths.data).toContain('.local/share/openkraken/data');
+    expect(paths.data).toContain(".local/share/openkraken/data");
     // Logs use XDG_DATA_HOME (per XDG spec, logs go in data directory)
-    expect(paths.logs).toContain('.local/share/openkraken/logs');
+    expect(paths.logs).toContain(".local/share/openkraken/logs");
     // Cache should use default XDG_CACHE_HOME
-    expect(paths.cache).toContain('.cache/openkraken/cache');
+    expect(paths.cache).toContain(".cache/openkraken/cache");
   });
 
-  it('should respect explicit XDG overrides', () => {
+  it("should respect explicit XDG overrides", () => {
     // All three XDG variables set
-    process.env.XDG_CONFIG_HOME = '/custom/config';
-    process.env.XDG_DATA_HOME = '/custom/data';
-    process.env.XDG_CACHE_HOME = '/custom/cache';
+    process.env.XDG_CONFIG_HOME = "/custom/config";
+    process.env.XDG_DATA_HOME = "/custom/data";
+    process.env.XDG_CACHE_HOME = "/custom/cache";
 
     const paths = resolver.resolvePaths();
 
     // All should use custom XDG paths
-    expect(paths.config).toBe('/custom/config/openkraken/config.yaml');
-    expect(paths.data).toBe('/custom/data/openkraken/data');
-    expect(paths.cache).toBe('/custom/cache/openkraken/cache');
+    expect(paths.config).toBe("/custom/config/openkraken/config.yaml");
+    expect(paths.data).toBe("/custom/data/openkraken/data");
+    expect(paths.cache).toBe("/custom/cache/openkraken/cache");
     // Logs should use XDG_DATA_HOME since that's how logs are resolved
-    expect(paths.logs).toBe('/custom/data/openkraken/logs');
+    expect(paths.logs).toBe("/custom/data/openkraken/logs");
   });
 });
 
-describe('Custom Path Validation', () => {
+describe("Custom Path Validation", () => {
   let resolver: PlatformPathResolver;
 
   beforeEach(() => {
@@ -477,63 +485,78 @@ describe('Custom Path Validation', () => {
     delete process.env.OPENKRAKEN_HOME;
   });
 
-  it('should reject null bytes in custom path', () => {
+  it("should reject null bytes in custom path", () => {
     expect(() => {
-      resolver.resolvePaths({ mode: 'custom', customBasePath: '/path/with\0null' });
-    }).toThrow('contains null bytes');
+      resolver.resolvePaths({
+        mode: "custom",
+        customBasePath: "/path/with\0null",
+      });
+    }).toThrow("contains null bytes");
   });
 
-  it('should reject path traversal in custom path', () => {
+  it("should reject path traversal in custom path", () => {
     expect(() => {
-      resolver.resolvePaths({ mode: 'custom', customBasePath: '/path/with/../traversal' });
-    }).toThrow('contains path traversal sequences');
+      resolver.resolvePaths({
+        mode: "custom",
+        customBasePath: "/path/with/../traversal",
+      });
+    }).toThrow("contains path traversal sequences");
   });
 
-  it('should reject relative custom path', () => {
+  it("should reject relative custom path", () => {
     expect(() => {
-      resolver.resolvePaths({ mode: 'custom', customBasePath: 'relative/path' });
-    }).toThrow('must be an absolute path');
+      resolver.resolvePaths({
+        mode: "custom",
+        customBasePath: "relative/path",
+      });
+    }).toThrow("must be an absolute path");
   });
 
-  it('should accept valid absolute custom path', () => {
-    const paths = resolver.resolvePaths({ mode: 'custom', customBasePath: '/opt/openkraken' });
+  it("should accept valid absolute custom path", () => {
+    const paths = resolver.resolvePaths({
+      mode: "custom",
+      customBasePath: "/opt/openkraken",
+    });
 
-    expect(paths.config).toBe('/opt/openkraken/config.yaml');
-    expect(paths.data).toBe('/opt/openkraken/data');
-    expect(paths.logs).toBe('/opt/openkraken/logs');
-    expect(paths.cache).toBe('/opt/openkraken/cache');
+    expect(paths.config).toBe("/opt/openkraken/config.yaml");
+    expect(paths.data).toBe("/opt/openkraken/data");
+    expect(paths.logs).toBe("/opt/openkraken/logs");
+    expect(paths.cache).toBe("/opt/openkraken/cache");
   });
 
-  it('should expand tilde in custom path', () => {
-    const paths = resolver.resolvePaths({ mode: 'custom', customBasePath: '~/my-app' });
+  it("should expand tilde in custom path", () => {
+    const paths = resolver.resolvePaths({
+      mode: "custom",
+      customBasePath: "~/my-app",
+    });
 
     // Should expand ~ to home directory
-    expect(paths.config).toContain('/my-app/config.yaml');
-    expect(paths.data).toContain('/my-app/data');
+    expect(paths.config).toContain("/my-app/config.yaml");
+    expect(paths.data).toContain("/my-app/data");
   });
 
-  it('should reject OPENKRAKEN_HOME with null bytes', () => {
-    process.env.OPENKRAKEN_HOME = '/path/with\0null';
+  it("should reject OPENKRAKEN_HOME with null bytes", () => {
+    process.env.OPENKRAKEN_HOME = "/path/with\0null";
 
     expect(() => {
       resolver.resolvePaths();
-    }).toThrow('contains null bytes');
+    }).toThrow("contains null bytes");
   });
 
-  it('should reject OPENKRAKEN_HOME with path traversal', () => {
-    process.env.OPENKRAKEN_HOME = '/path/with/../traversal';
+  it("should reject OPENKRAKEN_HOME with path traversal", () => {
+    process.env.OPENKRAKEN_HOME = "/path/with/../traversal";
 
     expect(() => {
       resolver.resolvePaths();
-    }).toThrow('contains path traversal sequences');
+    }).toThrow("contains path traversal sequences");
   });
 
-  it('should accept valid OPENKRAKEN_HOME', () => {
-    process.env.OPENKRAKEN_HOME = '/opt/my-app';
+  it("should accept valid OPENKRAKEN_HOME", () => {
+    process.env.OPENKRAKEN_HOME = "/opt/my-app";
 
     const paths = resolver.resolvePaths();
 
-    expect(paths.config).toBe('/opt/my-app/config.yaml');
-    expect(paths.data).toBe('/opt/my-app/data');
+    expect(paths.config).toBe("/opt/my-app/config.yaml");
+    expect(paths.data).toBe("/opt/my-app/data");
   });
 });

@@ -1,39 +1,30 @@
 /**
  * Path Resolution Engine
- * 
+ *
  * Core platform path resolution logic that handles cross-platform path construction
  * with proper detection, environment variable support, and path normalization.
  */
 
-import { join, resolve, isAbsolute } from 'path';
-import { homedir } from 'os';
-import {
-  detectEnvironment,
-  isLinux,
-  isMacOS,
-} from './detection';
-import {
-  expandTilde,
-} from './paths/expand';
+import { homedir } from "os";
+import { isAbsolute, join, resolve } from "path";
+import { detectEnvironment } from "./detection";
 import {
   APP_NAME,
   CONFIG_FILE_NAME,
   LINUX_FHS_PATHS,
-  LINUX_XDG_PATHS,
   MACOS_COCOA_PATHS,
+  type PathResolutionMode,
+  type PathResolutionOptions,
+  type PlatformPaths,
   SUBDIRECTORIES,
   XDG_DEFAULTS,
-  type OpenKrakenDirectoryStructure,
-  type PathResolutionOptions,
-  type PathResolutionMode,
-  type PlatformPaths,
-  type OperatingSystem,
-} from './paths/constants';
-import { PLATFORM_ENV_VARS, type DirectoryDefinition } from './paths/types';
+} from "./paths/constants";
+import { expandTilde } from "./paths/expand";
+import { PLATFORM_ENV_VARS } from "./paths/types";
 
 /**
  * Validates a custom base path for security and correctness
- * 
+ *
  * @param path - The path to validate
  * @param source - Description of the path source for error messages
  * @returns Validated path or throws error
@@ -41,13 +32,15 @@ import { PLATFORM_ENV_VARS, type DirectoryDefinition } from './paths/types';
  */
 function validateCustomBasePath(path: string, source: string): string {
   // Check for null bytes (path injection attack)
-  if (path.includes('\0')) {
+  if (path.includes("\0")) {
     throw new Error(`Invalid ${source}: contains null bytes`);
   }
 
   // Check for path traversal attempts
-  if (path.includes('..')) {
-    throw new Error(`Invalid ${source}: contains path traversal sequences (..)`);
+  if (path.includes("..")) {
+    throw new Error(
+      `Invalid ${source}: contains path traversal sequences (..)`
+    );
   }
 
   // Check that path is not empty after trimming
@@ -60,7 +53,9 @@ function validateCustomBasePath(path: string, source: string): string {
   // expandTilde handles ~, so we check after expansion
   const expandedPath = expandTilde(trimmedPath);
   if (!isAbsolute(expandedPath)) {
-    throw new Error(`Invalid ${source}: must be an absolute path (got: ${expandedPath})`);
+    throw new Error(
+      `Invalid ${source}: must be an absolute path (got: ${expandedPath})`
+    );
   }
 
   return expandedPath;
@@ -68,7 +63,7 @@ function validateCustomBasePath(path: string, source: string): string {
 
 /**
  * PlatformPathResolver
- * 
+ *
  * Main class for resolving platform-appropriate storage paths.
  * Handles Linux FHS, macOS Cocoa, and XDG Base Directory Specification.
  */
@@ -82,7 +77,7 @@ export class PlatformPathResolver {
 
   /**
    * Gets the complete platform paths configuration
-   * 
+   *
    * @param options - Resolution options
    * @returns Complete platform paths
    */
@@ -136,7 +131,9 @@ export class PlatformPathResolver {
   /**
    * Determines the appropriate resolution mode based on platform and options
    */
-  private determineResolutionMode(options: PathResolutionOptions): PathResolutionMode {
+  private determineResolutionMode(
+    options: PathResolutionOptions
+  ): PathResolutionMode {
     // Priority 1: Explicit mode override
     if (options.mode) {
       return options.mode;
@@ -145,14 +142,14 @@ export class PlatformPathResolver {
     // Priority 2: OPENKRAKEN_HOME override
     const customHome = process.env[PLATFORM_ENV_VARS.OPENKRAKEN_HOME];
     if (customHome) {
-      return 'custom';
+      return "custom";
     }
 
     // Priority 3: Platform-specific defaults
     const { platform, isRoot, isWSL, isNixOS } = this.environment;
 
     switch (platform) {
-      case 'linux':
+      case "linux":
         // Linux path resolution strategy:
         //
         // Priority: OPENKRAKEN_HOME > explicit mode > platform default
@@ -173,11 +170,11 @@ export class PlatformPathResolver {
         //
         // See: https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html
         if (isNixOS) {
-          return 'xdg';
+          return "xdg";
         }
         // Root on standard Linux gets FHS paths for system-wide storage
         if (isRoot && !isWSL) {
-          return 'fhs';
+          return "fhs";
         }
         // Non-root, WSL, containers, and sandboxed environments use XDG
         // This ensures portability across:
@@ -185,19 +182,19 @@ export class PlatformPathResolver {
         // - Flatpak/sandboxed applications
         // - Embedded Linux (Alpine, BusyBox)
         // - Non-root user installations
-        return 'xdg';
+        return "xdg";
 
-      case 'darwin':
+      case "darwin":
         // macOS: Always use Cocoa paths
-        return 'cocoa';
+        return "cocoa";
 
-      case 'windows':
+      case "windows":
         // Windows: Not fully supported, fall back to user local
-        return 'custom';
+        return "custom";
 
       default:
         // Unknown platform: try user-local paths
-        return 'custom';
+        return "custom";
     }
   }
 
@@ -209,7 +206,7 @@ export class PlatformPathResolver {
     options: PathResolutionOptions
   ): PlatformPaths {
     switch (mode) {
-      case 'fhs':
+      case "fhs":
         // In FHS mode, use strict FHS paths unless user explicitly set XDG env vars
         // Only treat as XDG override if explicitly undefined (not just default values)
         if (this.hasExplicitXDGOverrides()) {
@@ -217,24 +214,31 @@ export class PlatformPathResolver {
         }
         return this.buildFHSPaths();
 
-      case 'xdg':
+      case "xdg":
         return this.buildXDGPaths();
 
-      case 'cocoa':
+      case "cocoa":
         return this.buildCocoaPaths();
 
-      case 'custom':
+      case "custom": {
         const customHome = process.env[PLATFORM_ENV_VARS.OPENKRAKEN_HOME];
         if (customHome) {
-          return this.buildCustomPaths(customHome, 'OPENKRAKEN_HOME environment variable');
+          return this.buildCustomPaths(
+            customHome,
+            "OPENKRAKEN_HOME environment variable"
+          );
         }
         if (options.customBasePath) {
-          return this.buildCustomPaths(options.customBasePath, 'customBasePath option');
+          return this.buildCustomPaths(
+            options.customBasePath,
+            "customBasePath option"
+          );
         }
-        return this.buildCustomPaths(homedir(), 'default home directory');
+        return this.buildCustomPaths(homedir(), "default home directory");
+      }
 
       default:
-        return this.buildCustomPaths(homedir(), 'default home directory');
+        return this.buildCustomPaths(homedir(), "default home directory");
     }
   }
 
@@ -254,7 +258,7 @@ export class PlatformPathResolver {
 
   /**
    * Builds FHS-compliant Linux paths with independent XDG overrides
-   * 
+   *
    * Per XDG Base Directory Specification, each environment variable is independent.
    * A user can set $XDG_CONFIG_HOME without setting $XDG_DATA_HOME, etc.
    * This allows partial overrides while respecting XDG semantics.
@@ -262,20 +266,18 @@ export class PlatformPathResolver {
   private buildFHSWithXDGOverrides(): PlatformPaths {
     // For each path type, check if the corresponding XDG variable is set
     // If set, use XDG; otherwise, fall back to FHS standard location
-    
+
     const xdgConfig = process.env[PLATFORM_ENV_VARS.XDG_CONFIG_HOME];
     const xdgData = process.env[PLATFORM_ENV_VARS.XDG_DATA_HOME];
     const xdgCache = process.env[PLATFORM_ENV_VARS.XDG_CACHE_HOME];
 
     // Config: Use XDG_CONFIG_HOME if set, else FHS /etc
-    const configBase = xdgConfig 
+    const configBase = xdgConfig
       ? expandTilde(xdgConfig)
       : LINUX_FHS_PATHS.config.path;
 
     // Data: Use XDG_DATA_HOME if set, else FHS /var/lib
-    const dataBase = xdgData
-      ? expandTilde(xdgData)
-      : LINUX_FHS_PATHS.data.path;
+    const dataBase = xdgData ? expandTilde(xdgData) : LINUX_FHS_PATHS.data.path;
 
     // Logs: Use XDG_DATA_HOME/logs if set, else FHS /var/log
     const logsBase = xdgData
@@ -343,15 +345,21 @@ export class PlatformPathResolver {
 
   /**
    * Builds custom paths from base directory
-   * 
+   *
    * @param customBasePath - The custom base path (validated)
    * @param pathSource - Description of the path source for error messages
    * @returns PlatformPaths with custom base
    * @throws Error if customBasePath is invalid
    */
-  private buildCustomPaths(customBasePath: string, pathSource: string = 'customBasePath'): PlatformPaths {
+  private buildCustomPaths(
+    customBasePath: string,
+    pathSource = "customBasePath"
+  ): PlatformPaths {
     // Validate the custom base path for security
-    const validatedBasePath = validateCustomBasePath(customBasePath, pathSource);
+    const validatedBasePath = validateCustomBasePath(
+      customBasePath,
+      pathSource
+    );
     const normalizedBase = resolve(validatedBasePath);
 
     return {
@@ -425,7 +433,9 @@ export function getPathResolver(): PlatformPathResolver {
 /**
  * Convenience function to get platform paths
  */
-export function getPlatformPaths(options: PathResolutionOptions = {}): PlatformPaths {
+export function getPlatformPaths(
+  options: PathResolutionOptions = {}
+): PlatformPaths {
   return getPathResolver().resolvePaths(options);
 }
 
@@ -460,7 +470,10 @@ export function getCachePath(options: PathResolutionOptions = {}): string {
 /**
  * Resolves a relative path within the OpenKraken data directory
  */
-export function resolveDataSubpath(subpath: string, options: PathResolutionOptions = {}): string {
+export function resolveDataSubpath(
+  subpath: string,
+  options: PathResolutionOptions = {}
+): string {
   const dataPath = getPathResolver().resolveDataPath(options);
   return join(dataPath, subpath);
 }
@@ -469,7 +482,9 @@ export function resolveDataSubpath(subpath: string, options: PathResolutionOptio
  * Testing helper: Sets a custom resolver instance
  * WARNING: For testing only. Do not use in production.
  */
-export function setResolverInstance(instance: PlatformPathResolver | null): void {
+export function setResolverInstance(
+  instance: PlatformPathResolver | null
+): void {
   resolverInstance = instance;
 }
 

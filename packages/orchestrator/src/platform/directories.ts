@@ -1,24 +1,26 @@
 /**
  * Directory Creation Service
- * 
+ *
  * Creates platform-appropriate directories with correct permissions.
  * Handles recursive creation, permission validation, and error recovery.
  */
 
-import { mkdir, chmod, stat, access, constants } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { access, chmod, mkdir, stat } from "node:fs/promises";
+import {
+  LINUX_FHS_PATHS,
+  MACOS_COCOA_PATHS,
+  type OpenKrakenDirectoryStructure,
+} from "./paths/constants";
+import type {
+  DirectoryCreationResult,
+  PermissionIssue,
+  PermissionValidationResult,
+} from "./paths/types";
 import {
   getPathResolver,
-  type PlatformPaths,
   type PathResolutionOptions,
-} from './resolver';
-import { LINUX_FHS_PATHS, MACOS_COCOA_PATHS, type OpenKrakenDirectoryStructure } from './paths/constants';
-import {
-  type DirectoryCreationResult,
-  type PermissionValidationResult,
-  type PermissionIssue,
-  type DirectoryDefinition,
-} from './paths/types';
+  type PlatformPaths,
+} from "./resolver";
 
 /**
  * Options for directory creation
@@ -45,7 +47,7 @@ const DEFAULT_OPTIONS: DirectoryCreationOptions = {
 
 /**
  * DirectoryManager
- * 
+ *
  * Service class for creating and validating OpenKraken directories
  * with appropriate permissions for the current platform.
  */
@@ -60,7 +62,7 @@ export class DirectoryManager {
 
   /**
    * Ensures all OpenKraken directories exist with correct permissions
-   * 
+   *
    * @returns Result of directory creation operation
    */
   async ensureDirectories(
@@ -77,14 +79,19 @@ export class DirectoryManager {
     // Create each directory
     for (const [key, definition] of Object.entries(structure)) {
       const path = (paths as Record<string, string>)[key];
-      
+
       try {
-        const creationResult = await this.ensureDirectory(path, definition.mode);
+        const creationResult = await this.ensureDirectory(
+          path,
+          definition.mode
+        );
         result.directories[key] = creationResult;
-        
-        if (!creationResult.success && !creationResult.existed) {
+
+        if (!(creationResult.success || creationResult.existed)) {
           result.success = false;
-          result.errors.push(`Failed to create ${key} directory: ${creationResult.error}`);
+          result.errors.push(
+            `Failed to create ${key} directory: ${creationResult.error}`
+          );
         }
       } catch (error) {
         result.success = false;
@@ -110,11 +117,11 @@ export class DirectoryManager {
     try {
       // Check if directory already exists
       const stats = await stat(path);
-      
+
       if (!stats.isDirectory()) {
         return {
           success: false,
-          error: 'Path exists but is not a directory',
+          error: "Path exists but is not a directory",
           existed: false,
         };
       }
@@ -138,8 +145,8 @@ export class DirectoryManager {
       return { success: true, existed: true };
     } catch (error) {
       const err = error as NodeJS.ErrnoException;
-      
-      if (err.code === 'ENOENT') {
+
+      if (err.code === "ENOENT") {
         // Directory doesn't exist, create it
         try {
           await mkdir(path, { mode, recursive: this.options.recursive });
@@ -172,11 +179,11 @@ export class DirectoryManager {
 
     for (const [key, definition] of Object.entries(structure)) {
       const path = (paths as Record<string, string>)[key];
-      
+
       try {
         const stats = await stat(path);
         const currentMode = stats.mode & 0o777;
-        
+
         if (currentMode !== definition.mode) {
           issues.push({
             path,
@@ -190,7 +197,7 @@ export class DirectoryManager {
           path,
           expectedMode: definition.mode,
           actualMode: 0,
-          severity: 'error',
+          severity: "error",
         });
       }
     }
@@ -204,24 +211,26 @@ export class DirectoryManager {
   /**
    * Fixes directory permissions if they're incorrect
    */
-  async fixPermissions(paths: PlatformPaths): Promise<PermissionValidationResult> {
+  async fixPermissions(
+    paths: PlatformPaths
+  ): Promise<PermissionValidationResult> {
     const structure = this.getDirectoryStructure();
     const issues: PermissionIssue[] = [];
 
     for (const [key, definition] of Object.entries(structure)) {
       const path = (paths as Record<string, string>)[key];
-      
+
       try {
         const stats = await stat(path);
         const currentMode = stats.mode & 0o777;
-        
+
         if (currentMode !== definition.mode) {
           await chmod(path, definition.mode);
           issues.push({
             path,
             expectedMode: definition.mode,
             actualMode: currentMode,
-            severity: 'warning',
+            severity: "warning",
           });
         }
       } catch (error) {
@@ -229,7 +238,7 @@ export class DirectoryManager {
           path,
           expectedMode: definition.mode,
           actualMode: 0,
-          severity: 'error',
+          severity: "error",
         });
       }
     }
@@ -245,27 +254,27 @@ export class DirectoryManager {
    */
   private getDirectoryStructure(): OpenKrakenDirectoryStructure {
     const env = this.resolver.getEnvironment();
-    
-    if (env.platform === 'darwin') {
+
+    if (env.platform === "darwin") {
       return MACOS_COCOA_PATHS;
     }
-    
+
     return LINUX_FHS_PATHS;
   }
 
   /**
    * Determines the severity of a permission mismatch
    */
-  private getSeverity(actual: number, expected: number): 'warning' | 'error' {
+  private getSeverity(actual: number, expected: number): "warning" | "error" {
     // Permissions that are too open are more serious than too restrictive
     const actualReadable = (actual & 0o004) !== 0;
     const expectedReadable = (expected & 0o004) !== 0;
-    
+
     if (actualReadable && !expectedReadable) {
-      return 'error';
+      return "error";
     }
-    
-    return 'warning';
+
+    return "warning";
   }
 
   /**

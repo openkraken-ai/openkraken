@@ -1,23 +1,23 @@
 #!/usr/bin/env bun
+
 /**
  * Database initialization script for OpenKraken orchestrator
- * 
+ *
  * Creates storage directories and initializes the SQLite database schema
  * using platform-appropriate paths with WAL mode for better concurrency.
  */
 
-import { resolve } from 'path';
-import { mkdir, existsSync } from 'fs';
-import { Database } from 'bun:sqlite';
-import { getPlatformPaths, ensureDirectories } from '../src/platform/index';
+import { Database } from "bun:sqlite";
+import { existsSync } from "fs";
+import { ensureDirectories, getPlatformPaths } from "../src/platform/index";
 
-const SCHEMA_VERSION = '001';
+const SCHEMA_VERSION = "001";
 
 /**
  * Main initialization function
  */
 async function initializeDatabase(): Promise<void> {
-  console.log('=== OpenKraken Database Initialization ===\n');
+  console.log("=== OpenKraken Database Initialization ===\n");
 
   // Get platform-appropriate paths
   const paths = getPlatformPaths();
@@ -28,26 +28,26 @@ async function initializeDatabase(): Promise<void> {
   console.log(`Database path: ${databasePath}`);
 
   // Create directories with correct permissions
-  console.log('\nEnsuring storage directories exist...');
+  console.log("\nEnsuring storage directories exist...");
   const dirResult = await ensureDirectories();
-  
+
   if (dirResult.success) {
-    console.log('Directories created successfully');
+    console.log("Directories created successfully");
   } else {
-    console.warn('Some directories could not be created:');
-    dirResult.errors.forEach(err => console.warn(`  - ${err}`));
+    console.warn("Some directories could not be created:");
+    dirResult.errors.forEach((err) => console.warn(`  - ${err}`));
   }
 
   // Initialize database if it doesn't exist
   if (existsSync(databasePath)) {
-    console.log('\nDatabase already exists. Verifying schema...');
+    console.log("\nDatabase already exists. Verifying schema...");
     await verifySchema(databasePath);
   } else {
-    console.log('\nCreating new database...');
+    console.log("\nCreating new database...");
     await createDatabase(databasePath);
   }
 
-  console.log('\n=== Database initialization complete ===');
+  console.log("\n=== Database initialization complete ===");
 }
 
 /**
@@ -64,18 +64,18 @@ async function createDatabase(databasePath: string): Promise<void> {
     // Enable WAL mode for better concurrency
     // WAL (Write-Ahead Logging) allows concurrent reads while writing
     db.run("PRAGMA journal_mode = WAL");
-    
+
     // Set synchronous mode to NORMAL for better performance while maintaining durability
     db.run("PRAGMA synchronous = NORMAL");
-    
+
     // Enable foreign keys
     db.run("PRAGMA foreign_keys = ON");
-    
+
     // Create all tables
     db.run(generateSchema());
-    
-    console.log('Database schema created successfully');
-    console.log('WAL mode enabled for concurrent access');
+
+    console.log("Database schema created successfully");
+    console.log("WAL mode enabled for concurrent access");
   } finally {
     // Close the database connection
     db.close();
@@ -86,25 +86,29 @@ async function createDatabase(databasePath: string): Promise<void> {
  * Verifies existing database schema
  */
 async function verifySchema(databasePath: string): Promise<void> {
-  console.log('Verifying database integrity...');
-  
+  console.log("Verifying database integrity...");
+
   const db = new Database(databasePath);
-  
+
   try {
     // Check if WAL mode is enabled
-    const journalMode = db.query("PRAGMA journal_mode").get() as { journal_mode: string };
+    const journalMode = db.query("PRAGMA journal_mode").get() as {
+      journal_mode: string;
+    };
     console.log(`Journal mode: ${journalMode.journal_mode}`);
-    
+
     // Verify key tables exist
-    const tables = db.query(`
+    const tables = db
+      .query(`
       SELECT name FROM sqlite_master 
       WHERE type='table' AND name NOT LIKE 'sqlite_%'
       ORDER BY name
-    `).all() as Array<{ name: string }>;
-    
-    console.log(`Tables found: ${tables.map(t => t.name).join(', ')}`);
-    
-    console.log('Database verified successfully');
+    `)
+      .all() as Array<{ name: string }>;
+
+    console.log(`Tables found: ${tables.map((t) => t.name).join(", ")}`);
+
+    console.log("Database verified successfully");
   } finally {
     db.close();
   }
@@ -255,10 +259,10 @@ CREATE INDEX IF NOT EXISTS idx_skill_audit_log_skill ON skill_audit_log(skill_id
 // Run initialization
 initializeDatabase()
   .then(() => {
-    console.log('\nDatabase initialization successful');
+    console.log("\nDatabase initialization successful");
     process.exit(0);
   })
   .catch((error) => {
-    console.error('Database initialization failed:', error);
+    console.error("Database initialization failed:", error);
     process.exit(1);
   });

@@ -1,25 +1,23 @@
 /**
  * Platform Storage Path Types
- * 
+ *
  * Defines TypeScript interfaces and types for cross-platform storage path resolution.
  * Supports Linux FHS-compliant paths, macOS Cocoa paths, and XDG Base Directory Specification.
  */
 
-import type { Platform } from 'bun';
-
 /**
  * Supported operating system platforms
  */
-export type OperatingSystem = 'linux' | 'darwin' | 'windows' | 'unknown';
+export type OperatingSystem = "linux" | "darwin" | "windows" | "unknown";
 
 /**
  * Path resolution mode for different installation contexts
  */
-export type PathResolutionMode = 
-  | 'fhs'       // Filesystem Hierarchy Standard (Linux system-wide)
-  | 'xdg'       // XDG Base Directory Specification (Linux user-specific)
-  | 'cocoa'     // macOS Cocoa paths
-  | 'custom';   // Custom path via OPENKRAKEN_HOME
+export type PathResolutionMode =
+  | "fhs" // Filesystem Hierarchy Standard (Linux system-wide)
+  | "xdg" // XDG Base Directory Specification (Linux user-specific)
+  | "cocoa" // macOS Cocoa paths
+  | "custom"; // Custom path via OPENKRAKEN_HOME
 
 /**
  * Structure defining a single directory path with its requirements
@@ -104,14 +102,17 @@ export interface DirectoryCreationResult {
   /** Whether all directories were created successfully */
   success: boolean;
   /** Map of directory path to creation status */
-  directories: Record<string, {
-    /** Whether creation was successful */
-    created: boolean;
-    /** Error message if creation failed */
-    error?: string;
-    /** Whether directory already existed */
-    existed: boolean;
-  }>;
+  directories: Record<
+    string,
+    {
+      /** Whether creation was successful */
+      created: boolean;
+      /** Error message if creation failed */
+      error?: string;
+      /** Whether directory already existed */
+      existed: boolean;
+    }
+  >;
   /** List of any errors encountered */
   errors: string[];
 }
@@ -137,7 +138,7 @@ export interface PermissionIssue {
   /** Actual permission mode */
   actualMode: number;
   /** Severity of the issue */
-  severity: 'warning' | 'error';
+  severity: "warning" | "error";
 }
 
 /**
@@ -145,25 +146,27 @@ export interface PermissionIssue {
  */
 export const PLATFORM_ENV_VARS = {
   /** Override for base path */
-  OPENKRAKEN_HOME: 'OPENKRAKEN_HOME',
+  OPENKRAKEN_HOME: "OPENKRAKEN_HOME",
   /** XDG configuration home */
-  XDG_CONFIG_HOME: 'XDG_CONFIG_HOME',
+  XDG_CONFIG_HOME: "XDG_CONFIG_HOME",
   /** XDG data home */
-  XDG_DATA_HOME: 'XDG_DATA_HOME',
+  XDG_DATA_HOME: "XDG_DATA_HOME",
   /** XDG cache home */
-  XDG_CACHE_HOME: 'XDG_CACHE_HOME',
+  XDG_CACHE_HOME: "XDG_CACHE_HOME",
 } as const;
 
 /**
  * Type guard to check if a string is a valid OperatingSystem
  */
 export function isOperatingSystem(value: string): value is OperatingSystem {
-  return ['linux', 'darwin', 'windows', 'unknown'].includes(value);
+  return ["linux", "darwin", "windows", "unknown"].includes(value);
 }
 
 /**
  * Type guard to check if a string is a valid PathResolutionMode
  */
-export function isPathResolutionMode(value: string): value is PathResolutionMode {
-  return ['fhs', 'xdg', 'cocoa', 'custom'].includes(value);
+export function isPathResolutionMode(
+  value: string
+): value is PathResolutionMode {
+  return ["fhs", "xdg", "cocoa", "custom"].includes(value);
 }

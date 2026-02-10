@@ -1,16 +1,16 @@
 /**
  * Platform Detection Module
- * 
+ *
  * Detects operating system platform, architecture, and runtime environment.
  * Supports Linux, macOS, Windows, WSL, and container detection.
  */
 
-import type { EnvironmentInfo, OperatingSystem } from './paths/types';
-import { isOperatingSystem } from './paths/types';
+import type { EnvironmentInfo, OperatingSystem } from "./paths/types";
+import { isOperatingSystem } from "./paths/types";
 
 /**
  * Detects the current runtime environment
- * 
+ *
  * @returns Environment information including platform, version, and special environments
  */
 export function detectEnvironment(): EnvironmentInfo {
@@ -39,7 +39,7 @@ export function detectEnvironment(): EnvironmentInfo {
 
 /**
  * Detects the operating system platform
- * 
+ *
  * @returns Operating system type
  */
 export function detectPlatform(): OperatingSystem {
@@ -50,12 +50,12 @@ export function detectPlatform(): OperatingSystem {
   }
 
   // Fallback for unexpected platform values
-  return 'unknown';
+  return "unknown";
 }
 
 /**
  * Detects CPU architecture
- * 
+ *
  * @returns Architecture string (e.g., 'x64', 'arm64')
  */
 export function detectArchitecture(): string {
@@ -64,12 +64,12 @@ export function detectArchitecture(): string {
 
 /**
  * Gets the Darwin kernel version by running uname
- * 
+ *
  * @returns Darwin kernel version (e.g., '23.3.0') or null if unavailable
  */
 function getDarwinKernelVersion(): string | null {
   try {
-    const result = Bun.exec(['/usr/bin/uname', '-r']);
+    const result = Bun.exec(["/usr/bin/uname", "-r"]);
     const version = result.stdout.trim();
     return version || null;
   } catch {
@@ -79,28 +79,29 @@ function getDarwinKernelVersion(): string | null {
 
 /**
  * Gets the platform version string
- * 
+ *
  * @param platform - Operating system to get version for
  * @returns Version string for the platform
  */
 export function detectPlatformVersion(platform: OperatingSystem): string {
   switch (platform) {
-    case 'linux':
+    case "linux":
       // Return kernel version using Bun's os module
       try {
         return Bun.os?.release || process.platform;
       } catch {
         return process.platform;
       }
-    case 'darwin':
+    case "darwin": {
       // Get Darwin kernel version from uname
       const darwinVersion = getDarwinKernelVersion();
       if (darwinVersion) {
         return mapDarwinVersion(darwinVersion);
       }
       // Fallback to a generic macOS version
-      return 'macOS (unknown version)';
-    case 'windows':
+      return "macOS (unknown version)";
+    }
+    case "windows":
       return process.platform;
     default:
       return process.platform;
@@ -114,7 +115,7 @@ export function detectPlatformVersion(platform: OperatingSystem): string {
  * @returns Human-readable macOS version
  */
 export function mapDarwinVersion(darwinVersion: string): string {
-  const major = parseInt(darwinVersion.split('.')[0], 10);
+  const major = Number.parseInt(darwinVersion.split(".")[0], 10);
 
   // Darwin versions to macOS mappings (year-based since 2011)
   // Darwin 25.x = macOS 16.x (Tahoe) / macOS 26.x (2025)
@@ -125,27 +126,32 @@ export function mapDarwinVersion(darwinVersion: string): string {
   // Darwin 20.x = macOS 11.x (Big Sur) (2020)
   // Darwin 19.x = macOS 10.15.x (Catalina) (2019)
   if (major >= 25) {
-    return 'macOS 16.x/26.x (Tahoe)';
-  } else if (major >= 24) {
-    return 'macOS 15.x (Sequoia)';
-  } else if (major >= 23) {
-    return 'macOS 14.x (Sonoma)';
-  } else if (major >= 22) {
-    return 'macOS 13.x (Ventura)';
-  } else if (major >= 21) {
-    return 'macOS 12.x (Monterey)';
-  } else if (major >= 20) {
-    return 'macOS 11.x (Big Sur)';
-  } else if (major >= 19) {
-    return 'macOS 10.15.x (Catalina)';
-  } else {
-    return `macOS (Darwin ${darwinVersion})`;
+    return "macOS 16.x/26.x (Tahoe)";
   }
+  if (major >= 24) {
+    return "macOS 15.x (Sequoia)";
+  }
+  if (major >= 23) {
+    return "macOS 14.x (Sonoma)";
+  }
+  if (major >= 22) {
+    return "macOS 13.x (Ventura)";
+  }
+  if (major >= 21) {
+    return "macOS 12.x (Monterey)";
+  }
+  if (major >= 20) {
+    return "macOS 11.x (Big Sur)";
+  }
+  if (major >= 19) {
+    return "macOS 10.15.x (Catalina)";
+  }
+  return `macOS (Darwin ${darwinVersion})`;
 }
 
 /**
  * Detects Windows Subsystem for Linux
- * 
+ *
  * @returns True if running in WSL
  */
 export function detectWSL(): boolean {
@@ -160,8 +166,8 @@ export function detectWSL(): boolean {
 
   // Check for Microsoft-specific kernel version markers in Bun.version
   try {
-    const bunVersion = Bun.version?.toLowerCase() || '';
-    if (bunVersion.includes('microsoft') || bunVersion.includes('wsl')) {
+    const bunVersion = Bun.version?.toLowerCase() || "";
+    if (bunVersion.includes("microsoft") || bunVersion.includes("wsl")) {
       return true;
     }
   } catch {
@@ -169,7 +175,7 @@ export function detectWSL(): boolean {
   }
 
   // Check for WSL-specific path patterns
-  if (process.env.PATH?.includes('\\Windows\\System32')) {
+  if (process.env.PATH?.includes("\\Windows\\System32")) {
     return true;
   }
 
@@ -178,7 +184,7 @@ export function detectWSL(): boolean {
 
 /**
  * Detects Docker container environment
- * 
+ *
  * @returns True if running in Docker
  */
 export function detectDocker(): boolean {
@@ -193,10 +199,12 @@ export function detectDocker(): boolean {
 
   // Check for Docker-specific cgroup information
   try {
-    const cgroup = Bun.readFileSync('/proc/self/cgroup', 'utf8');
-    if (cgroup.includes('docker') || 
-        cgroup.includes('containerd') || 
-        cgroup.includes('container')) {
+    const cgroup = Bun.readFileSync("/proc/self/cgroup", "utf8");
+    if (
+      cgroup.includes("docker") ||
+      cgroup.includes("containerd") ||
+      cgroup.includes("container")
+    ) {
       return true;
     }
   } catch {
@@ -205,7 +213,7 @@ export function detectDocker(): boolean {
 
   // Check for .dockerenv file
   try {
-    Bun.statSync('/.dockerenv');
+    Bun.statSync("/.dockerenv");
     return true;
   } catch {
     // File doesn't exist
@@ -216,18 +224,18 @@ export function detectDocker(): boolean {
 
 /**
  * Detects if running with root privileges
- * 
+ *
  * @returns True if running as root (UID 0)
  */
 export function detectRootPrivileges(): boolean {
   // On POSIX systems, UID 0 is root
-  if (typeof process.getuid === 'function') {
+  if (typeof process.getuid === "function") {
     return process.getuid() === 0;
   }
 
   // On Windows, check for admin privileges
-  if (process.platform === 'win32') {
-    return process.env.USERPROFILE?.toLowerCase().includes('admin') ?? false;
+  if (process.platform === "win32") {
+    return process.env.USERPROFILE?.toLowerCase().includes("admin") ?? false;
   }
 
   return false;
@@ -250,7 +258,7 @@ export function detectNixOS(): boolean {
 
   // Check for /run/current-system which exists on NixOS
   try {
-    Bun.statSync('/run/current-system');
+    Bun.statSync("/run/current-system");
     return true;
   } catch {
     // Not NixOS or /run not accessible
@@ -258,7 +266,7 @@ export function detectNixOS(): boolean {
 
   // Check for /etc/nixos/configuration.nix (NixOS config file location)
   try {
-    Bun.readFileSync('/etc/nixos/configuration.nix', 'utf8');
+    Bun.readFileSync("/etc/nixos/configuration.nix", "utf8");
     return true;
   } catch {
     // Not NixOS
@@ -279,15 +287,15 @@ export function detectNixOS(): boolean {
 export function detectDBusAvailable(): boolean {
   // Check for D-Bus session bus address
   const dbusAddress = process.env.DBUS_SESSION_BUS_ADDRESS;
-  if (dbusAddress && dbusAddress.trim() !== '') {
+  if (dbusAddress && dbusAddress.trim() !== "") {
     return true;
   }
 
   // Check for common D-Bus socket paths
   const dbusSockets = [
-    '/run/user/bus',           // User session D-Bus
-    '/tmp/dbus-',              // Temporary D-Bus sockets
-    '/var/run/dbus/system_bus_socket', // System bus (less useful for secret-service)
+    "/run/user/bus", // User session D-Bus
+    "/tmp/dbus-", // Temporary D-Bus sockets
+    "/var/run/dbus/system_bus_socket", // System bus (less useful for secret-service)
   ];
 
   for (const socket of dbusSockets) {
@@ -302,7 +310,7 @@ export function detectDBusAvailable(): boolean {
   // Check for running D-Bus daemon
   try {
     // Check if dbus-daemon or dbus-broker is running
-    const result = Bun.exec(['pgrep', '-x', 'dbus-daemon']);
+    const result = Bun.exec(["pgrep", "-x", "dbus-daemon"]);
     if (result.stdout.trim().length > 0) {
       return true;
     }
@@ -327,20 +335,20 @@ export function detectDBusAvailable(): boolean {
 export function detectHeadless(): boolean {
   // Check for common desktop environment indicators
   const desktopEnvironmentIndicators = [
-    'DESKTOP_SESSION',      // GNOME, KDE, XFCE, etc.
-    'XDG_CURRENT_DESKTOP',   // Desktop environment name
-    'GDMSESSION',           // GDM login session
-    'GNOME_DESKTOP_SESSION_ID', // GNOME specific
-    'KDE_FULL_SESSION',      // KDE specific
-    'SWAYSOCK',             // Sway window manager
-    'I3SOCK',               // i3 window manager
-    'WAYLAND_DISPLAY',      // Wayland compositor
-    'DISPLAY',              // X11 display
+    "DESKTOP_SESSION", // GNOME, KDE, XFCE, etc.
+    "XDG_CURRENT_DESKTOP", // Desktop environment name
+    "GDMSESSION", // GDM login session
+    "GNOME_DESKTOP_SESSION_ID", // GNOME specific
+    "KDE_FULL_SESSION", // KDE specific
+    "SWAYSOCK", // Sway window manager
+    "I3SOCK", // i3 window manager
+    "WAYLAND_DISPLAY", // Wayland compositor
+    "DISPLAY", // X11 display
   ];
 
   for (const indicator of desktopEnvironmentIndicators) {
     const value = process.env[indicator];
-    if (value && value.trim() !== '') {
+    if (value && value.trim() !== "") {
       // Desktop environment indicator found
       return false;
     }
@@ -348,10 +356,10 @@ export function detectHeadless(): boolean {
 
   // Check for graphical session type via systemd (loginctl)
   try {
-    const result = Bun.exec(['loginctl', 'show-session', '-p', 'Type', 'c1']);
+    const result = Bun.exec(["loginctl", "show-session", "-p", "Type", "c1"]);
     const output = result.stdout.trim();
     // Graphical sessions are "x11" or "wayland"
-    if (output === 'x11' || output === 'wayland') {
+    if (output === "x11" || output === "wayland") {
       return false;
     }
   } catch {
@@ -364,80 +372,80 @@ export function detectHeadless(): boolean {
 
 /**
  * Gets a human-readable summary of the environment
- * 
+ *
  * @returns Environment summary string
  */
 export function getEnvironmentSummary(): string {
   const env = detectEnvironment();
-  
+
   const parts: string[] = [
     `${env.platform} ${env.platformVersion}`,
     `${env.arch}`,
   ];
 
   if (env.isWSL) {
-    parts.push('WSL');
+    parts.push("WSL");
   }
 
   if (env.isDocker) {
-    parts.push('Docker');
+    parts.push("Docker");
   }
 
   if (env.isNixOS) {
-    parts.push('NixOS');
+    parts.push("NixOS");
   }
 
   if (env.isDBusAvailable) {
-    parts.push('D-Bus');
+    parts.push("D-Bus");
   }
 
   if (env.isHeadless) {
-    parts.push('Headless');
+    parts.push("Headless");
   }
 
   if (env.isRoot) {
-    parts.push('root');
+    parts.push("root");
   }
 
-  return parts.join(' | ');
+  return parts.join(" | ");
 }
 
 /**
  * Type guard for checking if platform is Linux
- * 
+ *
  * @param platform - Platform to check
  * @returns True if platform is Linux
  */
-export function isLinux(platform: OperatingSystem): platform is 'linux' {
-  return platform === 'linux';
+export function isLinux(platform: OperatingSystem): platform is "linux" {
+  return platform === "linux";
 }
 
 /**
  * Type guard for checking if platform is macOS
- * 
+ *
  * @param platform - Platform to check
  * @returns True if platform is Darwin/macOS
  */
-export function isMacOS(platform: OperatingSystem): platform is 'darwin' {
-  return platform === 'darwin';
+export function isMacOS(platform: OperatingSystem): platform is "darwin" {
+  return platform === "darwin";
 }
 
 /**
  * Type guard for checking if platform is Windows
- * 
+ *
  * @param platform - Platform to check
  * @returns True if platform is Windows
  */
-export function isWindows(platform: OperatingSystem): platform is 'windows' {
-  return platform === 'windows';
+export function isWindows(platform: OperatingSystem): platform is "windows" {
+  return platform === "windows";
 }
 
 /**
  * Checks if running on a Unix-like system (Linux or macOS)
- * 
+ *
  * @returns True if running on Unix-like system
  */
 export function isUnixLike(): boolean {
   const platform = detectPlatform();
-  return platform === 'linux' || platform === 'darwin';
+  return platform === "linux" || platform === "darwin";
 }
