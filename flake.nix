@@ -4,28 +4,34 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
     flake-utils.url = "github:numtide/flake-utils";
-    bun.url = "github:oven-sh/bun";
+    devenv.url = "github:cachix/devenv/latest";
+    nix-darwin.url = "github:LnL7/nix-darwin";
+    nix-darwin.inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  outputs = { self, nixpkgs, flake-utils, bun }:
+  outputs = { self, nixpkgs, flake-utils, devenv, nix-darwin }:
     flake-utils.lib.eachDefaultSystem (system:
       let
-        overlays = [ (import (bun + "/flake.nix")) ];
         pkgs = import nixpkgs {
-          inherit system overlays;
+          inherit system;
         };
       in
       {
-        # Package outputs for this system
         packages = {
-          inherit (pkgs) bun;
-        };
-
-        devShells = {
-          default = pkgs.devenv.shell {
-            inherit (self.inputs) nixpkgs;
+          openkraken-orchestrator = pkgs.callPackage ./nix/package.nix {
+            bun = pkgs.bun;
+          };
+          openkraken-gateway = pkgs.callPackage ./nix/gateway-package.nix {
+            go = pkgs.go_1_25;
           };
         };
+
+        devShells.default = pkgs.callPackage ./nix/shell.nix {
+          inherit devenv;
+        };
+
+        nixosModules.openkraken = import ./nix/nixos-modules/openkraken.nix;
+        darwinModules.openkraken = import ./nix/darwin-modules/openkraken.nix;
       }
     );
 }

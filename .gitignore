@@ -29,6 +29,7 @@ Thumbs.db
 *.so
 *.out
 bin/
+result/
 
 # Logs
 *.log
