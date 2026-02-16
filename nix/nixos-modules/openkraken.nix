@@ -31,11 +31,16 @@ in
         default = 3000;
         description = "Orchestrator port";
       };
-
       dataDir = mkOption {
         type = types.path;
         default = "/var/lib/openkraken";
         description = "Data directory for OpenKraken";
+      };
+
+      configDir = mkOption {
+        type = types.path;
+        default = "/etc/openkraken";
+        description = "Configuration directory for OpenKraken";
       };
     };
 
@@ -81,6 +86,7 @@ in
         RuntimeDirectoryMode = "0755";
         Environment = [
           "OPENKRAKEN_HOME=${cfg.orchestrator.dataDir}"
+          "OPENKRAKEN_CONFIG=${cfg.orchestrator.configDir}/config.yaml"
           "ORCHESTRATOR_PORT=${toString cfg.orchestrator.port}"
         ];
         ExecStart = "${cfg.orchestrator.package}/bin/openkraken";
@@ -89,7 +95,7 @@ in
       };
     };
 
-    systemd.services.openkraken-gateway = mkIf cfg.gateway.enable {
+    systemd.services.openkraken-egress-gateway = mkIf cfg.gateway.enable {
       description = "OpenKraken Egress Gateway";
       wantedBy = [ "multi-user.target" ];
       after = [ "network.target" ];
@@ -103,6 +109,7 @@ in
         RuntimeDirectory = "openkraken";
         RuntimeDirectoryMode = "0755";
         Environment = [
+          "OPENKRAKEN_CONFIG=${cfg.orchestrator.configDir}/config.yaml"
           "EGRESS_GATEWAY_PORT=${toString cfg.gateway.port}"
           "EGRESS_SOCKET_PATH=${cfg.gateway.socketPath}"
         ];
