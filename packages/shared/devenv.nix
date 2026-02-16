@@ -8,6 +8,7 @@
     parallel # Parallel execution
     fd # Fast file finder
     ripgrep # Fast line-oriented search
+    cue # CUE configuration validation
   ];
 
   # Pre-commit hooks

@@ -1,0 +1,112 @@
+# OpenKraken Configuration Example
+# This is a valid configuration that conforms to nix/schema/config.cue
+
+version: "1.0"
+
+orchestrator:
+  host: "127.0.0.1"
+  port: 3000
+  session:
+    maxConcurrent: 1
+    idleTimeoutMinutes: 30
+    dayBoundaryEnabled: true
+  context:
+    maxTokens: 100000
+    summarizationThreshold: 80000
+
+sandbox:
+  enabled: true
+  timeoutSeconds: 300
+  memoryLimitMb: 2048
+  cpuLimitPercent: 50
+  zones:
+    skills: "/var/lib/openkraken/skills"
+    inputs: "/var/lib/openkraken/inputs"
+    work: "/var/lib/openkraken/work"
+    outputs: "/var/lib/openkraken/outputs"
+
+egressGateway:
+  http:
+    enabled: true
+    port: 8080
+  socks5:
+    enabled: false
+    port: 1080
+  allowlist:
+    system:
+      - "api.openai.com"
+      - "api.anthropic.com"
+    owner:
+      - "example.com"
+      - "api.example.com"
+    ttlSeconds: 300
+
+credentials:
+  backend: "keychain"
+  keychainService: "OpenKraken"
+
+channels:
+  telegram:
+    enabled: false
+    mode: "webhook"
+    webhookUrl: "https://your-domain.com/webhook"
+    secretToken: "your-secret-token"
+  mcp:
+    enabled: false
+    servers:
+      - name: "filesystem"
+        command: "npx"
+        args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    connectionTimeoutSeconds: 30
+
+middleware:
+  humanInTheLoop: false
+  memory: true
+  skillLoader: true
+
+skills:
+  autoUpdate: true
+  updateCheckIntervalHours: 24
+  directory: "/var/lib/openkraken/skills"
+  executionTimeoutSeconds: 300
+
+observability:
+  langfuse: false
+  langfusePublicKey: "pk-your-public-key"
+  langfuseSecretKey: "sk-your-secret-key"
+  otelEndpoint: "http://localhost:4318"
+  logLevel: "INFO"
+
+storage:
+  database:
+    path: "/var/lib/openkraken/db/openkraken.db"
+    walMode: true
+    cacheSize: 2000
+  backup:
+    enabled: true
+    directory: "/var/lib/openkraken/backups"
+    retentionDays: 30
+    intervalHours: 24
+
+alerting:
+  enabled: true
+  evaluationIntervalSeconds: 30
+  suppressionMinutes: 15
+  channels:
+    telegram:
+      enabled: true
+      severity:
+        - "CRITICAL"
+        - "ERROR"
+        - "WARN"
+        - "INFO"
+      immediate: true
+    email:
+      enabled: false
+      severity:
+        - "CRITICAL"
+        - "ERROR"
+        - "WARN"
+        - "INFO"
+      digest: true
+      digestIntervalMinutes: 60

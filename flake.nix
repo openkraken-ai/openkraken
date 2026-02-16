@@ -26,6 +26,20 @@
           };
         };
 
+        # Nix checks for validation
+        checks = {
+          # Validate example config against CUE schema
+          config-validation = pkgs.runCommand "config-validation"
+            {
+              nativeBuildInputs = [ pkgs.cue ];
+            } ''
+            mkdir -p $out
+            cue vet -c -d '#Config' ${./nix/schema/config.cue} ${./nix/schema/example.config.yaml}
+            echo "Validation passed!"
+            touch $out/success
+          '';
+        };
+
         devShells.default = pkgs.callPackage ./nix/shell.nix {
           inherit devenv;
         };
