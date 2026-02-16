@@ -34,8 +34,16 @@ in
 
       dataDir = mkOption {
         type = types.path;
-        default = "/var/lib/openkraken";
+        default = "%h/Library/Application Support/Openkraken";
+        defaultText = ''"%h/Library/Application Support/Openkraken"'';
         description = "Data directory for OpenKraken";
+      };
+
+      configDir = mkOption {
+        type = types.path;
+        default = "%h/Library/Application Support/Openkraken";
+        defaultText = ''"%h/Library/Application Support/Openkraken"'';
+        description = "Configuration directory for OpenKraken";
       };
     };
 
@@ -66,7 +74,7 @@ in
   };
 
   config = mkIf cfg.enable {
-    launchd.daemons.openkraken-orchestrator = mkIf cfg.orchestrator.enable {
+    launchd.user.agents.openkraken-orchestrator = mkIf cfg.orchestrator.enable {
       description = "OpenKraken Agent Orchestrator";
       serviceConfig = {
         Label = "com.openkraken.orchestrator";
@@ -77,21 +85,23 @@ in
         StandardErrorPath = "/var/log/openkraken/orchestrator.err";
         EnvironmentVariables = {
           OPENKRAKEN_HOME = cfg.orchestrator.dataDir;
+          OPENKRAKEN_CONFIG = "${cfg.orchestrator.configDir}/config.yaml";
           ORCHESTRATOR_PORT = toString cfg.orchestrator.port;
         };
       };
     };
 
-    launchd.daemons.openkraken-gateway = mkIf cfg.gateway.enable {
+    launchd.user.agents.openkraken-egress-gateway = mkIf cfg.gateway.enable {
       description = "OpenKraken Egress Gateway";
       serviceConfig = {
-        Label = "com.openkraken.gateway";
+        Label = "com.openkraken.egress-gateway";
         ProgramArguments = [ "${cfg.gateway.package}/bin/egress-gateway" ];
         RunAtLoad = true;
         KeepAlive = true;
         StandardOutPath = "/var/log/openkraken/gateway.log";
         StandardErrorPath = "/var/log/openkraken/gateway.err";
         EnvironmentVariables = {
+          OPENKRAKEN_CONFIG = "${cfg.orchestrator.configDir}/config.yaml";
           EGRESS_GATEWAY_PORT = toString cfg.gateway.port;
           EGRESS_SOCKET_PATH = cfg.gateway.socketPath;
         };
