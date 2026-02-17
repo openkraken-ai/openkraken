@@ -8,6 +8,14 @@
  * - FHS 3.0: https://refspecs.linuxfoundation.org/FHS_3.0/fhs/index.html
  * - XDG Base Directory Specification: https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html
  * - Apple NSSearchPathDirectory: Developer documentation
+ *
+ * Security Note: Permissions are configured per INFRA-014: Directory Permissions & Security
+ * - Data directories: 700 (owner only) for sensitive data
+ * - Log directories: 750 (group readable)
+ * - Cache directories: 755 (world readable)
+ * - Config directories: 640 (owner rw, group r)
+ * - Database files: 600 (owner rw only)
+ * - Socket files: 660 (owner rw, group rw)
  */
 
 import type { OpenKrakenDirectoryStructure } from "./types";
@@ -24,22 +32,32 @@ export const APP_NAME = "openkraken";
  * the convention of Title Case for Application Support directories.
  * See: https://developer.apple.com/library/archive/documentation/FileManagement/Conceptual/FileSystemProgrammingGuide/MacOSXDirectories/MacOSXDirectories.html
  */
-export const APP_NAME_MACOS = "Openkraken";
+export const APP_NAME_MACOS = "OpenKraken";
 
 /**
  * Permission mode constants (octal notation)
  *
- * 0o755 (rwxr-xr-x): Standard directory permissions - owner full access, others read/execute
- * 0o750 (rwxr-x---): Restricted directory permissions - owner full access, group read/execute
- * 0o700 (rwx------): Private directory permissions - only owner access
+ * Per INFRA-014 acceptance criteria:
+ * - 0o755 (rwxr-xr-x): Standard directory permissions - owner full access, others read/execute
+ * - 0o750 (rwxr-x---): Restricted directory permissions - owner full access, group read/execute
+ * - 0o700 (rwx------): Private directory permissions - only owner access
+ * - 0o640 (rw-r-----): Config directory permissions - owner read/write, group read
+ * - 0o600 (rw-------): Database file permissions - owner read/write only
+ * - 0o660 (rw-rw----): Socket file permissions - owner read/write, group read/write
  */
 export const PERMISSIONS = {
-  /** Standard permissions for data and cache directories */
+  /** Standard permissions for data and cache directories (755) */
   standard: 0o755 as const,
-  /** Restricted permissions for logs and config directories */
+  /** Restricted permissions for logs directories (750) */
   restricted: 0o750 as const,
-  /** Private permissions for sensitive data */
+  /** Private permissions for sensitive data directories (700) */
   private: 0o700 as const,
+  /** Config directory permissions - owner rw, group read (640) */
+  config: 0o640 as const,
+  /** Database file permissions - owner read/write only (600) */
+  database: 0o600 as const,
+  /** Socket file permissions - owner rw, group rw (660) */
+  socket: 0o660 as const,
 } as const;
 
 /**
@@ -50,27 +68,33 @@ export const PERMISSIONS = {
  * - /etc: Host-specific system configuration
  * - /var/log: Log files and directories
  * - /var/cache: Application cache data
+ *
+ * Security: Per INFRA-014
+ * - /var/lib/openkraken: 700 (owner only) - contains database
+ * - /etc/openkraken: 640 (owner rw, group r) - contains credentials
+ * - /var/log/openkraken: 750 (owner full, group read)
+ * - /var/cache/openkraken: 755 (owner full, others read)
  */
 export const LINUX_FHS_PATHS: OpenKrakenDirectoryStructure = {
   config: {
     path: `/etc/${APP_NAME}`,
-    mode: PERMISSIONS.restricted,
-    description: "Configuration directory (FHS /etc)",
+    mode: PERMISSIONS.config,
+    description: "Configuration directory (FHS /etc) - secured with 640",
   },
   data: {
     path: `/var/lib/${APP_NAME}`,
-    mode: PERMISSIONS.standard,
-    description: "Data directory (FHS /var/lib)",
+    mode: PERMISSIONS.private,
+    description: "Data directory (FHS /var/lib) - secured with 700",
   },
   logs: {
     path: `/var/log/${APP_NAME}`,
     mode: PERMISSIONS.restricted,
-    description: "Logs directory (FHS /var/log)",
+    description: "Logs directory (FHS /var/log) - secured with 750",
   },
   cache: {
     path: `/var/cache/${APP_NAME}`,
     mode: PERMISSIONS.standard,
-    description: "Cache directory (FHS /var/cache)",
+    description: "Cache directory (FHS /var/cache) - secured with 755",
   },
 };
 
@@ -81,27 +105,32 @@ export const LINUX_FHS_PATHS: OpenKrakenDirectoryStructure = {
  * - Application Support: ~/Library/Application Support/<name>
  * - Logs: ~/Library/Logs/<name>
  * - Caches: ~/Library/Caches/<name>
+ *
+ * Security: Per INFRA-014
+ * - ~/Library/Application Support/Openkraken: 700 (owner only)
+ * - ~/Library/Logs/OpenKraken: 755 (world readable)
+ * - ~/Library/Caches/OpenKraken: 755 (world readable)
  */
 export const MACOS_COCOA_PATHS: OpenKrakenDirectoryStructure = {
   config: {
     path: `~/Library/Application Support/${APP_NAME_MACOS}`,
-    mode: PERMISSIONS.standard,
-    description: "Configuration directory (macOS Application Support)",
+    mode: PERMISSIONS.private,
+    description: "Configuration directory (macOS Application Support) - secured with 700",
   },
   data: {
     path: `~/Library/Application Support/${APP_NAME_MACOS}`,
-    mode: PERMISSIONS.standard,
-    description: "Data directory (macOS Application Support)",
+    mode: PERMISSIONS.private,
+    description: "Data directory (macOS Application Support) - secured with 700",
   },
   logs: {
     path: `~/Library/Logs/${APP_NAME_MACOS}`,
     mode: PERMISSIONS.standard,
-    description: "Logs directory (macOS Logs)",
+    description: "Logs directory (macOS Logs) - secured with 755",
   },
   cache: {
     path: `~/Library/Caches/${APP_NAME_MACOS}`,
     mode: PERMISSIONS.standard,
-    description: "Caches directory (macOS Caches)",
+    description: "Caches directory (macOS Caches) - secured with 755",
   },
 };
 
@@ -129,23 +158,23 @@ export const XDG_DEFAULTS = {
 export const LINUX_XDG_PATHS: OpenKrakenDirectoryStructure = {
   config: {
     path: "$XDG_CONFIG_HOME/openkraken",
-    mode: PERMISSIONS.restricted,
-    description: "Configuration directory",
+    mode: PERMISSIONS.config,
+    description: "Configuration directory - secured with 640",
   },
   data: {
     path: "$XDG_DATA_HOME/openkraken",
-    mode: PERMISSIONS.standard,
-    description: "Data directory",
+    mode: PERMISSIONS.private,
+    description: "Data directory - secured with 700",
   },
   logs: {
     path: "$XDG_DATA_HOME/openkraken/logs",
     mode: PERMISSIONS.restricted,
-    description: "Logs directory",
+    description: "Logs directory - secured with 750",
   },
   cache: {
     path: "$XDG_CACHE_HOME/openkraken",
     mode: PERMISSIONS.standard,
-    description: "Cache directory",
+    description: "Cache directory - secured with 755",
   },
 };
 

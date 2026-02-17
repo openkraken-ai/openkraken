@@ -67,7 +67,7 @@ in
 
       socketPath = mkOption {
         type = types.str;
-        default = "/run/openkraken/egress.sock";
+        default = "/tmp/openkraken-egress.sock";
         description = "Unix socket path for gateway";
       };
     };
@@ -108,11 +108,52 @@ in
       };
     };
 
-    # Create log directory
     environment.extraOutputsToInstall = [ "out" ] ++ optionals (cfg.orchestrator.enable || cfg.gateway.enable) [ ];
 
+    # Create directories with proper permissions using system.paths
+    # Per INFRA-014: Directory Permissions & Security
     system.paths = {
-      createdDirectories = [ "/var/log/openkraken" ];
+      createdDirectories = [
+        # Data directory: 700 (owner only) - ~/Library/Application Support/Openkraken
+        "%h/Library/Application Support/Openkraken"
+        # Logs directory: 755 - ~/Library/Logs/Openkraken
+        "%h/Library/Logs/Openkraken"
+        # Cache directory: 755 - ~/Library/Caches/OpenKraken
+        "%h/Library/Caches/OpenKraken"
+        # Socket directory in /tmp
+        "/tmp/openkraken"
+      ];
+    };
+
+    # Set up proper permissions on directories using launchd InitData
+    # This runs after directory creation to set correct permissions
+    # Note: launchd doesn't expand ~ or $HOME in ProgramArguments, so we use shell expansion
+    launchd.user.launchAgents = {
+      # Create a helper agent to set permissions on first run
+      "com.openkraken.setup-permissions" = mkIf (cfg.orchestrator.enable || cfg.gateway.enable) {
+        description = "OpenKraken permissions setup";
+        serviceConfig = {
+          Label = "com.openkraken.setup-permissions";
+          ProgramArguments = [
+            "/bin/sh"
+            "-c"
+            ''
+              # Set proper permissions on directories using shell expansion
+              # Application Support (data/config): 700 (owner only)
+              chmod 700 "$HOME/Library/Application Support/Openkraken"
+              # Logs: 755 (readable by all, writable by owner)
+              chmod 755 "$HOME/Library/Logs/Openkraken"
+              # Caches: 755 (readable by all, writable by owner)
+              chmod 755 "$HOME/Library/Caches/OpenKraken"
+              # Socket directory: 775 (group writable)
+              mkdir -p /tmp/openkraken
+              chmod 775 /tmp/openkraken
+            '';
+          ];
+          RunAtLoad = true;
+          KeepAlive = false;
+        };
+      };
     };
   };
 }

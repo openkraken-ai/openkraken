@@ -77,10 +77,10 @@ describe("PlatformPathResolver", () => {
       const paths = resolver.resolvePaths({ mode: "cocoa" });
 
       // Paths should contain expanded tilde for home directory with proper capitalization
-      expect(paths.config).toContain("Library/Application Support/Openkraken");
+      expect(paths.config).toContain("Library/Application Support/OpenKraken");
       expect(paths.config).toContain("config.yaml");
-      expect(paths.logs).toContain("Library/Logs/Openkraken");
-      expect(paths.cache).toContain("Library/Caches/Openkraken");
+      expect(paths.logs).toContain("Library/Logs/OpenKraken");
+      expect(paths.cache).toContain("Library/Caches/OpenKraken");
     });
 
     it("should respect OPENKRAKEN_HOME override", () => {
@@ -218,12 +218,12 @@ describe("Permission Constants", () => {
 describe("Linux FHS Paths", () => {
   it("should define correct config path", () => {
     expect(LINUX_FHS_PATHS.config.path).toBe("/etc/openkraken");
-    expect(LINUX_FHS_PATHS.config.mode).toBe(0o750);
+    expect(LINUX_FHS_PATHS.config.mode).toBe(0o640);
   });
 
   it("should define correct data path", () => {
     expect(LINUX_FHS_PATHS.data.path).toBe("/var/lib/openkraken");
-    expect(LINUX_FHS_PATHS.data.mode).toBe(0o755);
+    expect(LINUX_FHS_PATHS.data.mode).toBe(0o700);
   });
 
   it("should define correct logs path", () => {
@@ -242,18 +242,18 @@ describe("macOS Cocoa Paths", () => {
     // macOS Finder uses case-insensitive but case-preserving paths
     // The convention is Title Case for Application Support directories
     expect(MACOS_COCOA_PATHS.data.path).toContain(
-      "Library/Application Support/Openkraken"
+      "Library/Application Support/OpenKraken"
     );
-    expect(MACOS_COCOA_PATHS.data.mode).toBe(0o755);
+    expect(MACOS_COCOA_PATHS.data.mode).toBe(0o700);
   });
 
   it("should define correct logs path with proper capitalization", () => {
-    expect(MACOS_COCOA_PATHS.logs.path).toContain("Library/Logs/Openkraken");
+    expect(MACOS_COCOA_PATHS.logs.path).toContain("Library/Logs/OpenKraken");
     expect(MACOS_COCOA_PATHS.logs.mode).toBe(0o755);
   });
 
   it("should define correct caches path with proper capitalization", () => {
-    expect(MACOS_COCOA_PATHS.cache.path).toContain("Library/Caches/Openkraken");
+    expect(MACOS_COCOA_PATHS.cache.path).toContain("Library/Caches/OpenKraken");
     expect(MACOS_COCOA_PATHS.cache.mode).toBe(0o755);
   });
 });

@@ -8,8 +8,7 @@
   # Go toolchain - Egress Gateway implementation
   languages.go = {
     enable = true;
-    package = pkgs.go_1_25;
-    version = "1.25.6";
+    package = pkgs.go;
   };
 
   # Environment variables specific to egress gateway
@@ -23,11 +22,5 @@
     build.exec = lib.mkForce "go build -o ../../bin/egress-gateway ./src";
     test.exec = lib.mkForce "go test ./...";
     run.exec = lib.mkForce "go run ./src";
-  };
-
-  # Egress gateway process definition
-  processes.egress-gateway = {
-    exec = "go run ./src";
-    cwd = "packages/egress-gateway";
   };
 }
