@@ -83,11 +83,16 @@ describe("DirectoryManager Permission Validation", () => {
 
   describe("validateDirectoryPermissions", () => {
     it("should return valid=true when all directories have correct permissions", async () => {
-      // Create directories with correct permissions (0o755)
+      // Create directories with correct permissions per INFRA-014
+      // config: 640, data: 700, logs: 750, cache: 755
       await mkdir(join(testBaseDir, "config"), { recursive: true });
+      await chmod(join(testBaseDir, "config"), 0o640);
       await mkdir(join(testBaseDir, "data"), { recursive: true });
+      await chmod(join(testBaseDir, "data"), 0o700);
       await mkdir(join(testBaseDir, "logs"), { recursive: true });
+      await chmod(join(testBaseDir, "logs"), 0o750);
       await mkdir(join(testBaseDir, "cache"), { recursive: true });
+      await chmod(join(testBaseDir, "cache"), 0o755);
 
       const mockPaths: PlatformPaths = {
         config: join(testBaseDir, "config"),
@@ -103,7 +108,8 @@ describe("DirectoryManager Permission Validation", () => {
     });
 
     it("should detect incorrect permissions and report issues", async () => {
-      // Create directories with wrong permissions (0o777 instead of 0o755)
+      // Create directories with wrong permissions per INFRA-014
+      // config should be 640, not 777
       await mkdir(join(testBaseDir, "config"), { recursive: true });
       await chmod(join(testBaseDir, "config"), 0o777);
 
@@ -121,7 +127,7 @@ describe("DirectoryManager Permission Validation", () => {
 
       const configIssue = result.issues.find((i) => i.path.includes("config"));
       expect(configIssue).toBeDefined();
-      expect(configIssue?.expectedMode).toBe(0o750);
+      expect(configIssue?.expectedMode).toBe(0o640);
       expect(configIssue?.actualMode).toBe(0o777);
     });
 
@@ -168,7 +174,7 @@ describe("DirectoryManager Permission Validation", () => {
 
   describe("fixPermissions", () => {
     it("should fix incorrect permissions and return success", async () => {
-      // Create directory with wrong permissions
+      // Create directory with wrong permissions (config should be 640 per INFRA-014)
       await mkdir(join(testBaseDir, "config"), { recursive: true });
       await chmod(join(testBaseDir, "config"), 0o777);
 
@@ -186,10 +192,10 @@ describe("DirectoryManager Permission Validation", () => {
 
       const result = await fixDirectoryPermissions(mockPaths);
 
-      // Verify it's fixed
+      // Verify it's fixed to 640 (config per INFRA-014)
       const statsAfter = await stat(join(testBaseDir, "config"));
       // biome-ignore lint/suspicious/noBitwiseOperators: Permission bit extraction is intentional
-      expect(statsAfter.mode & 0o777).toBe(0o750);
+      expect(statsAfter.mode & 0o777).toBe(0o640);
 
       expect(result.issues.length).toBeGreaterThan(0);
       expect(result.issues[0].severity).toBe("warning");
@@ -215,9 +221,10 @@ describe("DirectoryManager Permission Validation", () => {
     });
 
     it("should not modify directories with correct permissions", async () => {
-      // Create directory with correct permissions
+      // Create directory with correct permissions per INFRA-014
+      // data directory should be 700 (private)
       await mkdir(join(testBaseDir, "data"), { recursive: true });
-      await chmod(join(testBaseDir, "data"), 0o755);
+      await chmod(join(testBaseDir, "data"), 0o700);
 
       // Get modification time before
       const statsBefore = await stat(join(testBaseDir, "data"));
@@ -236,7 +243,7 @@ describe("DirectoryManager Permission Validation", () => {
       const statsAfter = await stat(join(testBaseDir, "data"));
       expect(statsAfter.mtimeMs).toBe(mtimeBefore);
 
-      // data directory should have no issues (0o755 is correct for data)
+      // data directory should have no issues (0o700 is correct for data per INFRA-014)
       const dataIssue = result.issues.find((i) => i.path.includes("data"));
       expect(dataIssue).toBeUndefined();
     });
@@ -391,10 +398,17 @@ describe("Permission Severity Determination", () => {
     expect(configIssue?.severity).toBe("error");
   });
 
-  it("should mark overly restrictive directories as warnings", async () => {
-    // Create data directory with overly restrictive 0o700 (should be 0o755)
+  it("should mark overly open directories as errors", async () => {
+    // Create directories with correct permissions first
+    await mkdir(join(testBaseDir, "config"), { recursive: true });
+    await chmod(join(testBaseDir, "config"), 0o640);
+    // Create data directory with overly open permissions (0o755 when should be 0o700)
     await mkdir(join(testBaseDir, "data"), { recursive: true });
-    await chmod(join(testBaseDir, "data"), 0o700);
+    await chmod(join(testBaseDir, "data"), 0o755);
+    await mkdir(join(testBaseDir, "logs"), { recursive: true });
+    await chmod(join(testBaseDir, "logs"), 0o750);
+    await mkdir(join(testBaseDir, "cache"), { recursive: true });
+    await chmod(join(testBaseDir, "cache"), 0o755);
 
     const mockPaths: PlatformPaths = {
       config: join(testBaseDir, "config"),
@@ -406,6 +420,7 @@ describe("Permission Severity Determination", () => {
     const result = await validateDirectoryPermissions(mockPaths);
     const dataIssue = result.issues.find((i) => i.path.includes("data"));
 
-    expect(dataIssue?.severity).toBe("warning");
+    // Data being too open (755 when should be 700) is a security error
+    expect(dataIssue?.severity).toBe("error");
   });
 });
