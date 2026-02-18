@@ -95,6 +95,18 @@ in
           OPENKRAKEN_CONFIG = "${cfg.orchestrator.configDir}/config.yaml";
           ORCHESTRATOR_PORT = toString cfg.orchestrator.port;
         };
+
+        # INFRA-018: Resource Limits
+        # Per Tasks.md: Ensure stable operation under load
+        # Note: macOS launchd does not support CPU quotas (Linux cgroups feature)
+        SoftResourceLimits = {
+          NumberOfFiles = 8192;
+          ResidentSetSize = 2147483648; # 2GB
+        };
+        HardResourceLimits = {
+          NumberOfFiles = 8192;
+          ResidentSetSize = 2147483648; # 2GB
+        };
       };
     };
 
@@ -111,6 +123,17 @@ in
           OPENKRAKEN_CONFIG = "${cfg.orchestrator.configDir}/config.yaml";
           EGRESS_GATEWAY_PORT = toString cfg.gateway.port;
           EGRESS_SOCKET_PATH = cfg.gateway.socketPath;
+        };
+
+        # INFRA-018: Resource Limits
+        # Gateway is lightweight - lower limits than orchestrator
+        SoftResourceLimits = {
+          NumberOfFiles = 8192;
+          ResidentSetSize = 1073741824; # 1GB
+        };
+        HardResourceLimits = {
+          NumberOfFiles = 8192;
+          ResidentSetSize = 1073741824; # 1GB
         };
       };
     };
