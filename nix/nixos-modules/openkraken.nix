@@ -7,6 +7,11 @@ let
 in
 
 {
+  # INFRA-015: Import D-Bus secret-service configuration for credential vault access
+  imports = [
+    ./dbus-secrets.nix
+  ];
+
   options.services.openkraken = {
     enable = mkOption {
       type = types.bool;
@@ -118,6 +123,11 @@ in
           "OPENKRAKEN_HOME=${cfg.orchestrator.dataDir}"
           "OPENKRAKEN_CONFIG=${cfg.orchestrator.configDir}/config.yaml"
           "ORCHESTRATOR_PORT=${toString cfg.orchestrator.port}"
+          # INFRA-015: D-Bus session bus for credential vault access
+          # Note: On headless servers without a login session, this path won't exist,
+          # causing Bun.secrets to fail and fall back to age-encrypted file (expected).
+          # On desktop systems with gnome-keyring, this enables native vault access.
+          "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus"
         ];
         ExecStart = "${cfg.orchestrator.package}/bin/openkraken";
         PrivateTmp = true;

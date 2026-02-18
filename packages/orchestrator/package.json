@@ -8,6 +8,9 @@
     "check": "bunx biome check --write",
     "fix": "bunx biome check --write"
   },
+  "dependencies": {
+    "age-encryption": "^0.3.0"
+  },
   "peerDependencies": {
     "typescript": "^5"
   },
