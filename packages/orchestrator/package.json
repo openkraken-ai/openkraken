@@ -9,6 +9,7 @@
     "fix": "bunx biome check --write"
   },
   "dependencies": {
+    "@anthropic-ai/sandbox-runtime": "^0.0.34",
     "age-encryption": "^0.3.0"
   },
   "peerDependencies": {
