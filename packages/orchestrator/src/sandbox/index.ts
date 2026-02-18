@@ -9,23 +9,18 @@
  * - Egress Gateway enforces domain allowlist and logs connections
  */
 
-import {
-  SandboxManager,
-  type Sandbox,
-} from "@anthropic-ai/sandbox-runtime";
-import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import type {
   OpenKrakenSandboxConfig,
-  SandboxInstance,
   SandboxExecutionResult,
-  ZoneMount,
+  SandboxInstance,
 } from "./types.js";
 import {
-  getDefaultZoneMounts,
-  toRuntimeBindMounts,
   ensureZoneDirectories,
+  getDefaultZoneMounts,
   getZoneNameFromPath,
+  toRuntimeBindMounts,
 } from "./zones.js";
 
 /**
@@ -111,7 +106,7 @@ export async function executeInSandbox(
     };
   }
 
-  const startTime = Date.now();
+  const _startTime = Date.now();
   let timedOut = false;
 
   return new Promise((resolve) => {
@@ -164,9 +159,7 @@ export async function executeInSandbox(
 /**
  * Get runtime configuration from OpenKraken config
  */
-export function toRuntimeConfig(
-  config: OpenKrakenSandboxConfig
-): {
+export function toRuntimeConfig(config: OpenKrakenSandboxConfig): {
   bindMounts: Array<{ source: string; target: string; readonly: boolean }>;
   httpProxyPort?: number;
   socksProxyPort?: number;
@@ -230,7 +223,7 @@ export async function isSandboxAvailable(): Promise<{
 
   if (platform === "linux") {
     // On Linux, we need bubblewrap, socat, ripgrep
-    if (!which("bubblewrap") && !which("bwrap")) {
+    if (!(which("bubblewrap") || which("bwrap"))) {
       missingDeps.push("bubblewrap");
     }
     if (!which("socat")) {
@@ -258,15 +251,14 @@ export async function isSandboxAvailable(): Promise<{
   };
 }
 
+export type {
+  OpenKrakenSandboxConfig,
+  SandboxExecutionResult,
+  SandboxInstance,
+  SandboxZone,
+  ZoneMount,
+} from "./types.js";
 /**
  * Get default sandbox zones
  */
-export { getDefaultZoneMounts } from "./zones.js";
-export { sessionCleanup } from "./zones.js";
-export type {
-  SandboxZone,
-  ZoneMount,
-  OpenKrakenSandboxConfig,
-  SandboxInstance,
-  SandboxExecutionResult,
-} from "./types.js";
+export { getDefaultZoneMounts, sessionCleanup } from "./zones.js";

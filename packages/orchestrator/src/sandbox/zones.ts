@@ -9,13 +9,13 @@
  * - outputs: Read-write, ephemeral, cleared at session boundary
  */
 
-import * as fs from "node:fs/promises";
-import * as path from "node:path";
+import { mkdir } from "node:fs/promises";
+import { join, normalize } from "node:path";
 import {
-  type SandboxZone,
-  type ZoneMount,
-  ZONE_DEFAULTS,
   getDefaultHostPaths,
+  type SandboxZone,
+  ZONE_DEFAULTS,
+  type ZoneMount,
 } from "./types.js";
 
 /**
@@ -59,7 +59,7 @@ export function toRuntimeBindMounts(zones: ZoneMount[]): Array<{
  */
 export function getZoneHostPath(zone: SandboxZone): string {
   const basePath = process.env.OPENKRAKEN_HOME || "/var/lib/openkraken";
-  return path.join(basePath, zone);
+  return join(basePath, zone);
 }
 
 /**
@@ -80,7 +80,7 @@ export async function ensureZoneDirectories(
     zones.map(async (zone) => {
       const zonePath = getZoneHostPath(zone);
       try {
-        await fs.mkdir(zonePath, { recursive: true, mode: permissions[zone] });
+        await mkdir(zonePath, { recursive: true, mode: permissions[zone] });
       } catch (error) {
         // Ignore error if directory already exists
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
@@ -106,7 +106,7 @@ export async function sessionCleanup(): Promise<void> {
         const entries = await fs.readdir(zonePath);
         await Promise.all(
           entries.map(async (entry) => {
-            const fullPath = path.join(zonePath, entry);
+            const fullPath = join(zonePath, entry);
             const stat = await fs.stat(fullPath);
             if (stat.isDirectory()) {
               await fs.rm(fullPath, { recursive: true, force: true });
@@ -129,10 +129,10 @@ export async function sessionCleanup(): Promise<void> {
  * Check if a path is within any sandbox zone
  */
 export function isPathInZone(targetPath: string, zones: ZoneMount[]): boolean {
-  const normalizedPath = path.normalize(targetPath);
+  const normalizedPath = normalize(targetPath);
 
   for (const zone of zones) {
-    const normalizedZonePath = path.normalize(zone.virtualPath);
+    const normalizedZonePath = normalize(zone.virtualPath);
     if (normalizedPath.startsWith(normalizedZonePath)) {
       return true;
     }
@@ -148,20 +148,19 @@ export function getZoneForPath(
   targetPath: string,
   zones: ZoneMount[]
 ): SandboxZone | null {
-  const normalizedPath = path.normalize(targetPath);
+  const normalizedPath = normalize(targetPath);
   let longestMatch: SandboxZone | null = null;
   let longestMatchLength = 0;
 
   for (const zone of zones) {
-    const normalizedZonePath = path.normalize(zone.virtualPath);
+    const normalizedZonePath = normalize(zone.virtualPath);
     if (
       normalizedPath.startsWith(normalizedZonePath) &&
       normalizedZonePath.length > longestMatchLength
     ) {
-      longestMatch = zone.virtualPath.replace("/sandbox/", "").replace(
-        "/",
-        ""
-      ) as SandboxZone;
+      longestMatch = zone.virtualPath
+        .replace("/sandbox/", "")
+        .replace("/", "") as SandboxZone;
       longestMatchLength = normalizedZonePath.length;
     }
   }

@@ -5,12 +5,6 @@
  * Zones and configuration align with PRD/TechSpec requirements.
  */
 
-import type {
-  SandboxRuntimeConfig,
-  NetworkConfig,
-  FilesystemConfig,
-} from "@anthropic-ai/sandbox-runtime";
-
 /**
  * Sandbox zones as defined in PRD and TechSpec
  */
@@ -111,7 +105,8 @@ export const DARWIN_HOST_PATHS: Record<SandboxZone, string> = {
  */
 export function getDefaultHostPaths(): Record<SandboxZone, string> {
   const platform = process.platform;
-  const basePaths = platform === "darwin" ? DARWIN_HOST_PATHS : LINUX_HOST_PATHS;
+  const basePaths =
+    platform === "darwin" ? DARWIN_HOST_PATHS : LINUX_HOST_PATHS;
 
   // Allow override via OPENKRAKEN_HOME environment variable
   const homeOverride = process.env.OPENKRAKEN_HOME;
