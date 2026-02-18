@@ -159,6 +159,15 @@ in
         ExecStart = "${cfg.orchestrator.package}/bin/openkraken";
         PrivateTmp = true;
         NoNewPrivileges = true;
+
+        # INFRA-018: Resource Limits
+        # Per Tasks.md: Ensure stable operation under load
+        LimitNOFILE = 8192;
+        MemoryMax = "2G";
+        MemoryHigh = "1.5G";
+        CPUQuota = "80%";
+        TimeoutStartSec = "60s";
+        TimeoutStopSec = "30s";
       };
     };
 
@@ -187,6 +196,13 @@ in
         ExecStart = "${cfg.gateway.package}/bin/egress-gateway";
         PrivateTmp = true;
         NoNewPrivileges = true;
+
+        # INFRA-018: Resource Limits
+        # Gateway is lightweight - lower limits than orchestrator
+        LimitNOFILE = 8192;
+        MemoryMax = "1G";
+        MemoryHigh = "800M";
+        CPUQuota = "50%";
       };
     };
   };

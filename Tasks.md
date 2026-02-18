@@ -797,9 +797,9 @@ Then launchd plist includes:
   | Key                 | Value                                   |
   |---------------------|----------------------------------------|
   | HardResourceLimits  | NumberOfFiles: 8192                   |
-  |                     | MemorySize: 2147483648                 |
+  |                     | ResidentSetSize: 2147483648          |
   | SoftResourceLimits  | NumberOfFiles: 8192                   |
-  |                     | MemorySize: 2147483648                 |
+  |                     | ResidentSetSize: 2147483648          |
 ```
 
 ---
