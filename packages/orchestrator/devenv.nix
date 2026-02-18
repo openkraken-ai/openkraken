@@ -48,12 +48,9 @@
     mkdir -p ./storage/data
     mkdir -p ./storage/sandbox
 
-    # Initialize database with schema if it doesn't exist
-    if [ ! -f ./storage/data/openkraken.db ]; then
-      echo "Initializing database schema..."
-      ./packages/orchestrator/scripts/init-db.sh
-    else
-      echo "Database already exists at ./storage/data/openkraken.db"
-    fi
+    # Run database migrations
+    echo "Running database migrations..."
+    cd ./packages/orchestrator
+    bun run db:migrate
   '';
 }

@@ -10,7 +10,10 @@ devenv.local.yaml
 .pre-commit-config.yaml
 
 # OpenKraken Runtime Data (gitignored per INFRA-001)
+# OpenKraken Runtime Data (gitignored per INFRA-001)
 /storage/
+/skills/owner/
+packages/orchestrator/storage/
 /skills/owner/
 
 # IDE and Editor

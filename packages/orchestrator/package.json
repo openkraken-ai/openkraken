@@ -6,7 +6,9 @@
   "scripts": {
     "test": "bun test",
     "check": "bunx biome check --write",
-    "fix": "bunx biome check --write"
+    "fix": "bunx biome check --write",
+    "db:migrate": "bun ./scripts/db/migrate.ts",
+    "db:status": "bun ./scripts/db/status.ts"
   },
   "dependencies": {
     "@anthropic-ai/sandbox-runtime": "^0.0.34",
