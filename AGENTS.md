@@ -99,6 +99,41 @@ Following v0.13.0, terminology was updated:
 
 **Migration Note:** Pre-v0.13.0 documentation may use "Gateway" ambiguously. Ask for clarification if unsure.
 
+## Common Development Commands
+
+This project uses **just** for build orchestration across the TypeScript/Bun orchestrator and Go egress-gateway.
+
+```bash
+# Build all packages (orchestrator + egress-gateway)
+just build
+
+# Build individual components
+just build-orchestrator   # TypeScript/Bun -> bin/openkraken
+just build-egress-gateway # Go -> bin/egress-gateway
+
+# Test all packages
+just test
+
+# Test individual components
+just test-orchestrator    # bun test
+just test-egress-gateway  # go test ./...
+
+# Lint all packages
+just lint
+
+# Lint individual components
+just lint-orchestrator    # biome lint
+just lint-egress-gateway  # go vet
+
+# Clean build artifacts
+just clean
+
+# Build and verify binaries exist
+just build-verified
+```
+
+For orchestrator-specific development, see **packages/orchestrator/CLAUDE.md** for Bun API patterns, testing conventions, and frontend development.
+
 ## Key Files
 
 | File | Purpose |
@@ -108,7 +143,7 @@ Following v0.13.0, terminology was updated:
 | **SOUL.md** | Agent identity and values (injected into system prompt) |
 | **SAFETY.md** | Safety constraints governing Agent behavior |
 | **AGENTS.md** | This file — guidance for AI collaborators |
-
+| **packages/orchestrator/CLAUDE.md** | Bun-specific development guidance for the orchestrator |
 ## How to Approach Your Work
 
 1. **Orient yourself.** Read AGENTS.md for context. Read relevant sections of Architecture.md. Check CHANGELOG.md for recent changes.
