@@ -78,6 +78,12 @@ The Orchestrator normalizes all paths to canonical format before sandbox configu
 
 An abstraction providing a unified interface across platforms (macOS Keychain, Linux secret-service). Implement against the interface, not platform-specific code.
 
+**Devenv vs Flake**
+
+- **flake.nix** — Build and installation. Produces installable packages (`openkraken-orchestrator`, `openkraken-gateway`), NixOS/darwin modules, and Nix checks. Use for reproducible builds and deployment.
+- **devenv** — Development environment. Provides `devenv up` with services, scripts, processes, and language support. Use for local development.
+
+The flake integrates devenv via `nix/shell.nix` to provide `nix develop` as an alternative to `devenv up`.
 ## Architectural Layers
 
 | Layer | Component |
