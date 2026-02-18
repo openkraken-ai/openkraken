@@ -7,6 +7,13 @@ let
 in
 
 {
+  # INFRA-016: Sandbox Runtime dependencies
+  # Per TechSpec §8.3: macOS uses sandbox-exec (built-in) for process isolation
+  # Additional deps: ripgrep (dangerous file scanning)
+  environment.systemPackages = mkIf cfg.enable (with pkgs; [
+    ripgrep
+  ]);
+
   options.services.openkraken = {
     enable = mkOption {
       type = types.bool;
@@ -122,6 +129,14 @@ in
         "%h/Library/Caches/OpenKraken"
         # Socket directory in /tmp
         "/tmp/openkraken"
+        # INFRA-016: Sandbox zones - skills (read-only)
+        "%h/Library/Application Support/Openkraken/skills"
+        # INFRA-016: Sandbox zones - inputs (read-only)
+        "%h/Library/Application Support/Openkraken/inputs"
+        # INFRA-016: Sandbox zones - work (read-write, ephemeral)
+        "%h/Library/Application Support/Openkraken/work"
+        # INFRA-016: Sandbox zones - outputs (read-write, ephemeral)
+        "%h/Library/Application Support/Openkraken/outputs"
       ];
     };
 

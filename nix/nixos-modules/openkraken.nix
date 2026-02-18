@@ -1,4 +1,8 @@
-{ config, lib, pkgs, ... }:
+{ config
+, lib
+, pkgs
+, ...
+}:
 
 with lib;
 
@@ -11,6 +15,18 @@ in
   imports = [
     ./dbus-secrets.nix
   ];
+
+  # INFRA-016: Sandbox Runtime dependencies
+  # Per TechSpec §8.3: Linux uses bubblewrap for process isolation
+  # Additional deps: socat (Unix socket bridging), ripgrep (dangerous file scanning)
+  environment.systemPackages = mkIf cfg.enable (
+    with pkgs;
+    [
+      bubblewrap
+      socat
+      ripgrep
+    ]
+  );
 
   options.services.openkraken = {
     enable = mkOption {
@@ -103,12 +119,23 @@ in
       "d /etc/openkraken 0640 root openkraken - -"
       # Socket directory in /tmp: 775 (standard /tmp permissions, allows group access for socket)
       "d /tmp/openkraken 0775 openkraken openkraken - -"
+      # INFRA-016: Sandbox zones - skills (read-only)
+      "d /var/lib/openkraken/skills 0755 openkraken openkraken - -"
+      # INFRA-016: Sandbox zones - inputs (read-only)
+      "d /var/lib/openkraken/inputs 0755 openkraken openkraken - -"
+      # INFRA-016: Sandbox zones - work (read-write, ephemeral)
+      "d /var/lib/openkraken/work 0755 openkraken openkraken - -"
+      # INFRA-016: Sandbox zones - outputs (read-write, ephemeral)
+      "d /var/lib/openkraken/outputs 0755 openkraken openkraken - -"
     ];
 
     systemd.services.openkraken-orchestrator = mkIf cfg.orchestrator.enable {
       description = "OpenKraken Agent Orchestrator";
       wantedBy = [ "multi-user.target" ];
-      after = [ "network.target" "tmpfs.mount" ];
+      after = [
+        "network.target"
+        "tmpfs.mount"
+      ];
       requires = [ "tmpfiles.service" ];
 
       serviceConfig = {
@@ -138,7 +165,10 @@ in
     systemd.services.openkraken-egress-gateway = mkIf cfg.gateway.enable {
       description = "OpenKraken Egress Gateway";
       wantedBy = [ "multi-user.target" ];
-      after = [ "network.target" "tmpfs.mount" ];
+      after = [
+        "network.target"
+        "tmpfs.mount"
+      ];
       requires = [ "tmpfiles.service" ];
 
       serviceConfig = {
