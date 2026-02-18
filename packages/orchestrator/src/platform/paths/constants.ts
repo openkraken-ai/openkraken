@@ -115,12 +115,14 @@ export const MACOS_COCOA_PATHS: OpenKrakenDirectoryStructure = {
   config: {
     path: `~/Library/Application Support/${APP_NAME_MACOS}`,
     mode: PERMISSIONS.private,
-    description: "Configuration directory (macOS Application Support) - secured with 700",
+    description:
+      "Configuration directory (macOS Application Support) - secured with 700",
   },
   data: {
     path: `~/Library/Application Support/${APP_NAME_MACOS}`,
     mode: PERMISSIONS.private,
-    description: "Data directory (macOS Application Support) - secured with 700",
+    description:
+      "Data directory (macOS Application Support) - secured with 700",
   },
   logs: {
     path: `~/Library/Logs/${APP_NAME_MACOS}`,

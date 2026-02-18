@@ -1,0 +1,11 @@
+# Typos configuration
+# https://github.com/crate-ci/typos/blob/master/docs/reference.md
+
+[default]
+extend-ignore-re = [
+    # Ignore library class names that are intentionally spelled this way
+    "Encrypter",
+]
+
+[default.extend-identifiers]
+Encrypter = "Encrypter"
