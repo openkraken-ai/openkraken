@@ -3,18 +3,80 @@
 /**
  * Database initialization script for OpenKraken orchestrator
  *
- * Creates storage directories and initializes the SQLite database schema
- * using platform-appropriate paths with WAL mode for better concurrency.
+ * Creates storage directories and runs database migrations
+ * using platform-appropriate paths with WAL mode.
  */
 
-import { Database } from "bun:sqlite";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { join, basename } from "node:path";
+import { createHash } from "node:crypto";
 import {
   ensureDirectories,
   getPlatformPaths,
 } from "../src/platform/directories";
 
-const SCHEMA_VERSION = "001";
+interface Migration {
+  version: string;
+  filename: string;
+  sql: string;
+  checksum: string;
+}
+
+/**
+ * Calculate SHA256 checksum of SQL content
+ */
+function calculateChecksum(content: string): string {
+  return createHash("sha256").update(content).digest("hex");
+}
+
+/**
+ * Load all migration files from the migrations directory
+ */
+function loadMigrations(migrationsDir: string): Migration[] {
+  if (!existsSync(migrationsDir)) {
+    console.warn(`Migrations directory not found: ${migrationsDir}`);
+    return [];
+  }
+
+  const migrations: Migration[] = [];
+  
+  const sqlFiles = new Bun.Glob("*.sql").scanSync(migrationsDir);
+  
+  for (const file of sqlFiles) {
+    const filename = basename(file);
+    const version = filename.split("_")[0];
+    const sql = readFileSync(file, "utf-8");
+    const checksum = calculateChecksum(sql);
+    
+    migrations.push({
+      version,
+      filename,
+      sql,
+      checksum,
+    });
+  }
+
+  // Sort by version number
+  return migrations.sort((a, b) => a.version.localeCompare(b.version, undefined, { numeric: true }));
+}
+
+/**
+ * Get applied migrations from schema_versions table
+ */
+function getAppliedVersions(db: any): Set<string> {
+  const rows = db.query("SELECT version FROM schema_versions").all() as { version: string }[];
+  return new Set(rows.map((r: { version: string }) => r.version));
+}
+
+/**
+ * Configure database with WAL mode and pragmas
+ */
+function configureDatabase(db: any): void {
+  db.run("PRAGMA journal_mode = WAL");
+  db.run("PRAGMA synchronous = NORMAL");
+  db.run("PRAGMA busy_timeout = 5000");
+  db.run("PRAGMA foreign_keys = ON");
+}
 
 /**
  * Main initialization function
@@ -22,18 +84,9 @@ const SCHEMA_VERSION = "001";
 async function initializeDatabase(): Promise<void> {
   console.log("=== OpenKraken Database Initialization ===\n");
 
-  // Get platform-appropriate paths
-  const paths = getPlatformPaths();
-  const databasePath = `${paths.data}/openkraken.db`;
-
-  console.log(`Platform: ${process.platform}`);
-  console.log(`Data directory: ${paths.data}`);
-  console.log(`Database path: ${databasePath}`);
-
-  // Create directories with correct permissions
-  console.log("\nEnsuring storage directories exist...");
+  // Ensure storage directories exist
+  console.log("Ensuring storage directories exist...");
   const dirResult = await ensureDirectories();
-
   if (dirResult.success) {
     console.log("Directories created successfully");
   } else {
@@ -43,222 +96,91 @@ async function initializeDatabase(): Promise<void> {
     }
   }
 
-  // Initialize database if it doesn't exist
-  if (existsSync(databasePath)) {
-    console.log("\nDatabase already exists. Verifying schema...");
-    await verifySchema(databasePath);
-  } else {
-    console.log("\nCreating new database...");
-    await createDatabase(databasePath);
+  // Get platform-appropriate paths
+  const paths = getPlatformPaths();
+  const databasePath = `${paths.data}/openkraken.db`;
+
+  console.log(`\nPlatform: ${process.platform}`);
+  console.log(`Data directory: ${paths.data}`);
+  console.log(`Database path: ${databasePath}`);
+
+  // Import Database dynamically to avoid issues
+  const { Database } = await import("bun:sqlite");
+  const db = new Database(databasePath);
+
+  try {
+    // Configure database with WAL mode
+    configureDatabase(db);
+    console.log("\nDatabase configured with WAL mode");
+
+    // Load migrations
+    const migrationsDir = join(import.meta.dir, "..", "migrations");
+    const migrations = loadMigrations(migrationsDir);
+    
+    if (migrations.length === 0) {
+      console.log("No migration files found.");
+      return;
+    }
+
+    console.log(`\nFound ${migrations.length} migration(s):`);
+    for (const m of migrations) {
+      console.log(`  - ${m.filename} (${m.checksum.slice(0, 8)})`);
+    }
+
+    // Get already applied migrations
+    const applied = getAppliedVersions(db);
+    console.log(`\nAlready applied: ${applied.size === 0 ? "none" : Array.from(applied).join(", ")}`);
+
+    // Apply pending migrations
+    let appliedCount = 0;
+
+    for (const migration of migrations) {
+      if (applied.has(migration.version)) {
+        console.log(`Skipping ${migration.version}: already applied`);
+        continue;
+      }
+
+      console.log(`\nApplying migration ${migration.version}: ${migration.filename}`);
+      
+      // Start transaction
+      const applyMigrationTx = db.transaction(() => {
+        // Execute migration SQL
+        db.exec(migration.sql);
+        
+        // Verify schema integrity
+        const integrity = db.query("PRAGMA integrity_check").get() as { integrity_check: string };
+        if (integrity.integrity_check !== "ok") {
+          throw new Error(`Integrity check failed after migration ${migration.version}`);
+        }
+        
+        // Record successful migration
+        db.run(
+          "INSERT OR REPLACE INTO schema_versions (version, applied_at, checksum, description) VALUES (?, datetime('now'), ?, ?)",
+          [migration.version, migration.checksum, `Applied via init-db: ${migration.filename}`]
+        );
+      });
+      
+      applyMigrationTx();
+      
+      console.log(`✓ Migration ${migration.version} applied successfully`);
+      appliedCount++;
+    }
+
+    if (appliedCount === 0) {
+      console.log("\nAll migrations already applied.");
+    } else {
+      console.log(`\n✓ Applied ${appliedCount} migration(s)`);
+    }
+
+    // Show final status
+    const finalApplied = getAppliedVersions(db);
+    console.log(`\nCurrent schema version: ${Array.from(finalApplied).pop() || "none"}`);
+
+  } finally {
+    db.close();
   }
 
   console.log("\n=== Database initialization complete ===");
-}
-
-/**
- * Creates the database and initial schema
- */
-function createDatabase(databasePath: string): Promise<void> {
-  console.log(`Creating database: ${databasePath}`);
-
-  // Create database using bun:sqlite
-  // This creates the actual .db file
-  const db = new Database(databasePath);
-
-  try {
-    // Enable WAL mode for better concurrency
-    // WAL (Write-Ahead Logging) allows concurrent reads while writing
-    db.run("PRAGMA journal_mode = WAL");
-
-    // Set synchronous mode to NORMAL for better performance while maintaining durability
-    db.run("PRAGMA synchronous = NORMAL");
-
-    // Enable foreign keys
-    db.run("PRAGMA foreign_keys = ON");
-
-    // Create all tables
-    db.run(generateSchema());
-
-    console.log("Database schema created successfully");
-    console.log("WAL mode enabled for concurrent access");
-  } finally {
-    // Close the database connection
-    db.close();
-  }
-}
-
-/**
- * Verifies existing database schema
- */
-function verifySchema(databasePath: string): Promise<void> {
-  console.log("Verifying database integrity...");
-
-  const db = new Database(databasePath);
-
-  try {
-    // Check if WAL mode is enabled
-    const journalMode = db.query("PRAGMA journal_mode").get() as {
-      journal_mode: string;
-    };
-    console.log(`Journal mode: ${journalMode.journal_mode}`);
-
-    // Verify key tables exist
-    const tables = db
-      .query(`
-      SELECT name FROM sqlite_master 
-      WHERE type='table' AND name NOT LIKE 'sqlite_%'
-      ORDER BY name
-    `)
-      .all() as Array<{ name: string }>;
-
-    console.log(`Tables found: ${tables.map((t) => t.name).join(", ")}`);
-
-    console.log("Database verified successfully");
-  } finally {
-    db.close();
-  }
-}
-
-/**
- * Generates the database schema
- */
-function generateSchema(): string {
-  return `
--- OpenKraken Database Schema
--- Generated by init-db.ts
-
--- Schema version tracking table
-CREATE TABLE IF NOT EXISTS schema_versions (
-    version TEXT PRIMARY KEY,
-    applied_at TEXT NOT NULL,
-    checksum TEXT NOT NULL,
-    description TEXT
-);
-
--- Insert initial schema version
-INSERT INTO schema_versions (version, applied_at, checksum, description)
-VALUES (
-    '${SCHEMA_VERSION}',
-    datetime('now'),
-    'pending',
-    'Initial schema'
-);
-
--- Thread tracking
-CREATE TABLE IF NOT EXISTS threads (
-    id TEXT PRIMARY KEY,
-    metadata BLOB,
-    created_at TEXT NOT NULL DEFAULT datetime('now'),
-    updated_at TEXT NOT NULL DEFAULT datetime('now')
-);
-
--- Message log with encryption support
-CREATE TABLE IF NOT EXISTS messages (
-    id TEXT PRIMARY KEY,
-    thread_id TEXT NOT NULL,
-    role TEXT NOT NULL,
-    content BLOB NOT NULL,
-    encrypted INTEGER DEFAULT 0,
-    metadata BLOB,
-    created_at TEXT NOT NULL DEFAULT datetime('now')
-);
-
--- Semantic memory storage
-CREATE TABLE IF NOT EXISTS memories (
-    id TEXT PRIMARY KEY,
-    content TEXT NOT NULL,
-    embedding BLOB,
-    metadata BLOB,
-    importance REAL DEFAULT 0.5,
-    created_at TEXT NOT NULL DEFAULT datetime('now'),
-    updated_at TEXT NOT NULL DEFAULT datetime('now')
-);
-
-CREATE TABLE IF NOT EXISTS memories_embeddings (
-    id TEXT PRIMARY KEY,
-    memory_id TEXT NOT NULL,
-    model TEXT NOT NULL,
-    embedding BLOB NOT NULL,
-    created_at TEXT NOT NULL DEFAULT datetime('now'),
-    FOREIGN KEY (memory_id) REFERENCES memories(id)
-);
-
--- Audit logging
-CREATE TABLE IF NOT EXISTS audit_events (
-    id TEXT PRIMARY KEY,
-    event_type TEXT NOT NULL,
-    actor TEXT,
-    target TEXT,
-    action TEXT,
-    result TEXT,
-    metadata BLOB,
-    timestamp TEXT NOT NULL DEFAULT datetime('now')
-);
-
--- Proxy/network access logs
-CREATE TABLE IF NOT EXISTS proxy_logs (
-    id TEXT PRIMARY KEY,
-    url TEXT NOT NULL,
-    method TEXT NOT NULL,
-    request_headers BLOB,
-    request_body BLOB,
-    response_status INTEGER,
-    response_headers BLOB,
-    response_body BLOB,
-    duration_ms INTEGER,
-    error TEXT,
-    timestamp TEXT NOT NULL DEFAULT datetime('now')
-);
-
--- Skills metadata
-CREATE TABLE IF NOT EXISTS skills (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL UNIQUE,
-    version TEXT NOT NULL,
-    source TEXT NOT NULL,
-    manifest BLOB NOT NULL,
-    enabled INTEGER DEFAULT 1,
-    created_at TEXT NOT NULL DEFAULT datetime('now'),
-    updated_at TEXT NOT NULL DEFAULT datetime('now')
-);
-
--- Security analysis reports
-CREATE TABLE IF NOT EXISTS skill_analysis_reports (
-    id TEXT PRIMARY KEY,
-    skill_id TEXT NOT NULL,
-    analysis_type TEXT NOT NULL,
-    findings BLOB NOT NULL,
-    risk_level TEXT,
-    reviewed_by TEXT,
-    reviewed_at TEXT,
-    approved INTEGER DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT datetime('now'),
-    FOREIGN KEY (skill_id) REFERENCES skills(id)
-);
-
--- Skill lifecycle audit log
-CREATE TABLE IF NOT EXISTS skill_audit_log (
-    id TEXT PRIMARY KEY,
-    skill_id TEXT NOT NULL,
-    action TEXT NOT NULL,
-    actor TEXT,
-    details BLOB,
-    timestamp TEXT NOT NULL DEFAULT datetime('now'),
-    FOREIGN KEY (skill_id) REFERENCES skills(id)
-);
-
--- Create indexes for performance
-CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id);
-CREATE INDEX IF NOT EXISTS idx_memories_embedding ON memories(embedding);
-CREATE INDEX IF NOT EXISTS idx_audit_events_type ON audit_events(event_type);
-CREATE INDEX IF NOT EXISTS idx_audit_events_timestamp ON audit_events(timestamp);
-CREATE INDEX IF NOT EXISTS idx_proxy_logs_timestamp ON proxy_logs(timestamp);
-CREATE INDEX IF NOT EXISTS idx_skills_name ON skills(name);
-CREATE INDEX IF NOT EXISTS idx_skill_audit_log_skill ON skill_audit_log(skill_id);
-
--- Note: Checkpoint tables (checkpoints, writes) are created by bun-sqlite-checkpointer
--- via initializeSchema() when the checkpointer is initialized.
-`;
 }
 
 // Run initialization
