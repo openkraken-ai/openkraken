@@ -23,7 +23,7 @@ build: build-orchestrator build-egress-gateway
 build-orchestrator:
     @echo "Building orchestrator..."
     mkdir -p {{BIN_DIR}}
-    cd {{ORCHESTRATOR_DIR}} && bun build --compile --outfile ../../bin/openkraken
+    cd {{ORCHESTRATOR_DIR}} && bun build src/main.ts --compile --outfile ../../bin/openkraken
     @echo "Orchestrator built: {{ORCHESTRATOR_BINARY}}"
 
 # Build egress-gateway (Go)
