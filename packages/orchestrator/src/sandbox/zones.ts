@@ -94,7 +94,7 @@ export async function ensureZoneDirectories(
 /**
  * Session cleanup - clear ephemeral zones (work, outputs)
  * Called at session boundary (midnight or configured timezone)
- * Per Architecture.md: "The Sandbox work and outputs zones are cleared at session boundaries"
+ * Per docs/Architecture.md: "The Sandbox work and outputs zones are cleared at session boundaries"
  */
 export async function sessionCleanup(): Promise<void> {
   const ephemeralZones: SandboxZone[] = ["work", "outputs"];

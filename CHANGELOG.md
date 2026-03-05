@@ -11,7 +11,7 @@ This document records recent architectural evolution. For full historical change
 This version adds comprehensive skill ingestion pipeline architecture, integrating the Vercel skills CLI while applying OpenKraken's security model. The Agent discovers and activates skills autonomously per AgentSkills.io progressive disclosure.
 
 **Skill Ingestion Pipeline**
-* Added Section 5.4 to Architecture.md detailing the complete ingestion pipeline:
+* Added Section 5.4 to docs/Architecture.md detailing the complete ingestion pipeline:
   * Source Resolution: Integrated Vercel skills CLI (bundled via Nix) supports GitHub shorthand, full URLs, direct tree paths
   * Structure Validation: Deterministic checks against AgentSkills.io specification
   * LLM Security Analysis: Configurable model (default: Claude Haiku 4.5) analyzes skills for prompt injection, network calls, credential access
@@ -36,7 +36,7 @@ This version adds comprehensive skill ingestion pipeline architecture, integrati
 * Supports all Vercel resolution patterns while applying security pipeline
 
 **Database Schema Extensions**
-* Added Section 3.7 Skill Pipeline Schema to TechSpec.md:
+* Added Section 3.7 Skill Pipeline Schema to docs/TechSpec.md:
   * `skills` table: skill metadata, version, tier, source, provenance
   * `skill_analysis_reports` table: security analysis findings, risk level, recommendation
   * `skill_audit_log` table: lifecycle actions with actor and details
@@ -46,7 +46,7 @@ This version adds comprehensive skill ingestion pipeline architecture, integrati
 * Agent discovers skills from manifest and activates them autonomously (not middleware-driven activation)
 
 **Configuration Schema**
-* Added `skills` section to TechSpec.md configuration:
+* Added `skills` section to docs/TechSpec.md configuration:
   * `enabled`, `defaultTier`, `autoApproveOwnerInstructionOnly`, `autoUpdate`, `analysisModel`, `sources`
   * Default source: `https://github.com/vercel-labs/skills` (community tier)
 
@@ -288,7 +288,7 @@ Major architectural enhancement integrating production-tested security infrastru
 
 ### Earlier Versions (v0.11.0, v0.10.0, v0.9.0, v0.8.0)
 
-For complete history of earlier architectural iterations, see `git log --all -- "Architecture.md" "ARCHITECTURE.md" "MIXED_ARCHITECTURE.md"`. Key developments include:
+For complete history of earlier architectural iterations, see `git log --all -- "docs/Architecture.md" "ARCHITECTURE.md" "MIXED_ARCHITECTURE.md"`. Key developments include:
 
 - **v0.11.0**: Callback vs middleware distinction, custom OpenTelemetry implementation clarification, platform path semantics, credential vault abstraction
 - **v0.10.0**: Production-tested security infrastructure integration (Anthropic Sandbox Runtime, comprehensive egress proxy, observability layer)

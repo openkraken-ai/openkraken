@@ -865,4 +865,3 @@ The Nix packages are provisioned before sandbox invocation, ensuring reproducibl
 
 **ADR Documentation:** Architecture decisions are documented with context, alternatives considered, and consequences analysis in the ADR section.
 
-

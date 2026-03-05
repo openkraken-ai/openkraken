@@ -53,7 +53,7 @@ These commitments have been made after investigation and debate. They would requ
 
 These philosophical commitments shape every architectural decision. Deviations require explicit justification and ADR documentation.
 
-OpenKraken operates according to foundational philosophical principles documented in **Architecture.md**. Key principles include:
+OpenKraken operates according to foundational philosophical principles documented in **docs/Architecture.md**. Key principles include:
 
 - **Trust the Sandbox, Not the Model.** Safety is enforced by the sandbox and tool-level validation, not by the System Prompt.
 - **Build on Proven Foundations.** Integrate battle-tested solutions for security-critical infrastructure.
@@ -61,7 +61,7 @@ OpenKraken operates according to foundational philosophical principles documente
 - **Observable by Default.** Complete visibility into Agent behavior for debugging and audit.
 - **Credential Isolation.** Credentials live in OS-level vaults, never exposed to the Agent.
 
-For the complete list of 18 Core Philosophies, see **Architecture.md Section 1.3**.
+For the complete list of 18 Core Philosophies, see **docs/Architecture.md Section 1.3**.
 
 ## Important Distinctions
 
@@ -144,7 +144,7 @@ For orchestrator-specific development, see **packages/orchestrator/CLAUDE.md** f
 
 | File | Purpose |
 |------|---------|
-| **Architecture.md** | Authoritative source for architectural decisions |
+| **docs/Architecture.md** | Authoritative source for architectural decisions |
 | **CHANGELOG.md** | Recent architectural changes with context |
 | **SOUL.md** | Agent identity and values (injected into system prompt) |
 | **SAFETY.md** | Safety constraints governing Agent behavior |
@@ -152,7 +152,7 @@ For orchestrator-specific development, see **packages/orchestrator/CLAUDE.md** f
 | **packages/orchestrator/CLAUDE.md** | Bun-specific development guidance for the orchestrator |
 ## How to Approach Your Work
 
-1. **Orient yourself.** Read AGENTS.md for context. Read relevant sections of Architecture.md. Check CHANGELOG.md for recent changes.
+1. **Orient yourself.** Read AGENTS.md for context. Read relevant sections of docs/Architecture.md. Check CHANGELOG.md for recent changes.
 2. **Investigate before implementing.** Verify technology status, maintenance, and compatibility. Use the Librarian CLI. Do not assume your training data is current.
 3. **Question assumptions.** If a requirement conflicts with core philosophies, raise the concern.
 4. **Update documentation.** If you discover something that contradicts the architecture, update it.
@@ -176,9 +176,9 @@ For orchestrator-specific development, see **packages/orchestrator/CLAUDE.md** f
 
 These layers separate business intent from technical implementation.
 
-### PRD.md: The No-Tech Rule
+### docs/PRD.md: The No-Tech Rule
 
-PRD.md remains technology-agnostic. It describes **what** the system does, never **how**.
+docs/PRD.md remains technology-agnostic. It describes **what** the system does, never **how**.
 
 **Includes:** Business capabilities, user stories, constraints, success metrics
 
@@ -191,11 +191,11 @@ PRD.md remains technology-agnostic. It describes **what** the system does, never
 
 **Test:** Would this requirement still be valid if we changed the underlying technology?
 - Yes -> Belongs in PRD
-- No -> Belongs in Architecture.md or TechSpec.md
+- No -> Belongs in docs/Architecture.md or docs/TechSpec.md
 
-### Architecture.md: The Category Rule
+### docs/Architecture.md: The Category Rule
 
-Architecture.md names technology **categories**, not **instances**.
+docs/Architecture.md names technology **categories**, not **instances**.
 
 **Includes:** Design patterns, component relationships, technology categories ("JavaScript runtime", "Relational database")
 
@@ -208,12 +208,12 @@ Architecture.md names technology **categories**, not **instances**.
 | "Relational database" | "SQLite 3.45.1 with WAL mode" |
 
 **Test:** Could I replace the technology with an equivalent alternative without changing the architecture's validity?
-- Yes -> Belongs in Architecture.md
-- No -> Belongs in TechSpec.md
+- Yes -> Belongs in docs/Architecture.md
+- No -> Belongs in docs/TechSpec.md
 
-### TechSpec.md: The Code Rule
+### docs/TechSpec.md: The Code Rule
 
-TechSpec.md specifies concrete contracts and constraints, not implementation code.
+docs/TechSpec.md specifies concrete contracts and constraints, not implementation code.
 
 **Includes:** Version specifications, API contracts, database schemas, configuration schemas, package dependencies
 
@@ -226,7 +226,7 @@ Wrong: "Implementation of the migration runner is deferred to development phase.
 Right: "Migration contract: Must support forward-only migrations with checksum verification. Implementation must use bun:sqlite transactions."
 
 **Test:** Would I need to update this if I refactored the implementation without changing behavior?
-- No (behavior changed) -> Belongs in TechSpec.md
+- No (behavior changed) -> Belongs in docs/TechSpec.md
 - Yes (implementation detail) -> Belongs in code
 
 ---

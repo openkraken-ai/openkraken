@@ -161,7 +161,7 @@ in
         NoNewPrivileges = true;
 
         # INFRA-018: Resource Limits
-        # Per Tasks.md: Ensure stable operation under load
+        # Per docs/Tasks.md: Ensure stable operation under load
         LimitNOFILE = 8192;
         MemoryMax = "2G";
         MemoryHigh = "1.5G";

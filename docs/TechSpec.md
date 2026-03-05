@@ -913,9 +913,9 @@ Implement three-layer drift prevention:
 
 #### Layer 1: PR Checklist (Immediate Enforcement)
 All PRs must complete the following checklist:
-- [ ] Architecture.md updated if changing documented behavior or component boundaries
+- [ ] docs/Architecture.md updated if changing documented behavior or component boundaries
 - [ ] ADR created for new architectural decisions
-- [ ] TechSpec.md updated for API changes, schema modifications, or version bumps
+- [ ] docs/TechSpec.md updated for API changes, schema modifications, or version bumps
 - [ ] CHANGELOG.md updated for breaking changes
 - [ ] PR description references affected documentation sections
 
@@ -944,15 +944,15 @@ Scripts check:
 
 ### Document Boundaries
 
-**PRD.md** — Business capabilities and user stories
+**docs/PRD.md** — Business capabilities and user stories
 - Update when: Adding/removing features, changing requirements
 - Do not update when: Implementation details change, bug fixes
 
-**Architecture.md** — Design patterns and component relationships
+**docs/Architecture.md** — Design patterns and component relationships
 - Update when: Component boundaries change, new middleware added, data flows change
 - Do not update when: Internal refactoring without behavioral change, bug fixes
 
-**TechSpec.md** — Concrete contracts and specifications
+**docs/TechSpec.md** — Concrete contracts and specifications
 - Update when: API changes, schema changes, version bumps, configuration changes
 - Do not update when: Internal implementation details change
 
@@ -3434,9 +3434,9 @@ OpenKraken uses a **devenv-managed monorepo** to coordinate the TypeScript/Bun O
 openkraken/
 ├── README.md
 ├── AGENTS.md
-├── PRD.md
-├── Architecture.md
-├── TechSpec.md                    # This document
+├── docs/PRD.md
+├── docs/Architecture.md
+├── docs/TechSpec.md                    # This document
 ├── devenv.nix                     # Root devenv configuration
 ├── devenv.yaml                    # devenv inputs and imports
 ├── .envrc                         # direnv auto-activation
@@ -4277,7 +4277,7 @@ interface MiddlewareOutput {
 
 ### 5.6 Callback Execution Order
 
-Callbacks execute in parallel across all middleware layers. Callbacks do not modify behavior—they observe and record. The callback system implements observability as described in Architecture.md Section 5.2.
+Callbacks execute in parallel across all middleware layers. Callbacks do not modify behavior—they observe and record. The callback system implements observability as described in docs/Architecture.md Section 5.2.
 
 #### 5.6.1 Complete Event Types List
 
@@ -6280,4 +6280,3 @@ const daemon = spawn("bun", ["daemon.ts"], {
 | 2.0.0 | 2026-02-07 | Principal Software Engineer | **Major Nix/Devenv Integration**: Fixed invalid process orchestration syntax (replaced depends_on with task-based before dependencies); Added Scripts vs Tasks distinction with comparison table; Added enterTest pattern for test environment setup; Updated Section 1.5 Stack Specification with devenv, direnv, git, just versions; Added ADR-009 (devenv over Docker Compose); Added Section 1.7 SBOM Generation & 2026 Regulatory Compliance with CRA, PCI DSS, FDA requirements; Added Section 9.3 CI/CD Strategy with GitHub Actions, Garnix, and Cachix integration; Added direnv auto-activation example; Added devenv maintenance commands (update, gc, info); Updated devenv.yaml with version pinning patterns; Added Nix version clarification (2.31.2 current / 2.33.2 latest). |
 | 2.1.0 | 2026-02-08 | Principal Software Engineer | **Research-Enhanced TechSpec**: Incorporated 16-agent swarm research findings; Enhanced §1.1 Core Runtime with Bun/Go API surfaces and warnings; Added §1.1.1 Bun Integration Patterns; Added §1.2.1 LangChain createAgent() implementation; Added §1.5.1 Nix/Devenv patterns with critical systemd/launchd gap warning; Added ADR-016 (Go HTTP CONNECT), ADR-017 (Credential Vaults), ADR-018 (SvelteKit SSE), ADR-019 (Sandbox Chained Proxy); Enhanced ADR-010 (CUE) with concrete schema examples; Enhanced ADR-013 (Skills CLI) with approval workflow gaps; Added Appendix A Research Findings Summary with platform-specific details. |
 | 2.2.0 | 2026-02-08 | Principal Software Engineer | **Cross-Platform Service Management**: Added ADR-020 (Service Management Strategy) with dual-platform generation pattern; Implemented systemd unit configuration with full security hardening (NoNewPrivileges, ProtectSystem, MemoryDenyWriteExecute); Implemented launchd plist with resource limits and KeepAlive; Added Bun signal handler for graceful shutdown (SIGTERM/SIGINT); Added NixOS module integration; Added installation script patterns with platform detection; Marked systemd/launchd generation gap as resolved.
-

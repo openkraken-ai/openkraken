@@ -97,7 +97,7 @@ in
         };
 
         # INFRA-018: Resource Limits
-        # Per Tasks.md: Ensure stable operation under load
+        # Per docs/Tasks.md: Ensure stable operation under load
         # Note: macOS launchd does not support CPU quotas (Linux cgroups feature)
         SoftResourceLimits = {
           NumberOfFiles = 8192;

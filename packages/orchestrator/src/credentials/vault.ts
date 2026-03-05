@@ -3,7 +3,7 @@
  *
  * Unified credential vault abstraction with automatic fallback chain.
  *
- * Fallback Flow (per Architecture.md §5.1):
+ * Fallback Flow (per docs/Architecture.md §5.1):
  * Primary: secrets API (secret-service/D-Bus on Linux, Keychain on macOS)
  *     ↓ (unavailable - headless server without secret-service)
  * Fallback: age-encrypted file ($OPENKRAKEN_HOME/credentials.enc)
