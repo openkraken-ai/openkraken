@@ -8,7 +8,7 @@ OpenKraken is architected as a direct response to the failures of "OpenClaw" (n�
 
 - **Probabilistic Safety Failure:** OpenClaw relied on `AGENTS.md` directives—system prompt rules telling the LLM "don't do dangerous things." A single prompt injection through any connected messaging channel yielded full shell access. OpenKraken enforces safety at the sandbox and tool level, not the prompt level, using Anthropic's Sandbox Runtime for deterministic isolation.
 
-- **Localhost Trust / No Auth by Default:** OpenClaw auto-trusted connections from `127.0.0.1`. Behind any reverse proxy, all external traffic appeared local. Shodan found 1,800+ exposed instances. OpenKraken binds to `127.0.0.1` or Tailscale only, with no implicit trust model. Telegram webhooks require cryptographic signature verification.
+- **Localhost Trust / No Auth by Default:** OpenClaw auto-trusted connections from `127.0.0.1`. Behind any reverse proxy, all external traffic appeared local. Shodan found 1,800+ exposed instances. OpenKraken binds to `127.0.0.1` or Tailscale only, with no implicit trust model. Telegram webhooks require secret token validation.
 
 - **Flat Credential Storage:** API keys, OAuth tokens, and bot tokens stored in plaintext on the local filesystem, fully accessible to the agent. OpenKraken stores credentials in OS-level vaults (Keychain, secret-service) and never exposes them to the sandbox context.
 
@@ -96,7 +96,7 @@ These philosophical commitments shape every architectural decision. Deviations r
 
 14. **Identity Injection:** The Agent's full constitution (`SOUL.md`, `SAFETY.md`, `CAPABILITIES.md`, `DIRECTIVES.md`) is never materialized as a file within the sandbox. It is injected directly into the system prompt by the Orchestrator. This prevents exfiltration of the "Constitution" via file copy operations.
 
-15. **Durable State Persistence:** Agent state survives Orchestrator restarts via LangGraph SqliteCheckpointer with WAL mode. Session continuity is an architectural guarantee, not an in-memory optimization.
+15. **Durable State Persistence:** Agent state survives Orchestrator restarts via a SQLite-backed checkpointer with WAL mode. Session continuity is an architectural guarantee, not an in-memory optimization.
 
 16. **Observable by Default:** All Agent operations are logged, traced, and metered. The Owner has complete visibility into Agent behavior for debugging, audit, and optimization purposes.
 
@@ -167,7 +167,7 @@ The following containers constitute the deployable units of the OpenKraken syste
 
 **Credential Vault**: Platform-specific abstraction layer — Provides unified interface to OS-level credential storage, exposing `store(service, secret)`, `retrieve(service)`, and `rotate(service)` methods. The abstraction integrates with platform-native credential storage mechanisms. Credentials never leave runtime memory; the vault abstraction prevents any code path from writing secrets to filesystem, logs, or network connections.
 
-**Egress Gateway**: Binary implementing HTTP CONNECT proxy with domain allowlisting — Operates in a chained architecture with the Sandbox Runtime. The Sandbox Runtime's built-in proxy routes all traffic to the Egress Gateway. This provides defense-in-depth: the Sandbox handles platform-specific network isolation while the proxy provides audit logging to the structured database, dynamic allowlist management API, and structured error responses. The Sandbox enforces that ALL traffic must route through the proxy chain, while the Gateway enforces the actual domain allowlist and logs every connection attempt with complete context.
+**Egress Gateway**: Binary implementing HTTP CONNECT proxy with domain allowlisting — Operates in a chained architecture with the Sandbox Runtime. The Sandbox Runtime's built-in proxy routes all traffic to the Egress Gateway. This provides defense-in-depth: the Sandbox handles platform-specific network isolation while the proxy provides audit logging to the structured database, dynamic allowlist management API, and structured error responses. The Sandbox enforces that ALL traffic must route through the proxy chain, while the Egress Gateway enforces the actual domain allowlist and logs every connection attempt with complete context.
 
 ### Layer 1: The Sandbox
 
@@ -710,10 +710,10 @@ The architecture implements a comprehensive error handling strategy that ensures
 
 The Egress Gateway is a single point of failure for sandbox network access. The architecture includes automatic recovery mechanisms:
 
-1. **Health Monitoring**: Orchestrator polls Gateway health endpoint every 30 seconds
+1. **Health Monitoring**: Orchestrator polls the Egress Gateway health endpoint every 30 seconds
 2. **Automatic Restart**: Nix/systemd restart on 3 consecutive failures
-3. **Graceful Degradation**: Queue outbound requests during Gateway recovery (max 100 queued)
-4. **Owner Alert**: CRITICAL alert via Telegram on Gateway failure, INFO on recovery
+3. **Graceful Degradation**: Queue outbound requests during Egress Gateway recovery (max 100 queued)
+4. **Owner Alert**: CRITICAL alert via Telegram on Egress Gateway failure, INFO on recovery
 
 **Recovery Flow:**
 ```

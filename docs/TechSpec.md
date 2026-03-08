@@ -111,15 +111,15 @@ const (
 
 | Component | Version | Justification | API Surface & Critical Notes |
 |-----------|---------|---------------|----------------------------|
-| **LangChain.js** | 1.2.18 (bindings) / 1.1.19 (core) | Stable v1 API with TypeScript bindings. Provides canonical `createAgent()` entry point. Extensive middleware ecosystem. Production-ready with active maintenance. | **API Surface:** `createAgent()` at `libs/langchain/src/agents/index.ts`, `SqliteSaver` in `@langchain/community`, `MultiServerMCPClient` in `@langchain/mcp-adapters`. **Middleware Hooks:** `WrapToolCallHook`, `BeforeAgentHook`, `BeforeModelHook`, `WrapModelCallHook`, `AfterModelHook`, `AfterAgentHook`. **Bun Gap:** Subagent found "Limited documentation on Bun runtime compatibility" - verify in staging. |
-| **LangGraph.js** | 1.1.2 | Stateful workflow management. Enables checkpoint persistence and state rollback. Used as peer dependency by LangChain bindings. | **State Persistence:** `SqliteSaver` with WAL mode. Checkpointer interface for thread_id isolation. |
+| **LangChain.js** | 1.2.18 (bindings) / 1.1.19 (core) | Stable v1 API with TypeScript bindings. Provides canonical `createAgent()` entry point. Extensive middleware ecosystem. Production-ready with active maintenance. | **API Surface:** `createAgent()` from the `langchain` package, `MultiServerMCPClient` in `@langchain/mcp-adapters`, provider packages in `@langchain/anthropic`, `@langchain/openai`, and `@langchain/google`. **Middleware Hooks:** `WrapToolCallHook`, `BeforeAgentHook`, `BeforeModelHook`, `WrapModelCallHook`, `AfterModelHook`, `AfterAgentHook`. **Bun Gap:** Subagent found "Limited documentation on Bun runtime compatibility" - verify in staging. |
+| **LangGraph.js** | 1.1.2 | Stateful workflow management. Enables checkpoint persistence and state rollback. Used as peer dependency by LangChain bindings. | **State Persistence:** Bun-native checkpointer via `@skroyc/bun-sqlite-checkpointer` with LangGraph-compatible `thread_id` isolation and WAL mode. |
 | **@langchain/mcp-adapters** | 1.1.2 | Model Context Protocol integration. Handles connection lifecycle and capability negotiation transparently. | **Connection Types:** `stdio`, `streamable_http`, `sse`. `MultiServerMCPClient` for unified tool interface. |
 
 ### 1.2.1 LangChain.js createAgent() Implementation
 
 **Canonical Entry Point (from research):**
 ```typescript
-import { createAgent } from "@langchain/langgraph";
+import { createAgent } from "langchain";
 
 const agent = createAgent({
   model: "anthropic:claude-sonnet:latest",
@@ -159,12 +159,9 @@ const modelPrep = createMiddleware({
 
 **SQLite Checkpointer Integration:**
 ```typescript
-import { SqliteSaver } from "@langchain/community/checkpointers/sqlite";
+import { BunSqliteSaver } from "@skroyc/bun-sqlite-checkpointer";
 
-const checkpointer = new SqliteSaver({
-  tableName: "agent_checkpoints",
-  dbPath: "./data/openkraken.db",
-});
+const checkpointer = BunSqliteSaver.fromConnString("./data/openkraken.db");
 
 const agent = createAgent({
   model,
@@ -177,7 +174,7 @@ const agent = createAgent({
 
 | Component | Version | Justification |
 |-----------|---------|---------------|
-| **grammY** | 1.39.3 | Supports Telegram Bot API 9.3 (December 2025 release). Type-safe Telegram protocol handling with webhook verification built-in. |
+| **grammY** | 1.39.3 | Supports Telegram Bot API 9.3 (December 2025 release). Type-safe Telegram protocol handling with webhook helpers, including `secretToken` validation against `X-Telegram-Bot-Api-Secret-Token`. |
 | **@anthropic-ai/sandbox-runtime** | 0.0.34 | Cross-platform process isolation using bubblewrap (Linux) and sandbox-exec (macOS). Unified configuration interface across platforms. Beta Research Preview—pins to specific version. Configured for chained proxy architecture (httpProxyPort/socksProxyPoint) to route traffic through Egress Gateway. |
 | **Vercel Agent Browser** | 0.9.1 | Headless browser automation with CDP protocol support. Isolated profiles per session with proxy enforcement. |
 
@@ -643,7 +640,7 @@ OpenKraken must support multiple LLM providers (Anthropic, OpenAI, Google) to en
 Use **LangChain.js native multi-provider abstraction** without additional vendor abstraction layers.
 
 **Rationale:**
-1. **Built-in Support**: LangChain.js 1.2.18 includes native support for Anthropic (`@langchain/anthropic`), OpenAI (`@langchain/openai`), and Google (`@langchain/google-vertexai`)
+1. **Built-in Support**: LangChain.js 1.2.18 includes native support for Anthropic (`@langchain/anthropic`), OpenAI (`@langchain/openai`), and Google (`@langchain/google`)
 2. **Provider Swapping via Config**: Change providers by updating model string configuration:
    - Anthropic: `"claude-sonnet:latest"`, `"claude-opus:latest"`
    - OpenAI: `"gpt-4"`, `"gpt-3.5-turbo"`
@@ -658,7 +655,7 @@ Use **LangChain.js native multi-provider abstraction** without additional vendor
 // src/orchestrator/providers/index.ts
 import { ChatAnthropic } from "@langchain/anthropic"
 import { ChatOpenAI } from "@langchain/openai"
-import { ChatVertexAI } from "@langchain/google-vertexai"
+import { ChatGoogle } from "@langchain/google"
 
 type Provider = "anthropic" | "openai" | "google"
 
@@ -686,7 +683,7 @@ function createLLM(config: ProviderConfig) {
         apiKey: credential,
       })
     case "google":
-      return new ChatVertexAI({
+      return new ChatGoogle({
         model: config.model || "gemini-pro",
         apiKey: credential,
       })
@@ -2224,7 +2221,7 @@ Stores LangGraph agent state persistence within `openkraken.db`. Two-table schem
 ```mermaid
 erDiagram
     checkpoints {
-        text thread_id PK "Thread identifier (UUID as TEXT)"
+        text thread_id PK "Thread identifier (date as TEXT: YYYY-MM-DD)"
         text checkpoint_ns PK "Checkpoint namespace (default: '')"
         text checkpoint_id PK "Checkpoint unique ID (UUID6 as TEXT)"
         text parent_checkpoint_id FK "Parent checkpoint reference (UUID as TEXT)"
@@ -2234,7 +2231,7 @@ erDiagram
     }
     
     writes {
-        text thread_id PK "Thread identifier (UUID as TEXT)"
+        text thread_id PK "Thread identifier (date as TEXT: YYYY-MM-DD)"
         text checkpoint_ns PK "Checkpoint namespace (default: '')"
         text checkpoint_id PK "Checkpoint reference (UUID as TEXT)"
         text task_id PK "Task identifier (UUID as TEXT)"
@@ -3027,7 +3024,7 @@ Output items transition through states:
 **Example SSE Stream:**
 ```
 event: response.started
-data: {"response_id": "resp_abc123", "thread_id": "thread_telegram_123", "model": "claude-4"}
+data: {"response_id": "resp_abc123", "thread_id": "2026-03-08", "model": "claude-4"}
 
 event: response.message.start
 data: {"message_id": "msg_1", "role": "assistant"}
@@ -3042,7 +3039,7 @@ event: response.tool_call.result
 data: {"tool_call_id": "tool_1", "content": "file contents..."}
 
 event: openkraken:checkpoint.created
-data: {"checkpoint_id": "cp_abc123", "thread_id": "thread_telegram_123"}
+data: {"checkpoint_id": "cp_abc123", "thread_id": "2026-03-08"}
 
 event: response.completed
 data: {"response_id": "resp_abc123", "status": "completed"}
@@ -3271,7 +3268,7 @@ OpenKraken separates input sources from the API layer. Telegram, future web inte
 5. Response events are streamed back to Telegram as messages
 
 **Endpoint:** `POST /webhook/telegram`  
-**Authentication:** HMAC-SHA256 signature verification (grammY built-in)
+**Authentication:** Shared secret token validation using Telegram's `X-Telegram-Bot-Api-Secret-Token` header and grammY's `secretToken` webhook option. This is header comparison, not HMAC request signing.
 
 ```yaml
 paths:
@@ -3292,7 +3289,7 @@ paths:
         '200':
           description: Update processed (response streamed separately)
         '401':
-          description: Invalid signature
+          description: Missing or invalid secret token
         '400':
           description: Invalid update format
         '500':
@@ -3304,7 +3301,7 @@ paths:
 OpenKraken's architecture supports additional input adapters:
 
 - **Web UI Adapter:** Browser-based chat interface → Open Responses input
-- **MCP Adapter:** MCP protocol → Open Responses input (existing)
+- **MCP Adapter:** MCP protocol → Open Responses input (planned Phase 2)
 - **CLI Adapter:** Terminal input → Open Responses input
 - **Scheduling Adapter:** Cron triggers → Open Responses input
 
@@ -5090,7 +5087,7 @@ This section defines measurable SLAs for system performance. These benchmarks gu
 | **Memory retrieval (top-k=5)** | < 20ms | < 50ms | Vector similarity search + content fetch |
 | **Checkpointer write** | < 10ms | < 30ms | SQLite WAL append operation |
 | **Egress Gateway HTTP API response** | < 10ms | < 50ms | End-to-end request handling (health endpoints) |
-| **Telegram webhook processing** | < 100ms | < 200ms | From signature verification to acknowledgment |
+| **Telegram webhook processing** | < 100ms | < 200ms | From secret token validation to acknowledgment |
 
 ### 7.2 Throughput Requirements
 
@@ -6180,15 +6177,12 @@ interface CreateAgentOptions {
 }
 ```
 
-**SqliteSaver Checkpointer:**
+**Bun-Native Checkpointer:**
 ```typescript
-// @langchain/community checkpointer
-import { SqliteSaver } from "@langchain/community/checkpointers/sqlite";
+// Bun-native LangGraph-compatible checkpointer
+import { BunSqliteSaver } from "@skroyc/bun-sqlite-checkpointer";
 
-const checkpointer = new SqliteSaver({
-    tableName: "agent_checkpoints",
-    dbPath: "./data/openkraken.db",
-});
+const checkpointer = BunSqliteSaver.fromConnString("./data/openkraken.db");
 ```
 
 **MultiServerMCPClient:**
@@ -6284,4 +6278,6 @@ const daemon = spawn("bun", ["daemon.ts"], {
 | 1.9.0 | 2026-02-07 | Principal Software Engineer | **Structural fixes**: Removed duplicate Skill Schema Section (3.7); Removed malformed OpenAPI YAML duplicate event types; Removed duplicate YAML block in Request Schema. **Content updates**: Added concrete Langfuse v4 CallbackHandler implementation (§5.8); Clarified middleware stack responsibilities - Policy Middleware (rate limits, content scanning) vs PII Middleware (§5.5); Documented RMM (Reflective Memory Management) Middleware definition (§3.3); Added devenv-managed monorepo structure (§5.1); Standardized SQLite UUID type annotations across all ERDs (§3.x). |
 | 2.0.0 | 2026-02-07 | Principal Software Engineer | **Major Nix/Devenv Integration**: Fixed invalid process orchestration syntax (replaced depends_on with task-based before dependencies); Added Scripts vs Tasks distinction with comparison table; Added enterTest pattern for test environment setup; Updated Section 1.5 Stack Specification with devenv, direnv, git, just versions; Added ADR-009 (devenv over Docker Compose); Added Section 1.7 SBOM Generation & 2026 Regulatory Compliance with CRA, PCI DSS, FDA requirements; Added Section 9.3 CI/CD Strategy with GitHub Actions, Garnix, and Cachix integration; Added direnv auto-activation example; Added devenv maintenance commands (update, gc, info); Updated devenv.yaml with version pinning patterns; Added Nix version clarification (2.31.2 current / 2.33.2 latest). |
 | 2.1.0 | 2026-02-08 | Principal Software Engineer | **Research-Enhanced TechSpec**: Incorporated 16-agent swarm research findings; Enhanced §1.1 Core Runtime with Bun/Go API surfaces and warnings; Added §1.1.1 Bun Integration Patterns; Added §1.2.1 LangChain createAgent() implementation; Added §1.5.1 Nix/Devenv patterns with critical systemd/launchd gap warning; Added ADR-016 (Go HTTP CONNECT), ADR-017 (Credential Vaults), ADR-018 (SvelteKit SSE), ADR-019 (Sandbox Chained Proxy); Enhanced ADR-010 (CUE) with concrete schema examples; Enhanced ADR-013 (Skills CLI) with approval workflow gaps; Added Appendix A Research Findings Summary with platform-specific details. |
+| 2.1.1 | 2026-03-08 | Codex | **Consistency corrections**: aligned Telegram webhook authentication with grammY `secretToken` / `X-Telegram-Bot-Api-Secret-Token`; removed stale `@langchain/community` SqliteSaver examples in favor of `@skroyc/bun-sqlite-checkpointer`; clarified `createAgent()` import guidance; marked MCP input adapter as planned Phase 2 to match task decomposition. |
+| 2.1.2 | 2026-03-08 | Codex | **Follow-up consistency corrections**: standardized `thread_id` examples and checkpoint schema on the date-based session model (`YYYY-MM-DD`); replaced stale Google provider references with the current LangChain `@langchain/google` recommendation; kept provider integration guidance within LangChain packages rather than direct vendor SDKs. |
 | 2.2.0 | 2026-02-08 | Principal Software Engineer | **Cross-Platform Service Management**: Added ADR-020 (Service Management Strategy) with dual-platform generation pattern; Implemented systemd unit configuration with full security hardening (NoNewPrivileges, ProtectSystem, MemoryDenyWriteExecute); Implemented launchd plist with resource limits and KeepAlive; Added Bun signal handler for graceful shutdown (SIGTERM/SIGINT); Added NixOS module integration; Added installation script patterns with platform detection; Marked systemd/launchd generation gap as resolved.

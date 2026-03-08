@@ -67,6 +67,7 @@ The following components were implemented in Epic #1 (Infrastructure Foundation)
 - Web search middleware (requires Exa API)
 - Browser automation middleware (requires Vercel Agent Browser)
 - MCP Adapter (for Slack/Discord integrations)
+- Skill Loader middleware (skills CLI integration and policy controls)
 - Cron middleware (for scheduled tasks)
 - Sub-Agent middleware (task delegation)
 
@@ -220,22 +221,28 @@ Add required dependencies to `packages/orchestrator/package.json`. Current packa
 
 ```json
 {
-	"@anthropic-ai/sdk": "^0.39.0",
-	"@langchain/core": "^0.3.0",
-	"@langchain/langgraph": "^0.2.0",
-	"@skroyc/bun-sqlite-checkpointer": "^0.1.0",
-	"@skroyc/rmm-middleware": "^0.1.0",
-	"grammy": "^1.39.3",
-	"yaml": "^2.7.0",
-	"zod": "^3.24.0"
+	"langchain": "<exact pin from docs/TechSpec.md Section 1.2>",
+	"@langchain/core": "<exact pin from docs/TechSpec.md Section 1.2 if imported directly>",
+	"@langchain/langgraph": "<exact pin from docs/TechSpec.md Section 1.2 if imported directly>",
+	"@langchain/mcp-adapters": "<exact pin from docs/TechSpec.md Section 1.2>",
+	"@langchain/anthropic": "<exact pin from docs/TechSpec.md ADR-008>",
+	"@langchain/openai": "<exact pin from docs/TechSpec.md ADR-008>",
+	"@langchain/google": "<exact pin from docs/TechSpec.md ADR-008>",
+	"@skroyc/bun-sqlite-checkpointer": "<exact pin from docs/TechSpec.md ADR-004>",
+	"@skroyc/rmm-middleware": "<exact pin from docs/TechSpec.md ADR-014>",
+	"grammy": "<exact pin from docs/TechSpec.md Section 1.3>",
+	"yaml": "<exact pin from docs/TechSpec.md Section 1.6>",
+	"zod": "<exact pin from docs/TechSpec.md Section 1.6>"
 }
 ```
+
+All runtime dependencies MUST use exact version pins from `docs/TechSpec.md`. Do not use caret ranges in production manifests. If TechSpec names a package or ADR but does not record a literal version, verify the current stable release against official documentation before pinning it.
 
 **Also Required for CLI (apps/cli/package.json):**
 
 ```json
 {
-	"@opentui/core": "^0.1.76"
+	"@opentui/core": "<exact pin from docs/TechSpec.md ADR-006>"
 }
 ```
 
@@ -243,8 +250,8 @@ Add required dependencies to `packages/orchestrator/package.json`. Current packa
 
 ```json
 {
-	"@sveltejs/kit": "^2.0.0",
-	"svelte": "^5.0.0"
+	"@sveltejs/kit": "<exact pin from docs/TechSpec.md ADR-007>",
+	"svelte": "<exact pin from docs/TechSpec.md ADR-007>"
 }
 ```
 
@@ -297,7 +304,7 @@ Create the main entry point and directory structure for Epic #2 components that 
 **Type:** Chore  
 **Effort:** 3  
 **Dependencies:** None  
-**TechSpec Reference:** Section 5.5.1 (Memory Middleware Tier 2), ADR-004
+**TechSpec Reference:** Section 5.5.1 (Memory Middleware Tier 2), ADR-014
 
 **Description:**  
 Import and configure `@skroyc/rmm-middleware` package for Reflective Memory Management. This implements the three-tier memory system from Tan et al. (ACL 2025) with Prospective Reflection (forward-looking summarization) and Retrospective Reflection (learnable reranking with REINFORCE).
@@ -477,23 +484,24 @@ And operation is logged (without credential value)
 **TechSpec Reference:** ADR-008 (Multi-LLM Provider Support)
 
 **Description:**  
-Implement LLM provider factory supporting multiple providers (Anthropic primary, OpenAI fallback). Handle API key retrieval from vault, model configuration, and provider-specific optimizations.
+Implement LLM provider factory supporting the providers defined in TechSpec ADR-008: Anthropic, OpenAI, and Google. Handle API key retrieval from vault, model configuration, and provider-specific optimizations through LangChain provider packages.
 
 **Implementation Details:**
 
-- Primary: Anthropic Claude (via @anthropic-ai/sdk)
-- Model: Claude Sonnet (configurable)
+- Primary provider configurable by Owner
+- Supported providers: Anthropic, OpenAI, Google
 - Provider factory pattern for extensibility
-- API key retrieved from CredentialVault
+- API keys retrieved from CredentialVault
 - Token counting for context management
 
 **Acceptance Criteria (Gherkin):**
 
 ```gherkin
-Given the Orchestrator is configured with Anthropic provider
+Given the Orchestrator is configured with a supported provider
 When the Agent requires LLM inference
 Then the LLM client is initialized with API key from vault
 And model configuration is loaded from config
+And Anthropic, OpenAI, and Google provider selections are supported by configuration
 And token usage is tracked per request
 And API errors are handled with exponential backoff retry
 And failed requests after max retries log error and notify Owner
@@ -501,7 +509,7 @@ And failed requests after max retries log error and notify Owner
 
 **Definition of Done:**
 
-- [ ] LLM provider factory with Anthropic implementation
+- [ ] LLM provider factory with Anthropic, OpenAI, and Google implementations
 - [ ] Model configuration from config file
 - [ ] Token counting integration
 - [ ] Retry logic with exponential backoff
@@ -525,7 +533,7 @@ Implement the core agent execution loop using LangChain.js `createAgent()` with 
 
 **Implementation Details:**
 
-- Entry point: `createAgent()` from @langchain/langgraph
+- Entry point: `createAgent()` from `langchain`
 - System prompt: XML-tagged concatenation of `SOUL.md` + `SAFETY.md` + `CAPABILITIES.md` + `DIRECTIVES.md`
 - Checkpointer: BunSqliteSaver from CORE-002
 - Memory: RMM middleware from CORE-001
@@ -1026,13 +1034,13 @@ And WCAG 2.1 AA compliance is met (contrast, keyboard nav, screen reader)
 **TechSpec Reference:** Section 4.2.1, CAP-052
 
 **Description:**  
-Implement Telegram Bot API integration using grammY framework. Webhook-based message receiving with cryptographic signature verification.
+Implement Telegram Bot API integration using grammY framework. Webhook-based message receiving with secret token validation before update processing.
 
 **Implementation Details:**
 
 - Framework: grammY v1.39.3
 - Mode: Webhook (production) or polling (development)
-- Security: Telegram signature verification
+- Security: `X-Telegram-Bot-Api-Secret-Token` validation via grammY `secretToken`
 - Bot commands: /start, /help
 - Message types: Text (primary), limited support for other types
 
@@ -1042,8 +1050,8 @@ Implement Telegram Bot API integration using grammY framework. Webhook-based mes
 Given Telegram bot token is configured in vault
 And webhook URL is configured and accessible
 When owner sends message via Telegram
-Then webhook receives update with signature verification
-And invalid signatures are rejected with 403
+Then webhook receives update with secret token validation
+And invalid or missing secret tokens are rejected before update processing
 And valid messages are routed to agent loop
 And agent responses are sent back to Telegram chat
 And /start command provides welcome message
@@ -1056,7 +1064,7 @@ And delivery status is tracked (sent, delivered, failed)
 **Definition of Done:**
 
 - [ ] grammY integration
-- [ ] Webhook endpoint with signature verification
+- [ ] Webhook endpoint with secret token validation
 - [ ] Message routing to agent
 - [ ] Response delivery to Telegram
 - [ ] Bot commands (/start, /help)
@@ -1296,6 +1304,29 @@ And sub-agents cannot spawn further sub-agents
 
 ---
 
+#### CORE-023: Skill Loader Middleware (Phase 2)
+
+**Type:** Feature  
+**Effort:** 5  
+**Dependencies:** CORE-008  
+**TechSpec Reference:** Section 5.5.1 (Tier 2: Skill Loader), ADR-013
+
+**Description:**  
+Implement skill loading middleware that resolves approved skills, injects skill manifests and tools into the Agent runtime, and records skill version metadata for auditability.
+
+**Acceptance Criteria (Gherkin):**
+
+```gherkin
+Given approved skill configuration exists
+When Skill Loader Middleware initializes
+Then skill manifests are resolved through the approved skills pipeline
+And skill tools are exposed to the agent with version metadata
+And unapproved or invalid skills are rejected before activation
+And skill activation events are logged for audit
+```
+
+---
+
 ## Ticket Summary by Priority
 
 ### Prerequisites (Must Complete First)
@@ -1411,7 +1442,7 @@ And sub-agents cannot spawn further sub-agents
    - CORE-002 (Checkpointer): Install and configure @skroyc/bun-sqlite-checkpointer
    - CORE-003 (Configuration): Extend existing config with env var interpolation
    - CORE-004 (Credentials): Integrate existing vault implementation
-   - CORE-005 (LLM Factory): Implement Anthropic provider
+   - CORE-005 (LLM Factory): Implement LangChain-backed Anthropic, OpenAI, and Google providers
 
 4. **Validation Gate:**
    - Before CORE-006: Verify all foundation components integrate
@@ -1455,9 +1486,12 @@ And sub-agents cannot spawn further sub-agents
 | @opentui/core                   | Beta      | npm              | CORE-013          | Missing          |
 | file-editor                     | Ready     | Local adaptation | CORE-010          | N/A (external)   |
 | @anthropic-ai/sandbox-runtime   | Published | npm              | CORE-009          | Yes              |
-| @anthropic-ai/sdk               | Published | npm              | CORE-005          | Missing          |
+| langchain                       | Published | npm              | CORE-006          | Missing          |
 | @langchain/core                 | Published | npm              | CORE-006          | Missing          |
-| @langchain/langgraph            | Published | npm              | CORE-006          | Missing          |
+| @langchain/mcp-adapters         | Published | npm              | CORE-020          | Missing          |
+| @langchain/anthropic            | Published | npm              | CORE-005          | Missing          |
+| @langchain/openai               | Published | npm              | CORE-005          | Missing          |
+| @langchain/google               | Published | npm              | CORE-005          | Missing          |
 | grammY                          | Published | npm              | CORE-015          | Missing          |
 | yaml                            | Published | npm              | CORE-003          | Missing          |
 | zod                             | Published | npm              | Multiple          | Missing          |
@@ -1465,7 +1499,7 @@ And sub-agents cannot spawn further sub-agents
 
 ### Package.json Status
 
-- **Orchestrator** (`packages/orchestrator/package.json`): Missing 9 critical dependencies
+- **Orchestrator** (`packages/orchestrator/package.json`): Missing critical runtime dependencies
 - **CLI** (`apps/cli/package.json`): Missing all dependencies (not initialized)
 - **Web UI** (`apps/web-ui/package.json`): Missing all dependencies (not initialized)
 
