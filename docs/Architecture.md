@@ -50,13 +50,13 @@ OpenKraken is a **personal AI agent runtime** with the following bounded capabil
 
 Four architectural entities appear throughout this document, each with distinct technology stacks, lifecycles, and trust boundaries.
 
-**Project** — The framework itself, authored and maintained by the OpenKraken team. The Project defines platform skills, default policies, security constraints, and the "Constitution" (`SOUL.md`, `SAFETY.md`). The Project is the authority on _how_ the system works.
+**Project** — The framework itself, authored and maintained by the OpenKraken team. The Project defines platform skills, default policies, security constraints, and the constitutional base documents `SOUL.md`, `SAFETY.md`, and `CAPABILITIES.md`. The Project is the authority on _how_ the system works.
 
-**Owner** — The person who installs and runs an instance. The Owner provisions credentials, configures integrations, uploads personal skills, and interacts with the Agent. In a single-tenant system, the Owner is the only human in the loop.
+**Owner** — The person who installs and runs an instance. The Owner provisions credentials, configures integrations, uploads personal skills, and exclusively authors `DIRECTIVES.md` as standing runtime instructions for their instance. In a single-tenant system, the Owner is the only human in the loop.
 
 **Agent** — The LLM-driven runtime operating inside the sandbox. A managed sub-system, not a peer.
 
-**Orchestrator** — The orchestration layer that mediates all communication between the Owner, external integrations, and the Agent. The Orchestrator injects identity, enforces policies, manages state, and handles credential isolation. It is the only component aware of platform specifics. Implemented as a JavaScript runtime (renamed from "Gateway" in v0.13.0 for clarity—see CHANGELOG.md).
+**Orchestrator** — The orchestration layer that mediates all communication between the Owner, external integrations, and the Agent. The Orchestrator enriches the base `CAPABILITIES.md` with runtime environment state, injects the full constitution, enforces policies, manages state, and handles credential isolation. It is the only component aware of platform specifics. Implemented as a JavaScript runtime (renamed from "Gateway" in v0.13.0 for clarity—see CHANGELOG.md).
 
 **Egress Gateway** — The network boundary component implementing HTTP CONNECT proxy with domain allowlisting. Implemented as a separate binary with independent lifecycle, managed as a system service. Enforces strict allowlist-only network policy for all sandbox egress.
 
@@ -70,7 +70,7 @@ These philosophical commitments shape every architectural decision. Deviations r
 
 1.  **Trust the Sandbox, Not the Model:** Safety is enforced by the sandbox and tool-level validation, not by the System Prompt.
 
-2.  **Immutability by Default:** The Agent's identity (`SOUL.md`) and core configuration are injected at runtime and cannot be modified by the Agent.
+2.  **Immutability by Default:** The Agent's constitutional documents (`SOUL.md`, `SAFETY.md`, `CAPABILITIES.md`, `DIRECTIVES.md`) are injected at runtime and cannot be modified by the Agent.
 
 3.  **Ephemeral Tooling:** Packages are available on-demand via Nix and require no pre-installation or system modification.
 
@@ -94,7 +94,7 @@ These philosophical commitments shape every architectural decision. Deviations r
 
 13. **Tool-Level Isolation:** Different tools enforce security boundaries appropriate to their function. File operations use path validation; command execution uses the Anthropic Sandbox Runtime; browser automation uses isolated browser profiles with proxy enforcement.
 
-14. **Identity Injection:** The Agent's core identity (`SOUL.md`) is never materialized as a file within the sandbox. It is injected directly into the system prompt by the Orchestrator. This prevents exfiltration of the "Constitution" via file copy operations.
+14. **Identity Injection:** The Agent's full constitution (`SOUL.md`, `SAFETY.md`, `CAPABILITIES.md`, `DIRECTIVES.md`) is never materialized as a file within the sandbox. It is injected directly into the system prompt by the Orchestrator. This prevents exfiltration of the "Constitution" via file copy operations.
 
 15. **Durable State Persistence:** Agent state survives Orchestrator restarts via LangGraph SqliteCheckpointer with WAL mode. Session continuity is an architectural guarantee, not an in-memory optimization.
 
@@ -351,7 +351,7 @@ sequenceDiagram
   Orchestrator->>Agent: execute(systemPrompt, userMessage, context)
   
   Note over Agent: Agent reasoning occurs here
-  Agent->>LLM: Claude API call (with injected SOUL.md)
+  Agent->>LLM: Claude API call (with injected constitution)
   LLM-->>Agent: Reasoning + tool selection
   
   Agent->>Orchestrator: Tool call: get_calendar_events
@@ -864,4 +864,3 @@ The Nix packages are provisioned before sandbox invocation, ensuring reproducibl
 | Cross-Platform Service Management | Platform-specific service generation from canonical configuration ensures portability while respecting native conventions | Requires maintaining parallel generators; canonical schema must capture all platform differences |
 
 **ADR Documentation:** Architecture decisions are documented with context, alternatives considered, and consequences analysis in the ADR section.
-

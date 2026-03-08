@@ -521,12 +521,12 @@ And failed requests after max retries log error and notify Owner
 **TechSpec Reference:** Section 1.2.1, ADR-001
 
 **Description:**  
-Implement the core agent execution loop using LangChain.js `createAgent()` with LangGraph state management. Integrate checkpointer, memory middleware, system prompt injection from SOUL.md/SAFETY.md.
+Implement the core agent execution loop using LangChain.js `createAgent()` with LangGraph state management. Integrate checkpointer, memory middleware, and constitution injection from `SOUL.md`, `SAFETY.md`, `CAPABILITIES.md`, and `DIRECTIVES.md`.
 
 **Implementation Details:**
 
 - Entry point: `createAgent()` from @langchain/langgraph
-- System prompt: Injected SOUL.md + SAFETY.md (never materialized as files)
+- System prompt: XML-tagged concatenation of `SOUL.md` + `SAFETY.md` + `CAPABILITIES.md` + `DIRECTIVES.md`
 - Checkpointer: BunSqliteSaver from CORE-002
 - Memory: RMM middleware from CORE-001
 - Thread isolation: thread_id = YYYY-MM-DD (day-bounded sessions)
@@ -539,6 +539,9 @@ When createAgent() is invoked
 Then agent accepts LLM model from CORE-005
 And system prompt includes SOUL.md identity
 And system prompt includes SAFETY.md constraints
+And system prompt includes CAPABILITIES.md environment context
+And system prompt includes DIRECTIVES.md standing instructions
+And the system prompt is strictly ordered (SOUL -> SAFETY -> CAPABILITIES -> DIRECTIVES) and wrapped in semantic XML tags
 And checkpointer is configured for state persistence
 And memory middleware is active for context injection
 And agent loop processes messages with checkpoint persistence
@@ -549,7 +552,7 @@ And each calendar day creates a new thread (YYYY-MM-DD)
 **Definition of Done:**
 
 - [ ] createAgent() integration
-- [ ] System prompt injection (SOUL.md + SAFETY.md)
+- [ ] System prompt injection (`SOUL.md` + `SAFETY.md` + `CAPABILITIES.md` + `DIRECTIVES.md`)
 - [ ] Checkpointer integration
 - [ ] Memory middleware wiring
 - [ ] Thread-per-day session management

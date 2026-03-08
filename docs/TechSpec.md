@@ -2742,7 +2742,7 @@ paths:
                   description: Thread/checkpoint continuation. Maps to LangGraph checkpoint.
                 instructions:
                   type: string
-                  description: Additional instructions for this response (appended to SOUL.md).
+                  description: Additional temporary instructions for this response (appended after DIRECTIVES.md as runtime context).
                 tools:
                   type: array
                   items:
@@ -3455,6 +3455,11 @@ openkraken/
 │   │   ├── src/
 │   │   │   ├── main.ts            # Application entry
 │   │   │   ├── config/
+│   │   │   │   └── constitution/  # Constitutional source documents
+│   │   │   │       ├── SOUL.md
+│   │   │   │       ├── SAFETY.md
+│   │   │   │       ├── CAPABILITIES.md
+│   │   │   │       └── DIRECTIVES.md
 │   │   │   ├── api/
 │   │   │   ├── agent/
 │   │   │   ├── middleware/
@@ -5132,7 +5137,7 @@ The STRIDE framework provides a systematic approach to threat identification by 
 | **S**poofing | Impersonating users or components | Agent identity, Owner authentication |
 | **T**ampering | Unauthorized modification of data | Messages, memories, checkpoints, configuration |
 | **R**epudiation | Denying actions without proof | Audit logging, cryptographic signing |
-| **I**nformation Disclosure | Unauthorized access to information | Credentials, memories, Agent prompts |
+| **Information Disclosure** | Unauthorized access to information | Credentials, memories, Agent prompts |
 | **D**enial of Service | Making services unavailable | Egress Gateway, Orchestrator, sandbox |
 | **E**levation of Privilege | Gaining capabilities beyond intended | Agent escaping sandbox, credential access |
 
@@ -5213,9 +5218,9 @@ Information disclosure threats involve unauthorized access to sensitive data. Op
 - **Verification**: Review memory encryption implementation; verify Agent cannot access raw memory storage
 
 **Threat I3: Agent Prompt Disclosure**
-- **Scenario**: The Agent's system prompt (SOUL.md) is exfiltrated
-- **Architectural Mitigation**: SOUL.md is injected directly into the system prompt at runtime, never materialized as a file in the sandbox. The Agent has no filesystem access that could read configuration files. The prompt is transmitted over local Unix domain sockets only
-- **Verification**: Verify SOUL.md is never written to sandbox filesystem; review prompt injection mechanism
+- **Scenario**: The Agent's system prompt constitution (`SOUL.md`, `SAFETY.md`, `CAPABILITIES.md`, `DIRECTIVES.md`) is exfiltrated
+- **Architectural Mitigation**: The full constitution is injected directly into the system prompt at runtime, never materialized as a file in the sandbox. The Agent has no filesystem access that could read configuration files. The prompt is transmitted over local Unix domain sockets only
+- **Verification**: Verify no constitutional documents are written to the sandbox filesystem; review prompt injection mechanism
 
 **Threat I4: Conversation Disclosure**
 - **Scenario**: Conversations are accessed by unauthorized parties
