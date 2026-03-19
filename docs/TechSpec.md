@@ -1,4756 +1,1344 @@
-# TechSpec.md: OpenKraken Technical Specification
-
-**Generated:** 2026-02-04  
-**Classification:** Internal Technical Document  
-
----
-
-## 1. Stack Specification
-
-This section defines the concrete technology stack for OpenKraken, specifying exact versions to ensure reproducibility and prevent supply chain attacks. All dependencies are pinned to specific versions; deviations require explicit architectural review and ADR documentation.
-
-### 1.1 Core Runtime and Language
-
-| Component | Version | Justification | API Surface & Critical Notes |
-|-----------|---------|---------------|----------------------------|
-| **Bun Runtime** | 1.3.8 | Latest stable as of February 2026. Provides native SQLite support, TypeScript compilation, and superior cold-start performance compared to Node.js. Verified Node.js API compatibility (~95% coverage). | **API Surface:** `bun:sqlite` (Database, Statement, Query APIs), `bun:ffi` (experimental), `bun:transpile`, N-API v9 with 200+ functions. **Key:** Use `bun:sqlite` for all SQLite operations (3-6x faster than better-sqlite3). **WARNING:** `bun:ffi` is experimental - avoid for production credential vault. JavaScriptCore engine provides faster cold-start than V8. |
-| **TypeScript** | 5.9.3 (bundled with Bun) | Strict type checking enabled. All source code written in TypeScript with strict mode activated. | Native compilation via Bun runtime - no build step required in production. |
-| **Go Runtime** | 1.25.6 | Egress Gateway implementation. Systems programming language for HTTP CONNECT proxy with domain allowlisting. Selected for mature stdlib networking, simple concurrency (goroutines), and battle-tested reliability. | **API Surface:** `net/http/transport.go` (dialConn, CONNECT tunneling), `net/http/server.go` (Hijacker.Hijack()), `log/slog` (structured logging). **Key:** Server-side CONNECT via `Hijacker.Hijack()` pattern; dual goroutine model for full-duplex I/O. **WARNING:** Domain allowlist and audit logging NOT in stdlib - requires custom middleware implementation. |
-| **Node.js Compatibility** | 20.x LTS (runtime detection only) | Required for packages lacking Bun native support. Bun automatically handles Node.js compatibility layer. | Via N-API v9 - packages must use N-API for native module support. |
-| **SQLite** | 3.x (bundled with Bun runtime) | Native SQLite support via Bun.sqlite module. Provides durable state persistence with Write-Ahead Logging (WAL) mode. Zero-configuration persistence. | **API:** `bun:sqlite.Database`, `bun:sqlite.Statement`. Prepared statement caching (up to 20 statements). Transaction support via `db.transaction()`. |
-
-### 1.1.1 Bun Runtime Integration Patterns
-
-**Cold-Start Performance:**
-```
-Bun's JavaScriptCore engine provides faster cold-start compared to V8-based runtimes.
-Native TypeScript compilation eliminates build step.
-Ideal for: Agent orchestration, CLI tools, development workflows.
-Based on subagent research: "JavaScriptCore engine provides faster cold-start compared to V8-based runtimes"
-```
-
-**SQLite Synchronous Operations:**
-```typescript
-import { Database } from "bun:sqlite";
-
-const db = new Database("openkraken.db", { readonly: false });
-const query = db.prepare("SELECT * FROM checkpoints WHERE thread_id = ?");
-
-// Synchronous execution - suitable for deterministic agent state
-const result = query.all("user-123");
-```
-
-**Node.js Compatibility via N-API:**
-```typescript
-// Bun auto-loads N-API compatible native modules
-// Example: keytar uses N-API and works with Bun
-import keytar from "keytar";
-await keytar.setPassword("openkraken", "anthropic-api-key", key);
-```
-
-**WARNING - bun:ffi Experimental Status:**
-```typescript
-// AVOID in production - bun:ffi is experimental
-import { ffi } from "bun:ffi";
-
-// Memory management must be manual
-// Risk of leaks and undefined behavior
-```
-
-### 1.1.2 Go HTTP CONNECT Proxy Implementation
-
-**Core Pattern (from research):**
-```go
-// Server-side CONNECT proxy using Hijacker.Hijack()
-func (s *Server) Serve(l net.Listener) error {
-    for {
-        conn, err := l.Accept()
-        if err != nil {
-            return err
-        }
-        go s.handleConnect(conn)
-    }
-}
-
-func (s *Server) handleConnect(conn net.Conn) {
-    hijacker, ok := conn.(http.Hijacker)
-    if !ok {
-        http.Error(conn, "Hijack not supported", http.StatusInternalServerError)
-        return
-    }
-    
-    clientConn, _, err := hijacker.Hijack()
-    if err != nil {
-        return
-    }
-    
-    // Dial target and pipe bidirectional
-    targetConn, err := net.Dial("tcp", targetAddr)
-    // io.Copy for full-duplex tunnel
-}
-```
-
-**Required Custom Implementations:**
-
-| Component | Status | Implementation Approach |
-|-----------|--------|------------------------|
-| Domain Allowlist | NOT IN STDLIB | `sync.RWMutex map[string]bool` with hot-reload from file |
-| Audit Logging | NOT IN STDLIB | `log/slog` with structured JSON: `{timestamp, event, source_ip, host, port, user_agent, status}` |
-| Connection Pooling | STDlib LRU | `connLRU` with configurable pool size |
-| Timeout Guards | STDlib | Context-based timeouts for CONNECT handshake |
-
-**Recommended Configuration:**
-```go
-const (
-    CONNECT_TIMEOUT = 10 * time.Second
-    TUNNEL_TIMEOUT = 5 * time.Minute
-    BUFFER_SIZE    = 32 * 1024 // 32KB for high-throughput
-)
-
-### 1.2 Agent Orchestration Framework
-
-| Component | Version | Justification | API Surface & Critical Notes |
-|-----------|---------|---------------|----------------------------|
-| **LangChain.js** | 1.2.18 (bindings) / 1.1.19 (core) | Stable v1 API with TypeScript bindings. Provides canonical `createAgent()` entry point. Extensive middleware ecosystem. Production-ready with active maintenance. | **API Surface:** `createAgent()` from the `langchain` package, `MultiServerMCPClient` in `@langchain/mcp-adapters`, provider packages in `@langchain/anthropic`, `@langchain/openai`, and `@langchain/google`. **Middleware Hooks:** `WrapToolCallHook`, `BeforeAgentHook`, `BeforeModelHook`, `WrapModelCallHook`, `AfterModelHook`, `AfterAgentHook`. **Bun Gap:** Subagent found "Limited documentation on Bun runtime compatibility" - verify in staging. |
-| **LangGraph.js** | 1.1.2 | Stateful workflow management. Enables checkpoint persistence and state rollback. Used as peer dependency by LangChain bindings. | **State Persistence:** Bun-native checkpointer via `@skroyc/bun-sqlite-checkpointer` with LangGraph-compatible `thread_id` isolation and WAL mode. |
-| **@langchain/mcp-adapters** | 1.1.2 | Model Context Protocol integration. Handles connection lifecycle and capability negotiation transparently. | **Connection Types:** `stdio`, `streamable_http`, `sse`. `MultiServerMCPClient` for unified tool interface. |
-
-### 1.2.1 LangChain.js createAgent() Implementation
-
-**Canonical Entry Point (from research):**
-```typescript
-import { createAgent } from "langchain";
-
-const agent = createAgent({
-  model: "anthropic:claude-sonnet:latest",
-  tools: [filesystemTool, githubTool, databaseTool],
-  systemPrompt: "You are a helpful agent with access to secure tools.",
-  responseFormat: undefined, // or Zod schema for structured output
-  stateSchema: undefined, // Custom state for memory persistence
-  checkpointer: sqliteCheckpointer, // BaseCheckpointSaver
-  store: memoryStore, // BaseStore for long-term memory
-  middleware: [authMiddleware, loggingMiddleware],
-  version: "v2", // Graph version
-});
-```
-
-**Middleware Hooks (from research):**
-```typescript
-// Hook execution order: BeforeAgent → BeforeModel → WrapModelCall → AfterModel → AfterAgent
-// WrapToolCallHook: Intercept/modify tool calls before execution
-const toolHook = createMiddleware({
-  name: "ToolSafety",
-  async wrapToolCall(request, handler) {
-    // Validate tool parameters
-    // Check permissions
-    return await handler(request);
-  },
-});
-
-// BeforeModelHook: Run before each model invocation
-const modelPrep = createMiddleware({
-  name: "ContextPrep",
-  async beforeModel(request) {
-    // Inject context, update system prompt
-    return request;
-  },
-});
-```
-
-**SQLite Checkpointer Integration:**
-```typescript
-import { BunSqliteSaver } from "@skroyc/bun-sqlite-checkpointer";
-
-const checkpointer = BunSqliteSaver.fromConnString("./data/openkraken.db");
-
-const agent = createAgent({
-  model,
-  tools,
-  checkpointer,
-});
-```
-
-### 1.3 Protocol and Integration Libraries
-
-| Component | Version | Justification |
-|-----------|---------|---------------|
-| **grammY** | 1.39.3 | Supports Telegram Bot API 9.3 (December 2025 release). Type-safe Telegram protocol handling with webhook helpers, including `secretToken` validation against `X-Telegram-Bot-Api-Secret-Token`. |
-| **@anthropic-ai/sandbox-runtime** | 0.0.34 | Cross-platform process isolation using bubblewrap (Linux) and sandbox-exec (macOS). Unified configuration interface across platforms. Beta Research Preview—pins to specific version. Configured for chained proxy architecture (httpProxyPort/socksProxyPoint) to route traffic through Egress Gateway. |
-| **Vercel Agent Browser** | 0.9.1 | Headless browser automation with CDP protocol support. Isolated profiles per session with proxy enforcement. |
-
-### 1.4 Data Persistence
-
-| Component | Version | Justification |
-|-----------|---------|---------------|
-| **SQLite** | 3.x (bundled with Bun runtime) | Native SQLite via Bun.sqlite module. Write-Ahead Logging (WAL) mode for concurrent access. Zero-configuration persistence. |
-| **Encryption** | AES-256-GCM (application-level) | Application-level encryption for sensitive memory fields. SQLCipher is incompatible with Bun's embedded SQLite. Memory content and metadata columns are encrypted before INSERT and decrypted after SELECT using Node.js crypto module (Bun-compatible). Filesystem-level encryption (LUKS/FileVault) provides defense-in-depth.
-
-### 1.5 Infrastructure and Build
-
-| Component | Version | Justification | API Surface & Critical Notes |
-|-----------|---------|---------------|----------------------------|
-| **Nix** | 2.31.2 (current) or 2.33.2 (latest stable) | Reproducible builds via Nix Flakes. Cross-platform package management. Use 2.18.x+ for flake support. | **Key Modules:** `nix.lang`, `flake-utils.lib.eachSystem`. **WARNING:** Devenv uses runtime socket activation (LISTEN_FDS) - does NOT generate systemd units or launchd plists. Custom Nix module required for service generation. |
-| **nixpkgs** | 25.11 (stable channel) | Declarative system configuration. Generates systemd units (Linux) and launchd plists (macOS). | **Go Cross-Compilation:** `buildGoModule.override({ GOOS, GOARCH })`. **Platforms:** x86_64-linux, aarch64-linux, x86_64-darwin, aarch64-darwin. |
-| **devenv** | 1.5+ (via Flake Hub) | Fast, reproducible development environments for multi-language monorepo. | **Process Management:** Native socket activation via sd_notify protocol. **Languages:** `languages.javascript.bun.enable`, `languages.go.enable`. **WARNING:** No systemd/launchd generation - requires custom module. |
-| **direnv** | 2.35+ (via Nix, optional) | Automatic shell activation for devenv environments. | Integrated via `devenv/direnvrc`. |
-| **git** | 2.47+ (via devenv packages) | Version control for all environments. | Standard tooling. |
-| **just** | 1.36+ (via devenv packages) | Command runner for task orchestration at repo root. | Task orchestration. |
-| **Egress Gateway** | Go 1.25.6 | Systems programming language for network proxy. Selected for faster implementation velocity, simpler concurrency (goroutines), and mature HTTP CONNECT proxy ecosystem. | See ADR-016 for implementation details. |
-| **Vercel Skills CLI** | Bundled via Nix | Integrated Agent Skills CLI implementation. Bundled as Nix package for reproducibility (not `npx`). | See ADR-013 for integration patterns. **WARNING:** No Owner approval workflow, no content validation - OpenKraken must implement. |
-
-### 1.5.1 Nix + Devenv Integration Patterns (from Research)
-
-**Multi-Language Orchestration:**
-```nix
-# devenv.nix
-{ pkgs, ... }:
-
-{
-  languages.javascript.bun.enable = true;
-  languages.go.enable = true;
-  
-  processes = {
-    orchestrator.exec = "bun run src/orchestrator/index.ts";
-    gateway.exec = "go run cmd/gateway/main.go";
-  };
-  
-  env = {
-    OPENKRAKEN_ENV = "development";
-    DATABASE_PATH = "${config.env.DATA_DIR}/openkraken.db";
-  };
-}
-```
-
-**Cross-Platform Build Matrix:**
-```nix
-# flake.nix
-{
-  inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
-    flake-utils.url = "github:numtide/flake-utils";
-  };
-  
-  outputs = { self, nixpkgs, flake-utils }:
-    flake-utils.lib.eachSystem [
-      "x86_64-linux"
-      "aarch64-linux"
-      "x86_64-darwin"
-      "aarch64-darwin"
-    ] (system:
-      let
-        pkgs = import nixpkgs { inherit system; };
-      in
-      {
-        packages = {
-          egress-gateway = pkgs.buildGoModule {
-            pname = "egress-gateway";
-            version = "0.1.0";
-            src = ./gateway;
-            vendorHash = "sha256-...";
-            overrideAttrs = (old: {
-              GOOS = if pkgs.stdenv.isDarwin then "darwin" else "linux";
-              GOARCH = if pkgs.stdenv.isAarch64 then "arm64" else "amd64";
-            });
-          };
-        };
-      }
-    );
-}
-```
-
-**CRITICAL - Systemd/Launchd Generation Gap:**
-```nix
-# WARNING: Devenv does NOT generate systemd units or launchd plists
-# Required: Custom Nix module for service generation
-
-# Pattern for custom service generation:
-{ config, lib, ... }:
-let
-  processConfig = config.devenv.processes;
-in
-{
-  # Generate systemd units from devenv process definitions
-  systemd.services = lib.mapAttrs' (name: proc:
-    lib.nameValuePair "openkraken-${name}" {
-      Unit.Description = "OpenKraken ${name} process";
-      Service.ExecStart = proc.exec;
-      Install.WantedBy = [ "multi-user.target" ];
-    }
-  ) processConfig;
-}
-```
-
-**Runtime Socket Activation Pattern:**
-```nix
-# Devenv uses sd_notify protocol for socket activation
-# LISTEN_FDS, LISTEN_PID, LISTEN_FDNAMES environment variables
-processes = {
-  orchestrator = {
-    exec = "bun run src/orchestrator/index.ts";
-    notify.enable = true;  # Enable sd_notify
-    watchdog.enable = true;  # Automatic restart on failure
-  };
-};
-```
-
-### 1.6 Dependency Management Strategy
-
-All dependencies declared in `package.json` with exact semver ranges. The build process pins transitive dependencies via `bun.lockb` to prevent dependency confusion attacks. No `*` or `^` prefixes permitted in production dependencies. DevDependencies may use `^` for tooling flexibility but require periodic review.
-
-### 1.7 SBOM Generation & Regulatory Compliance (2026)
-
-OpenKraken SHALL generate Software Bill of Materials (SBOM) for all production builds to meet:
-- **CRA (Cyber Resilience Act)** - EU market requirements (Late 2026/2027)
-- **PCI DSS 4.0** - Payment security compliance
-- **FDA Medical Device Software** - SBOM mandates for submissions
-- **OMB Policy (Jan 2026)** - Federal contractor attestation
-
-**SBOM Tooling Strategy:**
-
-| Tool | Format | Status | Use Case |
-|------|--------|--------|----------|
-| **nix2sbom** | CycloneDX, SPDX | Active maintenance | Self-hosted CI |
-| **genealogos** | CycloneDX | Tweag-developed | Enterprise adoption |
-| **sbomnix** | Multiple formats | tiiuae-developed | Multi-format output |
-| **Determinate Secure Packages** | CycloneDX | Enterprise tier (optional) | Managed vulnerability remediation |
-
-**Implementation Pattern (flake.nix):**
-```nix
-{
-  inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
-    # Optional: Use Determinate Secure Packages for CVE monitoring
-    # nixpkgs.url = "github:determinate/systems/nixpkgs";
-  };
-
-  outputs = { self, nixpkgs, ... }@inputs:
-    let
-      systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" ];
-      forAllSystems = nixpkgs.lib.genAttrs systems;
-    in
-    {
-      packages = forAllSystems (system:
-        let pkgs = import nixpkgs { inherit system; };
-        in {
-          openkraken-orchestrator = pkgs.callPackage ./nix/package.nix { };
-          openkraken-gateway = pkgs.callPackage ./nix/gateway-package.nix { };
-
-          # SBOM package
-          sbom = pkgs.writeShellScriptBin "generate-sbom" ''
-            ${pkgs.nix2sbom}/bin/nix2sbom -f cyclonedx \
-              ${self.packages.${system}.openkraken-orchestrator} \
-              > sbom-${system}-orchestrator.cyclonedx.json
-
-            ${pkgs.nix2sbom}/bin/nix2sbom -f cyclonedx \
-              ${self.packages.${system}.openkraken-gateway} \
-              > sbom-${system}-gateway.cyclonedx.json
-
-            echo "SBOMs generated for $system"
-          '';
-        }
-      );
-    };
-}
-```
-
-**CI Integration:**
-```yaml
-- name: Generate SBOM
-  run: nix run .#sbom
-
-- name: Upload SBOM artifact
-  uses: actions/upload-artifact@v4
-  with:
-    name: sbom-${{ matrix.os }}
-    path: sbom-*.json
-    retention-days: 90
-```
-
-**SBOM Contents:**
-```yaml
-sbom:
-  format: "CycloneDX 1.6"
-  scope: "production"
-  validation: "Nix store integrity verification (SHA256)"
-  compliance:
-    - "CRA: Late 2026/2027"
-    - "PCI DSS 4.0: Active"
-    - "FDA: Ongoing"
-```
-
----
-
-## 2. Architecture Decision Records
-
-The following ADRs document critical architectural decisions. Each record follows the standard format: Title, Context, Decision, and Consequences.
-
-### ADR-001: Bun Runtime over Node.js
-
-**Title:** Bun Runtime v1.3.8 for Orchestrator Implementation
-
-**Context:**
-The architecture requires a high-performance runtime for the Orchestrator component. Node.js has been the traditional choice for TypeScript server applications, but Bun offers superior cold-start performance, native TypeScript compilation, and bundled SQLite support. The evaluation considered runtime maturity, package ecosystem compatibility, and operational reliability.
-
-**Decision:**
-The Orchestrator runs on Bun 1.3.8 rather than Node.js. Bun provides native SQLite integration through the `bun:sqlite` module, eliminating external database driver dependencies. TypeScript compilation occurs at runtime, reducing build pipeline complexity. Performance benchmarks indicate 3-5x faster cold starts compared to Node.js 20.x LTS.
-
-**Consequences:**
-- **Positive:** Reduced startup latency for scheduled tasks and session initialization. Native SQLite eliminates driver compatibility concerns. Simplified deployment—no TypeScript compilation step required in production.
-- **Negative:** ~5% of npm packages lack Bun native support, requiring Node.js compatibility layer. Some packages may exhibit unexpected behavior in Bun's JavaScriptCore runtime. Team must monitor Bun ecosystem maturity.
-- **Mitigation:** Runtime includes automatic Node.js compatibility detection. Packages with known incompatibilities documented in `BUN_COMPAT.md`. CI/CD validates all package installations on Bun before deployment.
-
-### ADR-002: Unified SQLite Database for All Persistent State
-
-**Title:** Single Database File with Multiple Tables
-
-**Context:**
-The architecture defines five distinct persistence requirements: LangGraph checkpoints, message logs, semantic memory, audit logs, and proxy access logs. Each could theoretically use different database files. However, unified persistence simplifies backup operations (single file), reduces operational complexity, enables cross-table queries (correlating audit events with messages), and ensures ACID guarantees across related data.
-
-**Decision:**
-All persistent state uses a single SQLite database file (`openkraken.db`) with multiple tables. Write-Ahead Logging (WAL) mode is enabled via `PRAGMA journal_mode = WAL`. Tables include: `checkpoints`, `writes` (LangGraph state), `threads`, `messages` (conversation history), `memories`, `memories_embeddings` (semantic memory), `audit_events` (security events), and `proxy_logs` (network access logs). WAL mode enables concurrent reads while maintaining durability.
-
-**Consequences:**
-- **Positive:** Single backup/restore mechanism using Bun's `db.serialize()` API. ACID transactions across all tables. WAL mode prevents writer starvation during read-heavy workloads. Cross-table queries enable correlation of audit events with conversation context. Bun's native `bun:sqlite` module eliminates external driver dependencies.
-- **Negative:** Database file corruption possible on system crashes (mitigated by WAL mode and regular integrity checks). Single file means entire state affected by corruption.
-- **Mitigation:** Daily automated backups using Bun's `db.serialize()` to Buffer then file write. 7-day retention with compressed archives. Integrity checks during backup using `PRAGMA integrity_check`. Owner recovery commands available. Monitor database size and implement cleanup policies for audit and proxy logs.
-
-### ADR-003: Chained Egress Proxy Architecture
-
-**Title:** Go Egress Gateway in Chained Configuration with Sandbox Runtime Proxy
-
-**Context:**
-The Egress Gateway requires systems programming for HTTP CONNECT proxy implementation with high throughput and low latency. The Anthropic Sandbox Runtime includes built-in HTTP and SOCKS5 proxy servers with domain allowlisting. Both components provide network filtering capabilities, creating potential for architectural overlap or redundancy.
-
-**Decision:**
-The Egress Gateway operates in a chained architecture with the Sandbox Runtime's built-in proxy. The Sandbox is configured with `httpProxyPort` and `socksProxyPort` pointing to the Go Egress Gateway. All sandbox traffic routes through the Go proxy, which enforces the domain allowlist and logs connection attempts to SQLite. This provides defense-in-depth: the Sandbox handles platform-specific network isolation (Linux namespaces, macOS Seatbelt), while the Go proxy provides structured audit logging and dynamic allowlist management API.
-
-**Consequences:**
-- **Positive:** Defense-in-depth with two independent enforcement layers. Sandbox handles hard platform-specific isolation. Go proxy provides audit logging to SQLite, structured JSON errors, and dynamic allowlist management API. Clear separation of concerns.
-- **Negative:** Two proxy hops add negligible latency for single-tenant workloads. Slightly more complex configuration. Requires both components to be healthy.
-- **Mitigation:** Monitor both proxy health endpoints. Graceful degradation if Go proxy unavailable (sandbox rejects all egress). Configuration validation at startup.
-
-### ADR-004: Custom Bun-Native Checkpointer Implementation
-
-**Title:** SkrOYC's bun-sqlite-checkpointer for LangGraph State Persistence
-
-**Context:**
-Agent state must survive Orchestrator restarts without data loss. LangGraph provides multiple checkpointer implementations (Memory, SQLite, Redis). The standard `SqliteCheckpointer` depends on `better-sqlite3`, which requires N-API FFI. Bun's JavaScriptCore runtime does not support N-API, making `better-sqlite3` incompatible (Bun issue #10655).
-
-**Decision:**
-The Orchestrator uses SkrOYC's `bun-sqlite-checkpointer`—a custom Bun-native implementation using `bun:sqlite` directly, avoiding FFI entirely. The checkpointer stores state in the `openkraken.db` database using the `checkpoints` and `writes` tables. WAL mode ensures concurrent access.
-
-**Consequences:**
-- **Positive:** Zero FFI dependency. Full compatibility with Bun's JavaScriptCore runtime. Zero additional infrastructure. State survives restarts automatically. LangGraph handles checkpoint serialization/deserialization. Supports state rollback for debugging.
-- **Negative:** Custom implementation requires maintenance as LangGraph evolves. Checkpoint size grows with conversation history.
-- **Mitigation:** Monitor LangGraph releases for checkpointer API changes. Implement checkpoint size limits (configurable, default 10MB). Provide manual checkpoint cleanup commands.
-
-### ADR-005: OS-Level Credential Vaults
-
-**Title:** Credential Storage in Platform-Native Vaults with Dev-Mode Fallback
-
-**Context:**
-Credentials must never be exposed to the Agent or written to persistent storage. OpenClaw stored API keys in plaintext files, enabling credential exfiltration through prompt injection. The architecture requires runtime credential retrieval from secure storage.
-
-**Decision:**
-Credentials retrieved from OS-level vaults at Orchestrator startup. The Orchestrator implements a `CredentialVault` abstraction with platform-specific implementations: macOS uses Keychain Services API, Linux uses secret-service API (compatible with GNOME Keyring, KWallet, pass). Credentials cached in memory for process duration, never written to logs or filesystem.
-
-**Environment Variable Fallback:** When `OPENKRAKEN_ENV=development` is explicitly set, the CredentialVault falls back to environment variables. This is intended for local development only. A WARNING is logged on every credential retrieval when using env var fallback.
-
-**Consequences:**
-- **Positive:** Credentials protected by platform security mechanisms in production. No plaintext credential storage. Credential rotation supported via re-reading from vault. Dev-mode fallback enables rapid local iteration.
-- **Negative:** Platform vault complexity. macOS Keychain requires appropriate access groups. Linux secret-service requires D-Bus session bus. Initial credential provisioning requires Owner action.
-- **Mitigation:** Provide CLI commands for credential provisioning (`openkraken credentials set`). Document platform-specific setup requirements. Log warnings when using env var fallback. Enforce vault-only in production by default.
-
----
-
-### ADR-006: OpenTUI for CLI Interface
-
-**Title:** OpenTUI for Terminal User Interface Implementation (Bun Runtime)
-
-**Context:**
-OpenKraken requires a Terminal User Interface (TUI) for power-user operations including configuration, debugging, and automation. The solution must support Bun runtime (no Node.js), provide modern component-based UI with keyboard navigation, and integrate with OpenKraken's internal APIs.
-
-**Alternatives Considered:**
-
-| Framework | Bun Native | Production Ready | Pros | Cons |
-|-----------|------------|------------------|------|------|
-| **OpenTUI** (@opentui/core) | ✅ Officially mandated | ⚠️ Beta (v0.1.76) | Flexbox layouts, TypeScript-first, React integration, Bun-first development | Not production-ready per npm, evolving API |
-| oclif | ✅ Compatible | ✅ Mature | Command-based CLI pattern, extensive ecosystem | Not TUI framework, requires separate UI layer |
-| commander.js | ✅ Compatible | ✅ Mature | Simple API, wide adoption | Not TUI framework |
-
-**Decision:**
-Select **OpenTUI** for CLI TUI implementation.
-
-**Rationale:**
-1. **Bun-First Development**: OpenTUI project explicitly mandates Bun runtime (documented in AGENTS.md), ensuring optimal compatibility
-2. **Component Architecture**: Flexbox layouts with React-like component model enable rapid UI development
-3. **Wide Adoption**: 8K+ GitHub stars with active maintenance despite beta status
-4. **Dual API Support**: Can use Core API for performance-critical sections, React API for complex components
-
-**Acceptance of Beta Status:**
-OpenTUI is marked as "not ready for production use" on npm, but this is acceptable because:
-- Active development by SST team (proven infrastructure company)
-- Wide real-world usage despite beta label
-- Bun-first mandate means framework is aligned with OpenKraken's runtime choice
-- TUI failure is non-critical: CLI remains functional in degraded mode if framework issues arise
-
-**Consequences:**
-
-Positive:
-- Faster TUI development with modern component patterns
-- Excellent TypeScript support and type safety
-- Integration with Bun's native features (WebSockets, SQLite)
-- Flex layout system matches modern web development expectations
-
-Negative:
-- API evolution may require updates during OpenTUI development
-- Beta status means potential breaking changes
-- Limited documentation compared to mature frameworks
-- Risk of framework issues in production TUI
-
-Mitigation:
-- Pin specific OpenTUI version (0.1.76 or later stable version when available)
-- Implement graceful degradation if TUI fails (fallback to basic CLI commands)
-- Monitor OpenTUI changelogs and issue tracker
-- Design TUI as thin layer over internal APIs to minimize framework lock-in
-
-**Implementation Notes:**
-- Use `bun create tui` for project scaffolding or manual setup with `@opentui/core`
-- Start with Core API for direct performance, evaluate React API for complex components
-- Integrate with OpenKraken's internal HTTP API (127.0.0.1 binding)
-- Ensure keyboard navigation for all screens (accessibility requirement per PRD)
-
-**References:**
-- OpenTUI Documentation: https://opentui.com/
-- GitHub Repository: https://github.com/sst/opentui
-- npm Package: @opentui/core v0.1.76
-- Project AGENTS.md: Bun runtime mandates documented
-
----
-
-### ADR-007: SvelteKit for Web UI
-
-**Title:** Svelte 5 + SvelteKit for Web User Interface
-
-**Context:**
-OpenKraken requires a Web User Interface for casual user interaction and monitoring. The solution must provide excellent performance for real-time agent response streaming, support full-stack capabilities for direct API access, and integrate with OpenTelemetry for observability.
-
-**Alternatives Considered:**
-
-| Framework | Bundle Size | Performance | Ecosystem | TypeScript Support |
-|-----------|-------------|-------------|-----------|-------------------|
-| **Svelte 5** + SvelteKit | 3-12KB | Fastest (800ms first paint) | Growing (35K+ packages) | ✅ Excellent |
-| React 19 | 42-45KB | Good (1200ms first paint) | Dominant (450K+ packages) | ✅ Excellent |
-| Vue 4 | ~22KB | Very Good | Moderate | ✅ Excellent |
-
-**Decision:**
-Select **Svelte 5 + SvelteKit** for Web UI implementation.
-
-**Rationale:**
-1. **Performance Superiority**: Smallest bundle size and fastest First Contentful Paint critical for real-time agent interactions
-2. **Modern Reactivity**: Svelte 5 runes (`$state()`, `$derived()`) provide reactive state without boilerplate
-3. **TypeScript Excellence**: Native TypeScript integration with full type safety across components and server code
-4. **Full-Stack Simplicity**: SvelteKit provides API routes, SSR, server functions in one cohesive framework
-5. **Single-Tenant Match**: No need for enterprise-grade ecosystem (React) - project serves one Owner per instance
-
-**Consequences:**
-
-Positive:
-- Optimal performance for streaming agent responses over WebSocket
-- Smaller bundle size reduces load times (critical for deployment to VPS infrastructure)
-- Native TypeScript support across client and server code
-- Built-in SSR capability improves initial page load performance
-- Server-side API routes enable direct backend access without separate API layer
-
-Negative:
-- Smaller ecosystem than React means fewer component libraries
-- Hiring harder if team expands (fewer Svelte developers)
-- Some third-party integrations may require custom implementations
-- Learning curve for developers with React/Vue experience
-
-Mitigation:
-- Build minimal custom components (no heavy component library dependencies)
-- OpenKraken is single-tenant, no enterprise scale requirements
-- Document Svelte patterns and best practices for team members
-- Consider shadcn-svelte or similar when component library needed
-
-**Implementation Pattern:**
-
-Use Svelte 5 + SvelteKit with best practices from 2026:
-
-```typescript
-// Component state with runes
-<script lang="ts">
-  import type { PageData } from './$types'
-
-  // Reactive state
-  let messages = $state<Message[]>([])
-  
-  // Derived values
-  let messageCount = $derived(() => messages.length)
-  
-  // Effects for side effects
-  $effect(() => {
-    console.log('Messages changed:', messageCount)
-  })
-</script>
-
-// Server-side data loading
-// +page.server.ts
-export async function load({ fetch }) {
-  const response = await fetch('http://127.0.0.1:3000/api/health')
-  return { health: await response.json() }
-}
-```
-
-**Key Svelte 5 Features to Use:**
-- `$state()` for reactive state
-- `$derived()` and `$derived.by()` for computed values
-- `$effect()` for side effects (prefer over manual DOM manipulation)
-- `createContext()` for type-safe context
-- `bind:value` with function forms for complex two-way binding
-
-**OpenTelemetry Integration:**
-- Use Langchain's Langtrace OpenTelemetry Callback Handler on the server
-- Export traces to OTLP backend (SQLite for audit, external collectors for production)
-- Integrate SvelteKit with OpenTelemetry web instrumentation for frontend traces
-
-**Performance Optimization:**
-- Use SvelteKit's hydration strategy for SSR + client-side interactivity
-- Implement lazy loading for non-critical routes
-- Leverage Svelte compiler optimizations (no virtual DOM overhead)
-
-**References:**
-- Svelte 5 Documentation: https://svelte.dev/docs/svelte-5
-- SvelteKit TypeScript Guide: https://svelte.dev/docs/typescript
-- Comparison Articles:
-  - Svelte 5 vs React 19 [byteiota.com](https://byteiota.com/react-19-vs-vue-3-6-vs-svelte-5-2026-framework-convergence/)
-  - FrontendTools Benchmark [frontendtools.tech](https://www.frontendtools.tech/blog/best-frontend-frameworks-2025-comparison)
-
----
-
-### ADR-008: Multi-LLM Provider Support
-
-**Title:** LangChain.js Native Multi-Provider Abstraction (Anthropic, OpenAI, Google)
-
-**Context:**
-OpenKraken must support multiple LLM providers (Anthropic, OpenAI, Google) to enable provider flexibility, failover capabilities, and cost optimization. The architecture integrates these providers through LangChain.js v1.2.18.
-
-**Decision:**
-Use **LangChain.js native multi-provider abstraction** without additional vendor abstraction layers.
-
-**Rationale:**
-1. **Built-in Support**: LangChain.js 1.2.18 includes native support for Anthropic (`@langchain/anthropic`), OpenAI (`@langchain/openai`), and Google (`@langchain/google`)
-2. **Provider Swapping via Config**: Change providers by updating model string configuration:
-   - Anthropic: `"claude-sonnet:latest"`, `"claude-opus:latest"`
-   - OpenAI: `"gpt-4"`, `"gpt-3.5-turbo"`
-   - Google: `"gemini-pro"`, `"gemini-ultra"`
-3. **Consistent API**: All providers implement LangChain's `ChatModel` interface with identical streaming, tool calling, and retry logic
-4. **No Indirection Overhead**: Direct provider integration avoids unnecessary abstraction layers
-5. **Bun Compatibility**: All LangChain provider packages are Bun-compatible (verified through Librarian CLI research)
-
-**Implementation Pattern:**
-
-```typescript
-// src/orchestrator/providers/index.ts
-import { ChatAnthropic } from "@langchain/anthropic"
-import { ChatOpenAI } from "@langchain/openai"
-import { ChatGoogle } from "@langchain/google"
-
-type Provider = "anthropic" | "openai" | "google"
-
-interface ProviderConfig {
-  provider: Provider
-  model: string
-  apiKey?: string  // Retrieved from CredentialVault
-  fallback?: Provider
-}
-
-function createLLM(config: ProviderConfig) {
-  const credential = config.apiKey 
-    ? CredentialVault.retrieve(config.provider)
-    : undefined
-
-  switch (config.provider) {
-    case "anthropic":
-      return new ChatAnthropic({
-        model: config.model || "claude-sonnet:latest",
-        apiKey: credential,
-      })
-    case "openai":
-      return new ChatOpenAI({
-        model: config.model || "gpt-4",
-        apiKey: credential,
-      })
-    case "google":
-      return new ChatGoogle({
-        model: config.model || "gemini-pro",
-        apiKey: credential,
-      })
-  }
-}
-
-// Agent creation (existing TechSpec pattern)
-const agent = createAgent({
-  model: "anthropic:claude-sonnet:latest",  // Provider:model syntax
-  tools: [...]
-})
-```
-
-**Provider Selection Strategy:**
-1. **Configuration-Based Default**: Owner configures primary provider in `config.yaml`
-2. **Task-Specific Fallback**: Middleware can override provider based on task requirements (e.g., use OpenAI for code generation)
-3. **Cost Optimization**: Lower-cost models (GPT-3.5, Claude Haiku) for routine tasks
-4. **Capability Routing**: Use Claude Opus for complex reasoning, GPT-4 for code generation
-
-**Failover Mechanism:**
-```typescript
-// Provider Failover Middleware
-const failoverMiddleware = createMiddleware({
-  name: "ProviderFailover",
-  async wrapModelCall(request, handler) {
-    try {
-      return await handler(request)
-    } catch (error) {
-      // Fallback to secondary provider on failure
-      if (error.isProviderError()) {
-        const fallbackProvider = getFallbackProvider()
-        request.runtime.model = fallbackProvider
-        return await handler(request)
-      }
-      throw error
-    }
-  }
-})
-```
-
-**Consequences:**
-
-Positive:
-- Minimal abstraction overhead: Direct provider calls via LangChain
-- Consistent retry, streaming, tool calling across all providers
-- Easy provider switching via configuration
-- LangChain maintenance handles provider API changes
-- Native Bun compatibility verified
-
-Negative:
-- Locked into LangChain's provider implementation quality
-- Provider-specific advanced features may be inaccessible (LangChain's common denominator)
-- Credential management complexity (multiple API keys in vault)
-
-Mitigation:
-- Monitor LangChain provider library quality and report issues
-- For provider-specific features, call provider APIs directly via custom tools
-- CredentialVault abstraction handles key management transparently
-- Maintain fallback provider configuration for high availability
-
-**Observability:**
-- LangChain OpenTelemetry callback automatically tracks which provider was used
-- `llm.provider` and `llm.model.name` attributes in traces
-- Token usage tracked per provider for cost analysis
-
-**References:**
-- LangChain.js 1.2.18 Provider Documentation: https://js.langchain.com/docs/modules/models/integrations/
-- Librarian CLI Verification: Confirmed Bun compatibility for all provider packages
-- TechSpec Section 1.2: LangChain version locked to 1.2.18
-
-### ADR-009: devenv over Docker Compose for Development
-
-**Context:**
-Local development environments require consistent tooling across Linux/macOS.
-Traditionally, teams use Docker Compose to run multiple services, but this has
-limitations:
-- Heavy resource overhead (3-4 virtual machines for simple tools)
-- Slow cold starts (30+ seconds for first run)
-- Cross-platform inconsistencies (Docker Desktop issues on macOS/Windows)
-- Separate lockfile management (Dockerfile vs package.json vs go.mod)
-
-**Decision:**
-Use devenv for all development environment orchestration:
-- Multi-language support (Bun + Go) in single devenv.nix
-- Process orchestration via `devenv up`
-- Symlink-based tool activation (`nix develop` pattern, zero virtualization overhead)
-- Input-addressable builds (automatic caching via narHash)
-- Task-based automation with dependency management
-
-**Consequences:**
-| Positive | Negative |
-|----------|----------|
-| Fast shell activation (~1s vs 30s for Docker) | Nix learning curve (2-4 weeks) |
-| Zero-cost reproducibility (hash-based caching) | Windows support limited (WSL only) |
-| Single lockfile for entire stack (devenv.lock) | Not suitable for production isolation |
-| Automatic cross-platform parity (Linux/macOS) | |
-| Task-based dependencies with execIfModified | |
-| enterTest hook for test environment setup | |
-- Docker retained only for: Anthropic Sandbox Runtime (security isolation required)
-- Production deployment via NixOS/Darwin modules, not containers
-
----
-
-### ADR-010: Configuration Schema Validation with CUE
-
-**Status:** Accepted  
-**Date:** 2026-02-08
-
-**Context:**
-Configuration errors discovered at runtime create poor UX and potential security issues. The `config.yaml` file lacks schema validation, causing errors to surface only when the Orchestrator attempts to use invalid configuration values. Research confirms CUE provides superior validation for this use case.
-
-**Alternatives Considered:**
-
-| Approach | Pros | Cons |
-|----------|------|------|
-| JSON Schema + Zod | Good TypeScript integration | Requires maintaining two schemas |
-| Pure Zod | Native TypeScript | Runtime only, no build-time validation |
-| **CUE** | Single schema source, validates at build and runtime | Additional CLI dependency |
-
-**Implementation (from research):**
-
-**Schema Definition:**
-```cue
-// schema/config.cue
-#AppConfig: {
-  name:        string & =~"^[a-z][a-z0-9-]*$"
-  version:     string
-  environment: "development" | "staging" | "production"
-  
-  sandbox: {
-    type:     "bubblewrap" | "sandbox-exec"
-    proxies: {
-      httpPort:  int & >=1 & <=65535
-      socksPort: int & >=1 & <=65535
-    }
-    allowedDomains: [...string]
-  }
-  
-  credentials: {
-    anthropic?:   string
-    openai?:      string
-    google?:      string
-  }
-  
-  observability: {
-    langfuse?: {
-      publicKey?:  string
-      secretKey?:  string
-      baseUrl?:    string & =~"^https?://"
-    }
-  }
-  
-  // Closed struct - no additional fields allowed
-  ...
-}
-
-// Required fields validation
-#AppConfig & {
-  name:        string
-  version:     string
-  environment: string
-}
-```
-
-**Build-Time Validation:**
-```nix
-checkPhase = ''
-  cue vet -c ${./schema/config.cue} $out/config.yaml
-'';
-```
-
-**Runtime Validation:**
-```typescript
-import * as cue from "cue";
-
-async function validateConfig(configPath: string): Promise<void> {
-  const result = await $`cue vet -c ${import.meta.dir}/schema/config.cue ${configPath}`
-    .nothrow();
-  
-  if (result.exitCode !== 0) {
-    throw new Error(`Configuration validation failed:\n${result.stderr}`);
-  }
-}
-```
-
-**Key Commands (from CUE research):**
-| Command | Purpose |
-|---------|---------|
-| `cue vet` | Validate JSON/YAML/TOML against schema |
-| `cue def` | Print consolidated definitions |
-| `cue export` | Export to JSON, YAML, Go code |
-| `cue import jsonschema` | Import existing JSON Schema |
-
-**Consequences:**
-
-**Positive:**
-- Single schema definition for build and runtime
-- Closed structs prevent configuration drift
-- Excellent error messages with file positions
-- Import/export with JSON Schema
-
-**Negative:**
-- Additional CUE CLI dependency (~30MB)
-- Learning curve for CUE syntax
-- Requires Go SDK for runtime validation
-
-**Mitigation:**
-- CUE syntax similar to JSON with type annotations
-- Schema only modified when configuration structure changes
-- Comprehensive CUE documentation available
-
----
-
-### ADR-011: Documentation-Implementation Drift Prevention
-
-**Status:** Accepted  
-**Date:** 2026-02-08
-
-**Context:**
-Without active maintenance, architecture documentation becomes stale as implementation evolves. This leads to new developers following outdated patterns, architecture decisions being unknowingly violated, and documentation becoming untrusted reference material. The OpenKraken project has three layers of documentation (PRD, Architecture, TechSpec) that must stay synchronized with implementation.
-
-**Decision:**
-Implement three-layer drift prevention:
-
-#### Layer 1: PR Checklist (Immediate Enforcement)
-All PRs must complete the following checklist:
-- [ ] docs/Architecture.md updated if changing documented behavior or component boundaries
-- [ ] ADR created for new architectural decisions
-- [ ] docs/TechSpec.md updated for API changes, schema modifications, or version bumps
-- [ ] CHANGELOG.md updated for breaking changes
-- [ ] PR description references affected documentation sections
-
-#### Layer 2: CI Validation (Automated Checks)
-```yaml
-# GitHub Actions workflow
-- name: Check Documentation Compliance
-  run: |
-    # Verify ADRs are updated for architectural changes
-    ./scripts/check-architecture-compliance.sh
-    
-    # Verify TechSpec matches implementation
-    ./scripts/check-techspec-sync.sh
-```
-
-Scripts check:
-- ADR references in code comments match existing ADRs
-- Configuration schema in code matches TechSpec
-- API endpoints match OpenAPI specs in TechSpec
-
-#### Layer 3: Quarterly Review (Scheduled Maintenance)
-- Architecture review meeting with maintainers
-- Update ADRs with implementation status (proposed/accepted/deprecated)
-- Deprecate obsolete patterns with migration guides
-- Archive outdated documentation to `docs/archive/`
-
-### Document Boundaries
-
-**docs/PRD.md** — Business capabilities and user stories
-- Update when: Adding/removing features, changing requirements
-- Do not update when: Implementation details change, bug fixes
-
-**docs/Architecture.md** — Design patterns and component relationships
-- Update when: Component boundaries change, new middleware added, data flows change
-- Do not update when: Internal refactoring without behavioral change, bug fixes
-
-**docs/TechSpec.md** — Concrete contracts and specifications
-- Update when: API changes, schema changes, version bumps, configuration changes
-- Do not update when: Internal implementation details change
-
-**CHANGELOG.md** — Version history and breaking changes
-- Update when: Breaking changes, new features, deprecations
-- Do not update when: Bug fixes, documentation-only changes
-
-**Consequences:**
-
-**Positive:**
-- Documentation remains accurate and trusted
-- New contributors follow current patterns
-- Architectural decisions are preserved and visible
-- Easier onboarding for new developers
-
-**Negative:**
-- PR overhead increased (checklist completion)
-- Requires discipline to maintain
-- Quarterly reviews require time investment
-
-**Mitigation:**
-- PR template with embedded checklist
-- Automated checks reduce manual review burden
-- Quarterly review distributes maintenance across team
-- Documentation updates can be batched for minor changes
-
----
-
-### ADR-012: Langfuse v4 for Observability
-
-**Status:** Accepted  
-**Date:** 2026-02-08
-
-**Context:**
-OpenKraken requires comprehensive observability for debugging Agent behavior, security auditing, and performance optimization. The observability layer must provide distributed tracing, structured logging, and metrics while adhering to the "Build on Proven Foundations" philosophy. We evaluated multiple observability solutions compatible with LangChain.js and the Bun runtime.
-
-**Alternatives Considered:**
-
-| Solution | Pros | Cons |
-|----------|------|------|
-| Custom OpenTelemetry implementation | Full control, no external dependencies | Significant development effort, maintenance burden |
-| LangSmith | Excellent LangChain integration | PRD explicitly excludes LangSmith support; requires OpenAI-specific patterns |
-| **Langfuse v4** | Built on OpenTelemetry (meets OTLP requirement), maintained LangChain.js CallbackHandler, Bun-compatible, cloud and self-hosted options | External service dependency (mitigated by self-hosted option) |
-
-**Decision:**
-Use Langfuse v4 as the primary observability solution. Langfuse is built on OpenTelemetry, meeting the OTLP requirement while providing LangChain-specific instrumentation out of the box.
-
-**Implementation:**
-
-1. **Langfuse CallbackHandler** (`@langfuse/langchain`):
-   - Automatic tracing of LangChain operations (model calls, tool invocations)
-   - Captures input/output for debugging
-   - Token usage and cost tracking
-
-2. **OTLP Export**:
-   - Traces export to any OTLP-compatible backend
-   - Self-hosted Langfuse for data sovereignty
-   - Cloud option for convenience
-
-3. **Security Considerations**:
-   - Langfuse credentials stored in OS-level vault
-   - Automatic PII scrubbing via LangChain built-in patterns
-   - Additional middleware-based scrubbing for sensitive content
-
-**Consequences:**
-
-**Positive:**
-- Production-ready LangChain integration with minimal development effort
-- OpenTelemetry foundation provides flexibility in backend selection
-- Langfuse UI provides excellent debugging experience for Agent behavior
-- Cost and token tracking built-in
-
-**Negative:**
-- External dependency (mitigated by self-hosted option)
-- Additional credential management for Langfuse access
-
-**Mitigation:**
-- Self-hosted Langfuse option for complete control
-- Credentials managed via CredentialVault
-- Langfuse configured to scrub PII before export
-
----
-
-### ADR-013: Vercel Skills CLI Integration
-
-**Status:** Accepted  
-**Date:** 2026-02-08
-
-**Context:**
-The skill ingestion pipeline requires a tool to resolve, validate, and manage skills from various sources (GitHub, npm, local). Vercel Skills CLI provides mature resolution with support for GitHub shorthand, full URLs, and direct paths. Research identified critical gaps that OpenKraken must address.
-
-**Alternatives Considered:**
-
-| Approach | Pros | Cons |
-|----------|------|------|
-| Custom resolution logic | Full control | Significant development effort |
-| Vercel Skills CLI | Mature, supports all resolution patterns | External dependency |
-| Combination | Leverage Vercel, custom security | Integration complexity |
-
-**Resolution Patterns (from research):**
-```
-Stage 1: Local paths (./skills/*)
-Stage 2: Direct URLs (https://github.com/user/repo)
-Stage 3: GitHub tree (owner/repo@skill-name)
-Stage 4: GitHub shorthand (owner/repo)
-Stage 5: GitLab, Well-known providers
-Stage 6: git:// URLs
-```
-
-**Decision:**
-Integrate Vercel Skills CLI with OpenKraken security pipeline.
-
-**CRITICAL GAPS IDENTIFIED (from research):**
-
-| Gap | Impact | OpenKraken Implementation |
-|-----|--------|--------------------------|
-| **No Owner Approval Workflow** | HIGH | Add pre-install approval step |
-| **No Content Validation** | HIGH | Integrate security pipeline scanning |
-| **No Nix Bundling** | MEDIUM | Create Nix wrapper |
-| **No Git Token Management** | MEDIUM | External token injection |
-
-**OpenKraken Security Pipeline:**
-```typescript
-// skill-approval-workflow.ts
-interface ApprovalRequest {
-  source: string;
-  sourceType: "github" | "gitlab" | "local" | "url";
-  skillName: string;
-  files: SkillFile[];
-  hash: string;
-  requestedBy: "agent" | "owner";
-}
-
-async function skillApprovalWorkflow(request: ApprovalRequest): Promise<Approval> {
-  // 1. Validate against approved-sources.json
-  const allowed = await approvedSources.check(request.source);
-  if (!allowed) {
-    return { approved: false, reason: "Source not in approved-sources.json" };
-  }
-  
-  // 2. Security scanning
-  const scanResult = await securityScanner.scan(request.files);
-  if (scanResult.violations.length > 0) {
-    return { 
-      approved: false, 
-      reason: `Security violations: ${scanResult.violations.join(", ")}` 
-    };
-  }
-  
-  // 3. LLM analysis for prompt injection
-  const analysis = await llmSecurityAnalyzer.analyze(request.files);
-  if (analysis.riskLevel > "low") {
-    return { 
-      approved: false, 
-      reason: `LLM analysis flagged risk: ${analysis.riskLevel}` 
-    };
-  }
-  
-  // 4. Owner notification for high-risk
-  if (analysis.riskLevel === "medium") {
-    await notifyOwner(request);
-    return { approved: false, reason: "Pending owner review" };
-  }
-  
-  return { approved: true };
-}
-```
-
-**Skill Lock File:**
-```json
-{
-  "version": "1",
-  "skills": {
-    "filesystem": {
-      "source": "github.com/anthropic/mcp-server-filesystem",
-      "sourceType": "github",
-      "skillPath": "./skills/filesystem",
-      "skillFolderHash": "sha256-abc123...",
-      "installedAt": "2026-02-08T10:00:00Z",
-      "updatedAt": "2026-02-08T10:00:00Z",
-      "approvedBy": "owner",
-      "securityScan": "passed"
-    }
-  }
-}
-```
-
-**Consequences:**
-
-**Positive:**
-- Leverages mature Vercel resolution logic
-- Supports GitHub shorthand, URLs, local paths
-- Hash-based change detection (GitHub tree SHA)
-- Nix wrapper ensures reproducibility
-
-**Negative:**
-- External dependency on Vercel ecosystem
-- **No built-in Owner approval workflow**
-- **No content security scanning**
-- No git token management
-
-**Mitigation:**
-- OpenKraken implements approval workflow before installation
-- Security pipeline validates all skill content
-- Nix wrapper for deterministic builds
-- External token injection via environment
-
----
-
-### ADR-014: RMM (Reflective Memory Management) Middleware Integration
-
-**Status:** Accepted  
-**Date:** 2026-02-08
-
-**Context:**
-The Agent requires long-term memory capabilities for persistent context across sessions. Memory management must prevent prompt injection attacks while providing useful recall. We evaluated custom implementation versus integration with existing memory frameworks.
-
-**Alternatives Considered:**
-
-| Approach | Pros | Cons |
-|----------|------|------|
-| Custom memory implementation | Full control, no external dependencies | Significant development effort, security risk if flawed |
-| RMM Middleware (arXiv:2503.08026v2) | Research-backed approach, similar to Google Memory Bank | External dependency, requires integration |
-| Vector database + custom logic | Flexible, scalable | Additional infrastructure, security integration complexity |
-
-**Decision:**
-Implement RMM (Reflective Memory Management) Middleware based on research (arXiv:2503.08026v2) and architecture similar to Google Vertex AI Memory Bank. The middleware handles memory extraction, consolidation, retrieval, and decay while the Orchestrator provides storage schema and interface contracts.
-
-**Memory Operations:**
-
-1. **Extraction**: Automatically identifies salient information from Agent conversations
-2. **Consolidation**: LLM-based merging of related memories, deduplication
-3. **Retrieval**: Embedding-based semantic similarity search before model calls
-4. **Decay**: Time-based importance adjustment for memory relevance
-
-**Security Considerations:**
-
-- Agent cannot directly access memory storage (memory middleware handles all access)
-- Memories encrypted at rest using AES-256-GCM with vault-stored keys
-- Owner can view, edit, or purge memories for transparency
-- Embedding generation happens in Orchestrator, not Agent
-
-**Consequences:**
-
-**Positive:**
-- Research-backed memory architecture prevents common pitfalls
-- Pluggable implementation allows Owner to customize algorithms
-- Agent cannot manipulate memories (middleware-only access)
-- Complete Owner visibility and control
-
-**Negative:**
-- Additional complexity in memory pipeline
-- LLM costs for consolidation operations
-- Embedding generation requires model calls
-
-**Mitigation:**
-- Memory middleware is optional (disabled by default)
-- Owner controls consolidation frequency and decay parameters
-- Transparent memory review UI for Owner
-
----
-
-### ADR-015: Open Responses API Adoption
-
-**Status:** Accepted  
-**Date:** 2026-02-08
-
-**Context:**
-OpenKraken requires a well-defined API contract for external integration. We evaluated proprietary versus standardized approaches, ultimately selecting the Open Responses API as the primary interface contract. This positions OpenKraken as an Open Responses Provider in the emerging ecosystem.
-
-**Alternatives Considered:**
-
-| Approach | Pros | Cons |
-|----------|------|------|
-| Custom API design | Full control, tailored to OpenKraken | Ecosystem lock-in, client must implement custom protocol |
-| OpenAPI without specification | Some standardization | Fragmented ecosystem, no guaranteed client compatibility |
-| **Open Responses API** | Standardized contract, ecosystem compatibility, multiple clients | Must implement specification correctly |
-
-**Decision:**
-Adopt Open Responses API as the primary interface contract. Telegram and other input sources are implemented as adapters converting platform-specific protocols to Open Responses input items.
-
-**Compliance Requirements:**
-
-1. **Semantic Streaming**: Events follow Open Responses event model (not raw text deltas)
-2. **Thread Model**: Use `thread_id` and `previous_response_id` mapping to LangGraph checkpoints
-3. **Tool Execution**: Formalized as externally-hosted tools (executed in sandbox)
-4. **Error Handling**: Structured error responses per specification
-
-**Extension Mechanism:**
-
-OpenKraken-specific features exposed through `openkraken:*` extension prefix while maintaining base specification compliance.
-
-**Consequences:**
-
-**Positive:**
-- Any Open Responses-compatible client can consume OpenKraken
-- Ecosystem compatibility (HuggingFace Inference Providers, NVIDIA integrations)
-- Client-agnostic positioning reduces API fragmentation risk
-- Standardized contract simplifies external tooling
-
-**Negative:**
-- Must maintain specification compliance
-- Extension mechanism requires careful design to avoid fragmentation
-- Specification evolution requires monitoring
-
-**Mitigation:**
-- Regular specification compliance testing
-- Extension mechanism documented and versioned
-- Community engagement for specification evolution
-
----
-
-### ADR-016: Go HTTP CONNECT Proxy for Egress Gateway
-
-**Status:** Accepted  
-**Date:** 2026-02-08
-
-**Context:**
-The Egress Gateway requires an HTTP CONNECT proxy implementation for domain allowlisting and audit logging. Go 1.25.6 provides mature stdlib support for HTTP CONNECT tunneling with goroutine-based concurrency. However, research confirmed that domain allowlist enforcement and structured audit logging are NOT part of Go's standard library and require custom implementation.
-
-**Decision:**
-Implement Go HTTP CONNECT proxy using standard library patterns with custom middleware for domain allowlisting and audit logging.
-
-**Core Implementation Pattern (from Go stdlib research):**
-```go
-// Server-side CONNECT proxy using Hijacker.Hijack() pattern
-func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
-    if r.Method != "CONNECT" {
-        http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-        return
-    }
-    
-    hijacker, ok := w.(http.Hijacker)
-    if !ok {
-        http.Error(w, "Hijack not supported", http.StatusInternalServerError)
-        return
-    }
-    
-    clientConn, bufReader, err := hijacker.Hijack()
-    if err != nil {
-        http.Error(w, err.Error(), http.StatusInternalServerError)
-        return
-    }
-    
-    // Check domain allowlist
-    targetHost := r.URL.Host
-    if !allowlist.Check(targetHost) {
-        clientConn.Close()
-        audit.Log(r, "BLOCKED", targetHost)
-        return
-    }
-    
-    // Connect to target
-    targetConn, err := net.Dial("tcp", targetHost)
-    if err != nil {
-        clientConn.Close()
-        return
-    }
-    
-    // Write 200 Connection Established
-    bufReader.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n")
-    bufReader.Flush()
-    
-    // Bidirectional pipe with dual goroutines
-    go io.Copy(clientConn, targetConn)
-    io.Copy(targetConn, clientConn)
-}
-```
-
-**Domain Allowlist Implementation:**
-```go
-type Allowlist struct {
-    mu   sync.RWMutex
-    m    map[string]bool
-    file string
-}
-
-func (a *Allowlist) Check(host string) bool {
-    a.mu.RLock()
-    defer a.mu.RUnlock()
-    
-    // Exact match
-    if a.m[host] {
-        return true
-    }
-    
-    // Wildcard match (*.example.com)
-    parts := strings.Split(host, ".")
-    for i := range parts {
-        wildcard := strings.Join(append(parts[i:], "*"), ".")
-        if a.m[wildcard] {
-            return true
-        }
-    }
-    
-    return false
-}
-```
-
-**Structured Audit Logging (using log/slog):**
-```go
-import "log/slog"
-
-type AuditEntry struct {
-    Timestamp   time.Time `json:"timestamp"`
-    Event       string    `json:"event"`       // CONNECT, BLOCKED, ERROR
-    SourceIP    string    `json:"source_ip"`
-    Host        string    `json:"host"`
-    Port        int       `json:"port"`
-    UserAgent   string    `json:"user_agent"`
-    Status      string    `json:"status"`      // SUCCESS, BLOCKED, ERROR
-    ErrorMsg    string    `json:"error_msg,omitempty"`
-}
-```
-
-**Configuration:**
-```go
-const (
-    CONNECT_TIMEOUT = 10 * time.Second
-    TUNNEL_TIMEOUT  = 5 * time.Minute
-    BUFFER_SIZE     = 32 * 1024 // 32KB for high-throughput
-)
-```
-
-**Consequences:**
-
-**Positive:**
-- Go stdlib provides battle-tested HTTP handling (transport.go, server.go)
-- Goroutine model handles concurrent connections efficiently (C10k pattern)
-- Context-based timeouts prevent goroutine leaks
-- LRU connection pooling reduces latency via connLRU
-
-**Negative:**
-- Domain allowlist requires custom sync.RWMutex implementation
-- Audit logging requires structured logging wrapper (log/slog)
-- No built-in Prometheus metrics (must add expvar/prometheus)
-- Requires maintenance as Go stdlib evolves
-
-**Mitigation:**
-- Implement allowlist as map[string]bool with file-based hot-reload
-- Use log/slog for JSON-structured logs compatible with log aggregation
-- Add metrics endpoint using expvar
-- Document Go version upgrade procedures
-
----
-
-### ADR-017: Cross-Platform Credential Vault Abstraction
-
-**Status:** Accepted  
-**Date:** 2026-02-08
-
-**Context:**
-OpenKraken requires secure credential storage using OS-level vaults. Research identified three platform-specific solutions and cross-platform library options.
-
-**Alternatives Considered:**
-
-| Option | macOS | Linux | Bun Compatible | Maintenance |
-|--------|-------|-------|----------------|-------------|
-| **cross-keychain** | Keychain | Secret Service | Yes | Active (2025) |
-| **node-keytar** | Keychain | Secret Service | Partial | Archived (2022) |
-| **Custom FFI** | Security.framework | libsecret | Yes | High effort |
-| **node-keytar** fork | Keychain | Secret Service | Yes | Active |
-
-**Decision:**
-Implement `cross-keychain` for credential vault abstraction with custom platform-specific wrappers as fallback.
-
-**Implementation Architecture:**
-```typescript
-// src/infrastructure/credential-vault.ts
-
-interface CredentialVault {
-  getPassword(service: string, account: string): Promise<string | null>;
-  setPassword(service: string, account: string, password: string): Promise<void>;
-  deletePassword(service: string, account: string): Promise<boolean>;
-}
-
-class CrossPlatformVault implements CredentialVault {
-  private platformVault: PlatformVault;
-  
-  constructor() {
-    if (process.platform === "darwin") {
-      this.platformVault = new MacOSKeychainVault();
-    } else if (process.platform === "linux") {
-      this.platformVault = new LinuxSecretServiceVault();
-    } else {
-      this.platformVault = new FallbackVault();
-    }
-  }
-}
-```
-
-**macOS Keychain (kSecClassGenericPassword):**
-```swift
-import Security
-
-class MacOSKeychainVault {
-  private let service = "com.openkraken"
-  
-  func getPassword(account: String) throws -> String? {
-    let query: [String: Any] = [
-      kSecClass as String: kSecClassGenericPassword,
-      kSecAttrService as String: service,
-      kSecAttrAccount as String: account,
-      kSecReturnData as String: true,
-      kSecMatchLimit as String: kSecMatchLimitOne,
-    ]
-    
-    var result: AnyObject?
-    let status = SecItemCopyMatching(query as CFDictionary, &result)
-    return status == errSecSuccess ? String(data: result as! Data, encoding: .utf8) : nil
-  }
-}
-```
-
-**Linux Secret Service (org.freedesktop.Secrets):**
-```typescript
-// Uses D-Bus to communicate with GNOME Keyring, KWallet, or pass
-class LinuxSecretServiceVault {
-  async getPassword(service: string, account: string): Promise<string | null> {
-    const collection = await this.service.getDefaultCollection();
-    const items = await collection.getItems();
-    
-    for (const item of items) {
-      const attrs = await item.getAttributes();
-      if (attrs.service === service && attrs.account === account) {
-        return await item.getSecret();
-      }
-    }
-    return null;
-  }
-}
-```
-
-**Consequences:**
-
-**Positive:**
-- Unified API across platforms via cross-keychain
-- Keychain Services API provides encryption via Secure Enclave
-- Secret Service API works with GNOME Keyring, KWallet, pass
-- cross-keychain actively maintained (2025)
-
-**Negative:**
-- Native FFI required for Linux (libsecret dependency)
-- macOS requires Keychain Access Groups configuration
-- D-Bus session bus required on Linux
-- No single cross-platform binary
-
-**Mitigation:**
-- Package libsecret dependency in Nix/Devenv for Linux
-- Document Keychain Access Groups in deployment guide
-- Implement graceful degradation when vaults unavailable
-- Add environment variable fallback for development
-
----
-
-### ADR-018: SvelteKit + LangChain SSE Streaming Integration
-
-**Status:** Accepted  
-**Date:** 2026-02-08
-
-**Context:**
-OpenKraken's Web UI requires real-time streaming of LangChain agent responses. Research identified SSE (Server-Sent Events) as the optimal pattern for LangChain + SvelteKit integration.
-
-**Decision:**
-Implement LangChain response streaming via SSE pattern in SvelteKit API routes.
-
-**Server Implementation:**
-```typescript
-// src/routes/api/agent/+server.ts
-import { langChainAgent } from "@/orchestrator/agent";
-
-export async function POST({ request }) {
-  const { messages, threadId } = await request.json();
-  
-  const stream = new ReadableStream({
-    async start(controller) {
-      const encoder = new TextEncoder();
-      
-      try {
-        for await (const chunk of langChainAgent.stream(
-          messages,
-          { configurable: { thread_id: threadId } }
-        )) {
-          const data = JSON.stringify({ chunk });
-          controller.enqueue(encoder.encode(`data: ${data}\n\n`));
-        }
-        controller.enqueue(encoder.encode(`data: [DONE]\n\n`));
-        controller.close();
-      } catch (error) {
-        controller.error(error);
-      }
-    },
-  });
-  
-  return new Response(stream, {
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-    },
-  });
-}
-```
-
-**Client Consumption:**
-```svelte
-<script lang="ts">
-  let messages = $state([]);
-  
-  async function sendMessage(content: string) {
-    const response = await fetch("/api/agent", {
-      method: "POST",
-      body: JSON.stringify({ messages: [...messages, { role: "user", content }] }),
-    });
-    
-    const reader = response.body?.getReader();
-    const decoder = new TextDecoder();
-    
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      
-      const chunk = decoder.decode(value);
-      const data = chunk.split("\n\n")[0].replace("data: ", "");
-      if (data !== "[DONE]") {
-        const { chunk: text } = JSON.parse(data);
-        messages[messages.length - 1].content += text;
-      }
-    }
-  }
-</script>
-```
-
-**Consequences:**
-
-**Positive:**
-- SSE works with any SvelteKit adapter (Bun, Node, Edge)
-- Automatic reconnection in browsers
-- Simple text-based protocol
-- Works with Bun runtime
-
-**Negative:**
-- SSE is unidirectional (server → client only)
-- Lower throughput than WebSocket
-- No native binary frame support
-- Requires custom parsing on client
-
-**Mitigation:**
-- Use for agent response streaming (unidirectional fits use case)
-- Implement client-side chunk aggregation
-- Add heartbeat for connection health monitoring
-
----
-
-### ADR-019: Anthropic Sandbox Runtime Chained Proxy Architecture
-
-**Status:** Accepted  
-**Date:** 2026-02-08
-
-**Context:**
-Research confirmed Anthropic Sandbox Runtime provides OS-level isolation via bubblewrap (Linux) and sandbox-exec (macOS). The sandbox includes built-in HTTP and SOCKS5 proxy servers with domain allowlisting capability.
-
-**Decision:**
-Implement chained proxy architecture: Anthropic Sandbox Runtime proxy → Go Egress Gateway proxy.
-
-**Architecture Pattern (from research):**
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    OpenKraken Orchestrator                   │
-│                      (Bun Runtime)                          │
-└─────────────────────────┬───────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────────┐
-│              Anthropic Sandbox Runtime                        │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │ bubblewrap (Linux) / sandbox-exec (macOS)          │    │
-│  │                                                     │    │
-│  │ Network Isolation: --unshare-net                    │    │
-│  │ Filesystem: --bind-mount, --read-only              │    │
-│  │ Seccomp Filters: Pre-compiled BPF binaries          │    │
-│  └─────────────────────────────────────────────────────┘    │
-│                          │                                  │
-│              HTTP Proxy (port 3128)                         │
-│              SOCKS5 Proxy (port 1080)                       │
-└─────────────────────────┬───────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────────┐
-│                  Go Egress Gateway                           │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │ HTTP CONNECT Proxy with Domain Allowlist             │    │
-│  │                                                     │    │
-│  │ Audit Logging: Structured JSON via log/slog         │    │
-│  │ Allowlist: sync.RWMutex map[string]bool             │    │
-│  │ Timeouts: CONNECT (10s), Tunnel (5m)                │    │
-│  └─────────────────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────────┘
-```
-
-**Sandbox Configuration:**
-```typescript
-import { Sandbox } from "@anthropic-ai/sandbox-runtime";
-
-const sandbox = await Sandbox.create({
-  // Linux: bubblewrap options
-  // macOS: sandbox-exec profile (auto-generated)
-  
-  httpProxyPort: 3128,
-  socksProxyPort: 1080,
-  
-  allowedDomains: ["*.anthropic.com", "api.openai.com"],
-  
-  env: {
-    HTTP_PROXY: "http://localhost:3128",
-    HTTPS_PROXY: "http://localhost:3128",
-    NO_PROXY: "localhost,127.0.0.1",
-  },
-});
-```
-
-**Consequences:**
-
-**Positive:**
-- Defense-in-depth: Two independent proxy enforcement layers
-- Sandbox handles OS-level isolation (namespaces, syscalls)
-- Go proxy provides structured audit logging
-- Domain allowlist can be updated without sandbox restart
-
-**Negative:**
-- Two proxy hops add negligible latency (single-tenant)
-- More complex configuration
-- Requires both components healthy
-
-**Mitigation:**
-- Monitor both proxy health endpoints
-- Graceful degradation if Go proxy unavailable
-- Configuration validation at startup
-
----
-
-### ADR-020: Cross-Platform Service Management Strategy
-
-**Status:** Accepted  
-**Date:** 2026-02-08
-
-**Context:**
-Research confirmed that OpenKraken requires native service management for production deployment on Linux (systemd) and macOS (launchd). The project has a critical gap: no systemd/launchd generation in Devenv (per ADR-009). Bun runtime limitations prevent native sdnotify support and socket activation patterns. Security hardening differs significantly between platforms—systemd provides namespace isolation while launchd relies on sandbox profiles.
-
-**Decision:**
-Implement dual-platform configuration generation with a canonical TypeScript schema and platform-specific template functions. Avoid generic cross-platform abstraction libraries that normalize away security differences.
-
-**Architecture Pattern (from research):**
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Canonical ServiceConfig                      │
-│                 (TypeScript Schema Interface)                   │
-└───────────────────────────┬─────────────────────────────────────┘
-                            │
-              ┌─────────────┴─────────────┐
-              ▼                           ▼
-┌─────────────────────────┐   ┌─────────────────────────┐
-│   systemd Generator     │   │   launchd Generator     │
-│   (.service file)       │   │   (.plist file)         │
-├─────────────────────────┤   ├─────────────────────────┤
-│ Namespace Isolation     │   │ Sandbox Profiles        │
-│ Capability Bounding     │   │ Entitlement Files       │
-│ Resource Controls       │   │ Resource Limits         │
-│ NoNewPrivileges=true   │   │ KeepAlive               │
-│ ProtectSystem=strict   │   │ RunAtLoad               │
-└─────────────────────────┘   └─────────────────────────┘
-              │                           │
-              ▼                           ▼
-┌─────────────────────────┐   ┌─────────────────────────┐
-│ /etc/systemd/system/     │   │ ~/Library/LaunchAgents/  │
-│ openkraken.service      │   │ com.openkraken.agent    │
-└─────────────────────────┘   └─────────────────────────┘
-```
-
-**ServiceConfig TypeScript Schema (from research):**
-```typescript
-export interface ServiceConfig {
-  name: string;
-  description: string;
-  executable: string;
-  args: string[];
-  user: string;
-  group: string;
-  workingDirectory: string;
-  environment: Record<string, string>;
-  ports: number[];
-  logDirectory: string;
-  dataDirectory: string;
-  restartPolicy: "always" | "on-failure" | "no";
-  timeout: {
-    start: number;
-    stop: number;
-  };
-  resources: {
-    memoryMax: string;
-    cpuQuota: number;
-    maxFiles: number;
-    maxProcesses: number;
-  };
-  security: {
-    privateTmp: boolean;
-    protectSystem: boolean;
-    protectHome: boolean;
-    noNewPrivileges: boolean;
-    readOnlyPaths: string[];
-    readWritePaths: string[];
-  };
-}
-
-export const defaultConfig: ServiceConfig = {
-  name: "openkraken",
-  description: "OpenKraken Deterministic Agent Runtime",
-  executable: "/usr/local/bin/openkraken",
-  args: ["start"],
-  user: "openkraken",
-  group: "openkraken",
-  workingDirectory: "/var/lib/openkraken",
-  environment: {
-    OPENKRAKEN_HOME: "/var/lib/openkraken",
-    OPENKRAKEN_ENV: "production"
-  },
-  ports: [3000],
-  logDirectory: "/var/log/openkraken",
-  dataDirectory: "/var/lib/openkraken",
-  restartPolicy: "on-failure",
-  timeout: {
-    start: 60,
-    stop: 30
-  },
-  resources: {
-    memoryMax: "1G",
-    cpuQuota: 50,
-    maxFiles: 1024,
-    maxProcesses: 100
-  },
-  security: {
-    privateTmp: true,
-    protectSystem: true,
-    protectHome: true,
-    noNewPrivileges: true,
-    readOnlyPaths: ["/usr", "/boot", "/etc"],
-    readWritePaths: ["/var/lib/openkraken", "/var/log/openkraken"]
-  }
-};
-```
-
-**systemd Unit Configuration (from research):**
-```ini
-[Unit]
-Description=OpenKraken Deterministic Agent Runtime
-Documentation=https://github.com/openkraken/core
-After=network.target
-Wants=network.target
-
-[Service]
-Type=notify
-RuntimeDirectory=openkraken
-RuntimeDirectoryMode=0755
-StateDirectory=openkraken
-ConfigurationDirectory=openkraken
-WorkingDirectory=/var/lib/openkraken
-
-User=openkraken
-Group=openkraken
-
-Environment=OPENKRAKEN_HOME=/var/lib/openkraken
-Environment=OPENKRAKEN_ENV=production
-
-ExecStart=/usr/local/bin/openkraken start
-ExecStop=/usr/local/bin/openkraken stop
-ExecReload=/bin/kill -HUP $MAINPID
-
-Restart=on-failure
-RestartSec=5
-
-# Security hardening
-NoNewPrivileges=true
-PrivateTmp=true
-PrivateDevices=true
-DevicePolicy=closed
-ProtectSystem=strict
-ProtectHome=read-only
-ProtectControlGroups=yes
-ProtectKernelModules=yes
-ProtectKernelTunables=yes
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-RestrictNamespaces=yes
-RestrictRealtime=true
-RestrictSUIDSGID=true
-MemoryDenyWriteExecute=true
-LockPersonality=true
-ReadOnlyPaths=/usr /boot /etc
-ReadWritePaths=/var/lib/openkraken /var/log/openkraken /run
-
-# Resource limits
-MemoryMax=1G
-MemoryHigh=800M
-CPUQuota=50%
-TasksMax=100
-LimitNOFILE=1024
-
-# Logging
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=openkraken
-
-# Shutdown
-TimeoutStopSec=30
-SendSIGKILL=no
-
-[Install]
-WantedBy=multi-user.target
-```
-
-**launchd Plist Configuration (from research):**
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.openkraken.agent</string>
-    
-    <key>ProgramArguments</key>
-    <array>
-        <string>/usr/local/bin/openkraken</string>
-        <string>start</string>
-    </array>
-    
-    <key>WorkingDirectory</key>
-    <string>/var/db/openkraken</string>
-    
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>OPENKRAKEN_HOME</key>
-        <string>/var/db/openkraken</string>
-        <key>OPENKRAKEN_ENV</key>
-        <string>production</string>
-    </dict>
-    
-    <key>KeepAlive</key>
-    <dict>
-        <key>SuccessfulExit</key>
-        <false/>
-    </dict>
-    
-    <key>RunAtLoad</key>
-    <true/>
-    
-    <key>ExitTimeOut</key>
-    <integer>30</integer>
-    
-    <key>SoftResourceLimits</key>
-    <dict>
-        <key>NumberOfFiles</key>
-        <integer>1024</integer>
-        <key>NumberOfProcesses</key>
-        <integer>100</integer>
-        <key>ResidentSetSize</key>
-        <integer>1073741824</integer>
-    </dict>
-    
-    <key>StandardOutPath</key>
-    <string>/var/db/openkraken/logs/stdout.log</string>
-    
-    <key>StandardErrorPath</key>
-    <string>/var/db/openkraken/logs/stderr.log</string>
-    
-    <key>UserName</key>
-    <string>openkraken</string>
-</dict>
-</plist>
-```
-
-**Bun Signal Handler for Graceful Shutdown (from research):**
-```typescript
-// src/signals.ts
-import { server } from "./server";
-import { db } from "./db";
-import { agent } from "./agent";
-
-let isShuttingDown = false;
-
-export function setupSignalHandlers(): void {
-  process.on("SIGTERM", handleShutdown);
-  process.on("SIGINT", handleShutdown);
-  process.on("SIGHUP", handleReload);
-}
-
-async function handleShutdown(signal: string): Promise<void> {
-  if (isShuttingDown) {
-    console.log(`Received ${signal} again, exiting immediately`);
-    process.exit(1);
-  }
-  
-  isShuttingDown = true;
-  console.log(`Received ${signal}, starting graceful shutdown`);
-  
-  try {
-    // Stop accepting new connections
-    console.log("Closing HTTP server...");
-    await new Promise<void>((resolve, reject) => {
-      server.close((err) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
-    
-    // Complete in-flight requests with timeout
-    console.log("Waiting for in-flight requests to complete...");
-    await Promise.race([
-      waitForIdle(10000),
-      delay(10000)
-    ]);
-    
-    // Close database connections
-    console.log("Closing database connections...");
-    await db.close();
-    
-    // Save agent state
-    console.log("Saving agent state...");
-    await agent.saveState();
-    
-    console.log("Graceful shutdown complete");
-    process.exit(0);
-  } catch (error) {
-    console.error("Error during shutdown:", error);
-    process.exit(1);
-  }
-}
-
-function waitForIdle(timeoutMs: number): Promise<void> {
-  return new Promise((resolve) => {
-    const checkInterval = setInterval(() => {
-      if (server.getConnections() === 0) {
-        clearInterval(checkInterval);
-        resolve();
-      }
-    }, 100);
-    
-    setTimeout(() => {
-      clearInterval(checkInterval);
-      resolve();
-    }, timeoutMs);
-  });
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-```
-
-**NixOS Module Integration (from research):**
-```nix
-{ config, lib, pkgs, ... }:
-let
-  cfg = config.services.openkraken;
-in
-{
-  options.services.openkraken = {
-    enable = lib.mkEnableOption "OpenKraken agent runtime";
-    package = lib.mkOption {
-      type = lib.types.path;
-      default = ../package.nix;
-      description = "OpenKraken package to use";
-    };
-    user = lib.mkOption {
-      type = lib.types.str;
-      default = "openkraken";
-      description = "User to run OpenKraken as";
-    };
-    dataDir = lib.mkOption {
-      type = lib.types.path;
-      default = "/var/lib/openkraken";
-      description = "Data directory for OpenKraken state";
-    };
-    port = lib.mkOption {
-      type = lib.types.port;
-      default = 3000;
-      description = "Port for OpenKraken HTTP interface";
-    };
-  };
-
-  config = lib.mkIf cfg.enable {
-    users.users.openkraken = lib.mkIf (cfg.user == "openkraken") {
-      isSystemUser = true;
-      group = "openkraken";
-      home = cfg.dataDir;
-    };
-    
-    users.groups.openkraken = {};
-    
-    systemd.services.openkraken = {
-      description = "OpenKraken Deterministic Agent Runtime";
-      after = [ "network.target" ];
-      wants = [ "network.target" ];
-      
-      serviceConfig = {
-        Type = "notify";
-        RuntimeDirectory = "openkraken";
-        StateDirectory = "openkraken";
-        ConfigurationDirectory = "openkraken";
-        User = cfg.user;
-        Group = "openkraken";
-        WorkingDirectory = cfg.dataDir;
-        
-        Environment = [
-          "OPENKRAKEN_HOME=${cfg.dataDir}"
-          "OPENKRAKEN_PORT=${toString cfg.port}"
-        ];
-        
-        ExecStart = "${cfg.package}/bin/openkraken start";
-        ExecStop = "${cfg.package}/bin/openkraken stop";
-        
-        Restart = "on-failure";
-        RestartSec = 5;
-        
-        # Security hardening
-        NoNewPrivileges = true;
-        PrivateTmp = true;
-        ProtectSystem = "strict";
-        ProtectHome = "read-only";
-        ReadWritePaths = "${cfg.dataDir} /var/log/openkraken";
-        
-        # Resource limits
-        MemoryMax = "1G";
-        MemoryHigh = "800M";
-        CPUQuota = "50%";
-        
-        # Logging
-        StandardOutput = "journal";
-        StandardError = "journal";
-        SyslogIdentifier = "openkraken";
-        
-        # Shutdown
-        TimeoutStopSec = 30;
-      };
-    };
-    
-    environment.systemPackages = [ cfg.package ];
-  };
-}
-```
-
-**Installation Script Pattern (from research):**
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-detect_platform() {
-  case "$(uname -s)" in
-    Linux*)
-      if command -v systemctl &> /dev/null; then
-        echo "systemd"
-      else
-        echo "sysvinit"
-      fi
-      ;;
-    Darwin*)
-      echo "launchd"
-      ;;
-    *)
-      echo "unsupported"
-      ;;
-  esac
-}
-
-install_systemd() {
-  local service_file="$1"
-  local unit_path="/etc/systemd/system/openkraken.service"
-  
-  echo "Installing systemd service to ${unit_path}..."
-  sudo cp "$service_file" "$unit_path"
-  sudo chmod 644 "$unit_path"
-  
-  echo "Reloading systemd daemon..."
-  sudo systemctl daemon-reload
-  
-  echo "Enabling OpenKraken service..."
-  sudo systemctl enable openkraken.service
-  
-  echo "Starting OpenKraken service..."
-  sudo systemctl start openkraken.service
-}
-
-install_launchd() {
-  local plist_file="$1"
-  local plist_path="$HOME/Library/LaunchAgents/com.openkraken.agent.plist"
-  
-  echo "Installing launchd plist to ${plist_path}..."
-  cp "$plist_file" "$plist_path"
-  chmod 644 "$plist_path"
-  
-  echo "Loading OpenKraken launch agent..."
-  launchctl load "$plist_path"
-  
-  echo "Starting OpenKraken..."
-  launchctl start com.openkraken.agent
-}
-
-main() {
-  local platform
-  platform=$(detect_platform)
-  
-  case "$platform" in
-    systemd)
-      install_systemd "./service/openkraken.service"
-      ;;
-    launchd)
-      install_launchd "./service/openkraken.plist"
-      ;;
-    sysvinit)
-      echo "ERROR: sysvinit not supported. Use systemd or migrate to a supported platform."
-      exit 1
-      ;;
-    unsupported)
-      echo "ERROR: Unsupported platform: $(uname -s)"
-      exit 1
-      ;;
-  esac
-  
-  echo "OpenKraken installed and running successfully!"
-}
-
-main "$@"
-```
-
-**Consequences:**
-
-**Positive:**
-- Native security hardening on each platform (namespace isolation on Linux, sandbox profiles on macOS)
-- Full control over platform-specific features
-- No abstraction library overhead or compatibility issues
-- Clear separation of concerns between platform layers
-
-**Negative:**
-- Requires maintaining two configuration formats
-- Some security features not portable between platforms
-- Manual platform detection required in installation scripts
-- Bun runtime limitations prevent systemd Type=notify startup notification
-
-**Mitigation:**
-- Use canonical TypeScript schema to generate both formats
-- Document security differences between platforms
-- Implement graceful shutdown via signal handlers (SIGTERM/SIGINT)
-- Use Type=simple with manual readiness signaling for Bun
-
-**References:**
-- systemd.service man page: https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html
-- launchd.plist documentation: https://www.launchd.info/
-- Bun OS signals: https://bun.com/docs/guides/process/os-signals
-- NixOS Wiki Systemd/Hardening: https://wiki.nixos.org/wiki/Systemd/Hardening
-- Cross-platform service abstraction patterns: https://github.com/cross-org/service
-
----
-
-## 3. Database Schema
-
-This section defines the physical database schema using Mermaid ERD syntax. All tables use SQLite-compatible types. Primary keys, foreign keys, and critical indices are explicitly defined. This schema implements the persistence layer design described in the Architecture documentation.
-
-### 3.1 Checkpoints Tables
-
-Stores LangGraph agent state persistence within `openkraken.db`. Two-table schema compatible with custom bun-sqlite-checkpointer, using BLOB serialization and composite primary keys.
+# Technical Specification
+
+## 0. Version History & Changelog
+- v2.9.0 - Restored the Open Responses primary interface posture, external adapter integration units, regulatory/SBOM discussion, drift-prevention rules, richer implementation contracts, and the remaining missing operational details without bringing back research-only appendices.
+- v2.8.0 - Restored missing canonical detail for RMM, constitution injection, day-bounded sessions, and the more explicit auth/recovery/service-resilience contracts that had been reduced too far.
+- v2.7.0 - Realigned interaction-channel posture with the revised architecture: restored the asynchronous channel boundary logically, while keeping Telegram primary and MCP-backed channels as delayed follow-on implementation scope.
+- v2.6.0 - Restored the explicit field-encryption contract and the compact build/CI/SBOM contract, including a brownfield note for the current `.#sbom` workflow drift.
+- v2.5.0 - Restored a compact canonical security threat model and failure posture so the four-document set retains the old TechSpec's security intent without bringing back the full narrative appendix.
+- v2.4.0 - Restored the remaining codebase-backed contracts for checkpoint schema lineage, owner auth lifecycle, config mutability, and platform path resolution without reverting to the old mixed-layer document.
+- v2.3.0 - Restored high-signal configuration, migration, deployment, middleware, and recovery contracts that were too aggressively reduced in the earlier structural rewrite.
+- v2.2.0 - Added the missing project-scale ADRs covering configuration precedence, auth, migrations, recovery, lifecycle, middleware, scheduling, service mediation, path abstraction, model strategy, and health semantics.
+- v2.1.0 - Expanded the ADR set for the four-document model and restored checkpoint persistence to the target state model.
+- v2.0.0 - Rebuilt the TechSpec around the revised PRD and Architecture with concrete contracts, ADRs, and a target state model.
+- v1.1.0 - Expanded stack notes, operational details, and implementation patterns in the previous document shape.
+- v1.0.0 - Established the initial technical specification artifact under `docs/`.
+- ... [Older history truncated, refer to git logs]
+
+## 1. Stack Specification (Bill of Materials)
+- **Primary Language / Runtime:** Bun `1.3.10` for the Runtime Coordinator and CLI; TypeScript `5.9.3`; Go `1.26.1` for the Egress Gateway. Brownfield note: the repo currently compiles the gateway with `go 1.25.6`, so the Go toolchain upgrade is a follow-up delta rather than already-landed reality.
+- **Primary Frameworks / Libraries:** `langchain@1.2.34`, `@langchain/core@1.1.34`, `@langchain/anthropic@1.3.25`, `@langchain/langgraph@1.2.3`, `@langchain/mcp-adapters@1.1.3`, `@anthropic-ai/sandbox-runtime@0.0.42`, `grammy@1.41.1`, `zod@4.3.6`, `age-encryption@0.3.0`, `@opentui/core@0.1.88`, `@sveltejs/kit@2.55.0`, `svelte@5.54.0`, `vite@8.0.0`.
+- **Active Epic 2 Adjunct Packages:** `@skroyc/rmm-middleware@0.1.0` remains a required memory-middleware dependency for the Epic 2 line, but publication is pending and the current source of truth is the local package repository rather than the public registry. Secondary provider readiness also remains active scope through LangChain connector packages for OpenAI and Google-family model access; those connectors SHALL be exact-pinned when the dependency-alignment delta lands in repo manifests.
+- **State Stores / Persistence:** SQLite `3.x` through `bun:sqlite` with WAL enabled as the authoritative application store; filesystem-backed sandbox zones for staged inputs, work artifacts, outputs, backups, and active Skills; platform-native credential vaults with age-encrypted fallback for headless or dev-only scenarios.
+- **Infrastructure / Tooling:** Nix Flakes on `nixpkgs/nixos-25.11`, `devenv` for local orchestration, `just` for cross-language build coordination, CUE for configuration validation, and repo-local build outputs under `bin/`.
+- **Testing / Quality Tooling:** `bun test`, `go test`, `tsc --noEmit`, `svelte-check`, `@biomejs/biome@2.4.8` as the target formatter/linter baseline, and OpenAPI contract validation as part of CI. Brownfield note: the repo currently pins Biome `2.3.13`.
+- **Version Pinning / Compatibility Policy:** Runtime and build dependencies SHALL be pinned exactly in manifests. Lockfiles SHALL be committed. Bun and Go patch upgrades may land without ADR changes when interface compatibility is preserved; minor or major upgrades for agent, sandbox, UI, or gateway packages require ADR review. The canonical Owner-facing runtime API SHALL remain at `/v1` until a breaking contract change is explicitly versioned and migrated.
+- **External Integration Units:** The following remain canonical integration targets even when their source repositories or publication lifecycle live outside this repo: the Open Responses compliance adapter, the AgentSkills.io-compatible skill intake/tooling line, the core filesystem tools bundle, and the RMM memory bank package. They SHALL be treated as explicit integration units rather than as undocumented future magic.
+- **Compliance / Regulatory Posture:** Production-bound build and release flows SHALL preserve machine-readable SBOM capability and enough dependency traceability to support CRA-oriented supply-chain evidence, PCI DSS-style inventory expectations, FDA-style software bill of materials requests where relevant, and similar 2026-era compliance asks. This is a contract for build evidence and traceability, not a claim of immediate certification.
+
+## 2. Architecture Decision Records (ADRs)
+### ADR-001 Runtime Topology and Language Split
+- **Status:** accepted
+- **Context:** The approved architecture requires a central Runtime Coordinator, separate Owner Interfaces, and a distinct outbound-control boundary. Brownfield reality already uses a TypeScript/Bun package for orchestration and a separate Go package for the egress gateway. Replacing this split would add redesign risk without improving the approved logical boundaries.
+- **Decision:** Keep a monorepo with a Bun/TypeScript Runtime Coordinator and a separately compiled Go Egress Gateway. The CLI and Web UI remain thin Owner Interfaces over the Runtime API. Shared product semantics stay centralized in the Runtime Coordinator rather than duplicated in clients.
+- **Consequences:** The implementation keeps a clear trust boundary between orchestration and outbound enforcement. It also introduces a dual-toolchain maintenance burden, so `just`, Nix, and CI must treat the Bun and Go paths as first-class build targets.
+
+### ADR-002 Unified Relational State with Vault-Backed Secret Material
+- **Status:** accepted
+- **Context:** The architecture requires durable sessions, memory, approvals, schedules, skill review state, and append-oriented audit evidence. At the same time, raw credentials must not be stored where the Agent can read them. Brownfield migrations already use SQLite and partially implement message, memory, audit, and skill tables.
+- **Decision:** Use a single SQLite database file as the authoritative state store for non-secret application data. Store only credential references and service-binding metadata in SQLite. Store raw credential material in platform-native vaults, with age-encrypted fallback only where vault access is unavailable by explicit operator choice.
+- **Consequences:** Backup, restore, migration, and local inspection remain simple. Cross-table auditability remains possible. Secret exposure risk is reduced because database compromise alone does not reveal raw credentials. The single-database approach requires disciplined migration strategy and explicit write-path control to avoid accidental lock contention.
+
+### ADR-003 Runtime Control API over Local HTTP with Optional SSE Streaming
+- **Status:** accepted
+- **Context:** Both Owner Interfaces need one canonical control surface. Brownfield clients already assume an HTTP runtime on `localhost`, while the Web UI has placeholder auth and streaming routes. The architecture requires synchronous request/response semantics for control operations, with optional streaming for interactive turns.
+- **Decision:** Define one canonical loopback-bound HTTP API described by OpenAPI 3.1. Use JSON request/response for control operations and Server-Sent Events for streaming chat progress. CLI authentication uses bearer tokens. Browser flows may use either bearer tokens or an HttpOnly session cookie minted by the same runtime contract.
+- **Consequences:** One API contract serves both Owner Interfaces and keeps compatibility management centralized. SSE is simpler than WebSocket for one-way response streaming and aligns with request-scoped chat execution. If future bidirectional low-latency features become necessary, they must be added as a versioned secondary contract rather than replacing `/v1`.
+
+### ADR-004 Isolated Execution with Fail-Closed Outbound Control
+- **Status:** accepted
+- **Context:** The architecture separates the Capability Sandbox from the Egress Control Boundary and requires fail-closed behavior for execution, outbound access, and approval uncertainty. The repo already includes a sandbox wrapper and a distinct gateway package, but the implementations are still partial.
+- **Decision:** Use `@anthropic-ai/sandbox-runtime@0.0.42` as the primary isolation runtime and keep a separately managed Egress Gateway for outbound allowlisting and network audit events. All isolated execution requests SHALL pass through policy evaluation before dispatch. Outbound failures SHALL deny the action rather than bypass the control boundary.
+- **Consequences:** The implementation preserves the approved defense-in-depth model and makes outbound activity independently observable. It also creates a hard dependency between local execution and gateway health, so runtime health checks, startup ordering, and recovery behavior must be explicit.
+
+### ADR-005 Nix-Managed Monorepo Delivery with Contract-First Development
+- **Status:** accepted
+- **Context:** The project is large, multi-package, and cross-language. The user has explicitly indicated that documentation must remain comprehensive because the codebase is expected to grow significantly. Brownfield reality already includes Flakes, `devenv`, `just`, and package-local manifests.
+- **Decision:** Keep Nix as the canonical packaging and development substrate, `just` as the task entrypoint, and OpenAPI/SQL/CUE artifacts as first-class sources of truth inside the repo. Implementation must follow contract-first changes for runtime API, migration-first changes for state, and versioned documentation changes for all externally consumed contracts.
+- **Consequences:** The project stays tractable as it grows because contracts, schema, and packaging are reviewable separately from code. The cost is more up-front specification work and the need to keep docs, migrations, and manifests synchronized before implementation is considered complete.
+
+### ADR-006 Credential Vault Abstraction with Headless Fallback
+- **Status:** accepted
+- **Context:** The project requires platform-native credential handling on macOS and Linux, but also needs an explicit posture for headless hosts where secret-service may be absent. The runtime must preserve the architectural guarantee that the Agent never sees raw credential material and that SQLite stores references rather than secrets.
+- **Decision:** Define one `CredentialVault` abstraction owned by the Runtime Coordinator. The primary implementations are macOS Keychain and Linux secret-service. A secondary age-encrypted file fallback is allowed only for explicit headless or development scenarios and remains outside the Agent-visible execution context. The runtime SHALL record only credential references in SQLite and SHALL fail closed when required credential material cannot be resolved.
+- **Consequences:** Secret handling stays consistent across platforms and keeps the trust boundary explicit. The cost is extra platform integration and a more careful backup posture, because encrypted fallback material and its recovery path must be managed alongside the main database.
+
+### ADR-007 Resumable Execution via LangGraph-Compatible Checkpoint Persistence
+- **Status:** accepted
+- **Context:** The approved architecture requires approval pause/resume, schedule-triggered execution, and restart recovery without reconstructing control state from chat transcripts alone. Brownfield repo reality already depends on LangGraph packages and partial persistence, but the target-state schema must make resumable execution explicit rather than implicit.
+- **Decision:** Persist execution checkpoints in SQLite using a LangGraph-compatible checkpoint model. Approval waits, interrupted tool executions, and schedule-triggered runs SHALL resume from checkpointed execution state when available. Message history remains the human-review log, while checkpoint tables remain the machine-resumption source of truth.
+- **Consequences:** Recovery behavior becomes deterministic and testable, and approval or schedule resumption does not rely on prompt reconstruction. The cost is added schema and migration complexity plus compatibility work whenever LangGraph checkpoint contracts change.
+
+### ADR-008 Typed Configuration Validation with CUE
+- **Status:** accepted
+- **Context:** OpenKraken has a large number of security-sensitive runtime settings spanning sandboxing, credentials, observability, scheduling, and skill policy. Runtime-only validation is too late for many deployment and packaging failures, while hand-maintained duplicate schemas would drift.
+- **Decision:** Use CUE as the canonical schema language for runtime configuration. Nix checks SHALL validate shipped configuration artifacts against the CUE schema, and runtime startup SHALL reject invalid configuration before opening the control API. Example configs and generated defaults SHALL conform to the same schema lineage.
+- **Consequences:** The project gains one strongly typed source of truth for configuration and catches invalid deployments earlier. The cost is an additional toolchain dependency and the need to keep CUE schema evolution synchronized with runtime config loading.
+
+### ADR-009 OpenTelemetry-Native Observability with Langfuse
+- **Status:** accepted
+- **Context:** The project requires local auditability, execution tracing, and optional external telemetry export without inventing a custom observability stack. Project-level commitments already name Langfuse v4 and OpenTelemetry as the observability foundation.
+- **Decision:** Keep the local audit store as the authoritative review surface and emit OpenTelemetry-compatible spans and metrics from the Runtime Coordinator, gateway, and owner-facing flows. Use Langfuse v4 as the primary LangChain/LangGraph tracing integration rather than bespoke callback plumbing. External collectors remain optional consumers, not the system of record.
+- **Consequences:** Execution traces, model calls, tool dispatch, approvals, and gateway decisions can be correlated with less implementation overhead. The cost is another credentialed integration and the need to scrub sensitive material before export beyond the local trust boundary.
+
+### ADR-010 Thin Owner Interfaces on OpenTUI and SvelteKit
+- **Status:** accepted
+- **Context:** The architecture defines command-line and browser-based Owner Interfaces, and the brownfield repo already contains dedicated CLI and web UI applications. For a project of this size, the interface stack is expensive enough to reverse that it should be captured as an ADR rather than left implicit in package manifests.
+- **Decision:** Use OpenTUI for the Bun-native CLI/TUI and Svelte 5 plus SvelteKit for the browser interface. Both clients SHALL remain thin surfaces over the same runtime control API and SHALL NOT duplicate core orchestration, policy, or state-transition logic locally.
+- **Consequences:** The project keeps a clear single-source-of-truth runtime contract while still supporting two distinct owner experiences. The cost is interface-specific tooling churn and the need to maintain streaming, auth, and compatibility behavior consistently across both clients.
+
+### ADR-011 Skill Intake through Staging, Analysis, Approval, and Activation
+- **Status:** accepted
+- **Context:** Skills are a core extensibility mechanism, but they also create one of the highest-risk ingestion paths in the system. The architecture already separates the Skill Catalog from execution, and the brownfield schema includes skill review and audit tables, so the lifecycle needs to be captured as a first-class implementation decision.
+- **Decision:** All imported Skills SHALL pass through a four-step lifecycle: staging, analysis, approval, and activation. Active skill manifests SHALL be digest-pinned and exposed to the Runtime Coordinator only after approval state is persisted. Updates SHALL re-enter the same review flow rather than mutating active skill content in place.
+- **Consequences:** Extensibility remains compatible with the project's deterministic-safety posture and produces auditable review evidence. The cost is slower skill adoption, more state transitions, and extra UI/API surfaces for review and lifecycle management.
+
+### ADR-012 Configuration Source of Truth and Precedence
+- **Status:** accepted
+- **Context:** The system now exposes configuration through shipped examples, environment variables, runtime config loading, and control-surface APIs for configuration documents. Without an explicit precedence model, operators and future implementation work will produce ambiguous runtime behavior and drift between packaging, startup, and live administration.
+- **Decision:** The canonical configuration source order is: immutable build defaults, then host environment, then the root config file, then validated persisted configuration documents loaded by the Runtime Coordinator. Environment variables are reserved for bootstrap concerns such as runtime mode, home directory, config file location, and emergency overrides. Persisted configuration documents may override operational policy and integration settings only after successful validation and version checks. Invalid configuration at any layer SHALL block startup or reject the update rather than falling back silently.
+- **Consequences:** Packaging, deployment, and operator workflows share one deterministic precedence model. The cost is stricter config discipline and the need to classify each setting as bootstrap-only, runtime-mutable, or restart-required.
+
+### ADR-013 Owner Authentication and Session Model
+- **Status:** accepted
+- **Context:** The runtime API is loopback-bound, but the project explicitly assumes host environments where other local processes may exist. The previous TechSpec established a static token for local ownership and a browser session layered over the same local trust boundary, but the decision was lost when the TechSpec was reduced.
+- **Decision:** The CLI authenticates with an opaque bearer token derived from a vault-stored owner secret. The browser authenticates by presenting the same owner secret to the runtime once, after which the runtime issues an HttpOnly session cookie backed by `auth_sessions` records in SQLite. Session validation, expiry, revocation, and invalidation remain runtime responsibilities. OAuth, OIDC, and federated identity are explicitly out of scope for the single-owner deployment model.
+- **Consequences:** The owner interfaces share one security model without introducing external identity dependencies. The cost is that token lifecycle, session revocation, and local secret provisioning become first-class runtime behavior that must be testable and auditable.
+
+### ADR-014 Migration and Schema Evolution Strategy
+- **Status:** accepted
+- **Context:** SQLite is the authoritative state store and now carries sessions, approvals, schedules, skill state, audit evidence, and resumable checkpoints. The removed TechSpec contained the actual migration posture, but the current document reduced it to short notes. For this project, migration semantics are too expensive to leave implicit.
+- **Decision:** Database evolution SHALL be forward-only, ordered, checksum-verified, and executed inside SQLite transactions. Each successful migration SHALL record its version and checksum in `schema_versions`. Startup SHALL refuse to bind the runtime API until all pending migrations succeed and integrity checks pass. Breaking schema changes SHALL use expand-migrate-contract sequencing and include a compatibility note, data transition plan, and rollback posture based on restore, not reverse SQL.
+- **Consequences:** Brownfield upgrades become deterministic and safer to reason about. The cost is more up-front migration design and a refusal to tolerate ad hoc manual schema edits in production state.
+
+### ADR-015 Backup, Restore, and Key Recovery Posture
+- **Status:** accepted
+- **Context:** Encrypted messages, memories, credential fallback material, and resumable state create a recovery model that is inseparable from the security model. The previous TechSpec correctly treated backup and key recovery as part of the canonical design, and that guidance should remain authoritative inside the four-document set.
+- **Decision:** A valid recovery set consists of the SQLite database backup, active configuration state, and the required recovery material for any encrypted records that cannot be reconstructed from live vault state alone. Backup creation SHALL verify database integrity before writing artifacts. Restore SHALL verify schema compatibility and attempt sample decryption before replacing active state. Loss of both vault material and recovery material for encrypted records is an unrecoverable condition that MUST be stated explicitly in operator-facing flows.
+- **Consequences:** Recovery procedures remain honest about the real failure modes of a security-first local system. The cost is more operator burden around recovery material handling and stricter restore validation before bringing the runtime back online.
+
+### ADR-016 Service Lifecycle and Startup Ordering
+- **Status:** accepted
+- **Context:** Runtime correctness depends on ordered initialization across config loading, database migration, credential resolution, gateway readiness, and API binding. The prior TechSpec also documented platform service management and graceful shutdown behavior, but the revised doc no longer captured that as a canonical decision.
+- **Decision:** The runtime lifecycle SHALL follow this order: config bootstrap, configuration validation, database open, migration execution, credential boundary initialization, sandbox and gateway dependency checks, then runtime API bind. Shutdown SHALL stop new ingress first, allow in-flight work to settle within a bounded timeout, persist resumable state where required, and only then release resources. Linux and macOS service managers may differ in implementation, but they SHALL preserve the same runtime lifecycle semantics.
+- **Consequences:** Health and recovery behavior become predictable across hosts and packaging forms. The cost is more rigid startup behavior and explicit degraded-mode handling instead of opportunistic partial startup.
+
+### ADR-017 Middleware Ordering and Callback Semantics
+- **Status:** accepted
+- **Context:** Project guidance explicitly distinguishes middleware from callbacks, and the removed TechSpec captured a concrete ordering model. Because OpenKraken enforces safety by architectural control rather than prompt policy, middleware ordering is not an implementation detail; it is part of the runtime contract.
+- **Decision:** Middleware SHALL execute in deterministic tier order: policy and content-safety gates first, capability and context expansion second, operational cross-cutting behavior third, and approval gates before any sensitive action leaves the runtime. Callbacks SHALL remain observational, non-blocking, and unable to alter control flow. Callback failures SHALL not change the execution outcome, while middleware failures SHALL fail closed according to their boundary.
+- **Consequences:** Safety-sensitive behavior stays reviewable and does not drift as new capabilities are added. The cost is tighter composition rules and less freedom to insert middleware arbitrarily.
+
+### ADR-018 Scheduling Semantics and Missed-Run Recovery
+- **Status:** accepted
+- **Context:** Scheduled and background work is a first-class product capability, but the current spec only models schedule state and API shapes. The system still needs an explicit decision for how recurring work behaves across downtime, overlap, approval requirements, and resumable execution.
+- **Decision:** Schedules SHALL be stored as explicit owner-managed definitions with timezone-aware execution rules. The Scheduler SHALL reconcile missed runs after restart using deterministic catch-up rules rather than silently dropping them. Each run SHALL be idempotent at the `(schedule_id, scheduled_for)` boundary and SHALL emit its own audit trail. If scheduled work hits an approval gate, the resulting pending state SHALL remain resumable rather than forcing the task to restart from scratch.
+- **Consequences:** Background automation remains trustworthy after restart or temporary downtime. The cost is more scheduler state, explicit catch-up logic, and careful operator communication about skipped, merged, or resumed runs.
+
+### ADR-019 Connected Service Mediation Boundary
+- **Status:** accepted
+- **Context:** The architecture already defines a Connected Service Gateway, but the current ADR set does not yet capture why service access must remain separate from the sandbox and from raw credential handling. This boundary is too central to the trust model to remain only an architectural label.
+- **Decision:** All interactions with external owner-authorized services SHALL pass through a mediation layer that resolves credential references, applies service-specific policy, records audit evidence, and returns normalized results to the Runtime Coordinator. The Agent SHALL never receive raw service credentials, and sandboxed local execution SHALL not bypass the service mediation boundary for integrations that require owner-authorized secrets.
+- **Consequences:** External-service access remains attributable, reviewable, and policy-aware. The cost is more adapter work and a stricter separation between local capability execution and credential-mediated integrations.
+
+### ADR-020 Platform Path Abstraction and Directory Resolution
+- **Status:** accepted
+- **Context:** The repo already contains cross-platform path-resolution code, and project guidance explicitly distinguishes platform abstraction from platform-specific configuration. Without an ADR, path handling will tend to leak into clients, tools, and deployment code in inconsistent ways.
+- **Decision:** The Runtime Coordinator owns canonical directory resolution for configuration, state, sandbox zones, backups, logs, and skills. Owner interfaces, tools, and adapters SHALL consume resolved paths through runtime services rather than hardcoding platform-specific locations. Linux and macOS may differ in root directories and service-manager conventions, but the logical directory model SHALL remain stable.
+- **Consequences:** Cross-platform behavior stays coherent and easier to test. The cost is a dedicated abstraction layer and the need to reject shortcuts in clients or scripts that try to bypass it.
+
+### ADR-021 Model Provider Strategy and Fallback Rules
+- **Status:** accepted
+- **Context:** The previous TechSpec recorded multi-provider support through LangChain-native abstractions, but the current reduced spec only pins the primary Anthropic integration packages. Provider strategy is still important because it affects configuration shape, credential handling, observability, and future failover behavior.
+- **Decision:** The runtime SHALL use LangChain-native provider abstractions as the integration boundary for model calls. Anthropic remains the primary pinned baseline for the current stack, while secondary providers may be enabled through explicit exact-pinned additions and owner-supplied credentials. Provider fallback, if configured, SHALL occur through runtime policy and model routing rather than ad hoc client behavior. Provider-specific features may be used only when their absence does not invalidate the canonical runtime control contract.
+- **Consequences:** The project preserves future provider flexibility without committing the owner interfaces or runtime API to vendor-specific semantics. The cost is extra configuration and testing complexity whenever new providers are turned on.
+
+### ADR-022 Operational Health Surface and Degradation Semantics
+- **Status:** accepted
+- **Context:** The current runtime API exposes `/health` and `/status`, while the previous TechSpec also defined readiness, metrics, and version-reporting surfaces. For a security-sensitive personal runtime, health semantics are not only observability detail; they govern startup, recovery, and operator trust.
+- **Decision:** The operational health surface SHALL distinguish liveness from readiness. Liveness answers whether the process is alive enough to respond; readiness answers whether core dependencies such as database state, credential boundary, sandbox capability, and egress control are healthy enough for real work. Metrics and version-reporting surfaces are canonical optional operational endpoints and may be exposed when enabled, but they SHALL NOT replace local audit state as the source of truth. Degraded dependencies SHALL be surfaced explicitly instead of being flattened into generic success.
+- **Consequences:** Operators and service managers can make better restart and recovery decisions, and the runtime can fail closed without becoming opaque. The cost is a richer dependency-health model and more explicit endpoint contracts.
+
+### ADR-023 Native Service Management via NixOS and Darwin Modules
+- **Status:** accepted
+- **Context:** The brownfield repo already includes NixOS and Darwin service modules, and their platform-specific behavior is not interchangeable. The previous TechSpec captured more of this deployment shape than the current document, but for a project this large the production service-management contract is expensive to reverse and should remain explicit.
+- **Decision:** Production deployment SHALL use native Nix-managed service definitions: systemd units on Linux through the NixOS module and launchd agents on macOS through the Darwin module. `devenv`, `process-compose`, and package-local scripts remain development surfaces only. Service definitions SHALL provision required directories, environment variables, resource limits, restart policy, and companion gateway service wiring while preserving the canonical runtime lifecycle defined in ADR-016.
+- **Consequences:** Production behavior stays reproducible and platform-native without relying on a lowest-common-denominator service wrapper. The cost is dual platform maintenance and the need to document security and operability differences explicitly.
+
+### ADR-024 Reflective Memory Management Middleware Integration
+- **Status:** accepted
+- **Context:** RMM remains an active Epic 2 commitment and a live GitHub issue, even though it was accidentally normalized away during the reduction pass. The memory strategy is not generic "durable context"; it specifically depends on the `@skroyc/rmm-middleware` package and its reflective retrieval model. The package is not yet published, but the local package source and README are authoritative enough to preserve the contract now.
+- **Decision:** The runtime SHALL integrate `@skroyc/rmm-middleware@0.1.0` as the canonical memory middleware for the Epic 2 line. Prospective Reflection organizes dialogue into topic-based memories for future retrieval. Retrospective Reflection refines retrieval using citation-derived reward signals and a learnable reranker. Default runtime configuration SHALL preserve configurable Top-K retrieval and Top-M reranking, with the benchmark-aligned defaults remaining `Top-K=20` and `Top-M=5` unless the Owner overrides them.
+- **Consequences:** OpenKraken preserves the intended memory architecture instead of collapsing into generic transcript persistence. The cost is an extra package-integration dependency, more state surfaces for embeddings and reranker data, and a temporary publication gap until the package is public.
+
+### ADR-025 Constitution Injection and Day-Bounded Session Model
+- **Status:** accepted
+- **Context:** The previous Architecture and TechSpec explicitly treated constitution injection and day-bounded sessions as first-class design constraints. Those commitments were weakened during the reduction pass, but they still govern how the runtime constructs identity, isolates working context, and recovers across restarts.
+- **Decision:** The Agent SHALL receive the constitutional inputs (`SOUL.md`, `SAFETY.md`, `CAPABILITIES.md`, and owner-authored directives) through runtime prompt assembly rather than as mutable sandbox files. Session identity SHALL remain day-bounded: one owner-local calendar day corresponds to one primary thread/session identifier formatted as `YYYY-MM-DD`, and workspace-reset behavior is keyed to that boundary. Previous sessions remain available for audit, recovery, and memory retrieval, but the new day starts with a clean working context.
+- **Consequences:** Identity and safety instructions remain hard to exfiltrate through file access, and session lifecycle semantics stay predictable for memory, backup, and owner review. The cost is stricter thread/session modeling and the need to handle timezone-aware day rollover explicitly.
+
+### ADR-026 Open Responses as the Primary Standards-Facing Interface Contract
+- **Status:** accepted
+- **Context:** OpenKraken maintains a native owner-local control API for CLI and browser surfaces, but the product also has a standards-facing interoperability commitment. The Open Responses adapter is being developed as a separate unit of work and must remain visible in the canonical spec so it is not normalized away in future rewrites.
+- **Decision:** OpenKraken SHALL treat Open Responses as its primary standards-facing external interface contract. Compliance may be realized through a dedicated adapter component or companion package, but that adapter remains part of the canonical system contract and SHALL front the same underlying runtime boundaries. OpenKraken-specific response items or streaming events SHALL use prefixed extensions so that standards clients can ignore them safely.
+- **Consequences:** The system remains client-agnostic and interoperable without forcing the owner-local API to become the only externally meaningful surface. The cost is maintaining two related but distinct contracts: a native owner control API and a standards-facing response adapter.
+
+### ADR-027 External Integration Units and Ownership Boundaries
+- **Status:** accepted
+- **Context:** Several important capabilities are being built as adjacent units outside this repo, including the Open Responses adapter, AgentSkills.io-aligned skill usage, the core filesystem tools line, and the RMM memory bank. Prior reduction passes blurred or erased these boundaries.
+- **Decision:** The canonical spec SHALL name these units explicitly and treat them as integration workstreams with stable contracts, not as undocumented future ideas. OpenKraken owns the integration boundaries, trust model, persistence model, and owner-facing semantics. Adjacent repositories or packages may own the concrete implementation of those units.
+- **Consequences:** The docs can remain accurate without pretending every capability is implemented inside this repo. The cost is a more explicit integration matrix and the need to preserve ownership boundaries in Tasks and TechSpec.
+
+### ADR-028 Documentation-Implementation Drift Prevention
+- **Status:** accepted
+- **Context:** This repo is large enough that drift between docs, manifests, migrations, APIs, and task planning is a material engineering risk. Earlier rewrites already demonstrated that structurally correct reduction can still erase binding project intent if drift-prevention rules are not explicit.
+- **Decision:** Documentation drift prevention is part of the technical implementation contract. Changes to runtime API, state schema, config schema, auth/session behavior, service-management assumptions, or active Epic scope SHALL update the affected canonical docs in the same change set. CI SHALL validate formal artifacts where possible, and brownfield discrepancies SHALL be called out explicitly rather than hidden.
+- **Consequences:** Canonical docs remain trustworthy and survivable through long planning and delivery cycles. The cost is stricter review discipline and more frequent spec updates during implementation.
+
+## 3. State & Data Modeling
+### 3.1 Runtime Control Database
+- **Purpose:** Persist the Runtime Coordinator's authoritative application state: sessions, resumable execution checkpoints, messages, memory, approvals, schedules, skill review state, audit evidence, and service-binding metadata.
+- **Storage Shape:** One SQLite database file named `openkraken.db` with forward-only SQL migrations. Existing brownfield tables (`schema_versions`, `threads`, `messages`, `memories`, `memories_embeddings`, `audit_events`, `proxy_logs`, `skills`, `skill_analysis_reports`, `skill_audit_log`) remain valid lineage. The target schema expands that baseline with `auth_sessions`, `execution_checkpoints`, `approvals`, `schedules`, `schedule_runs`, `config_documents`, and `connected_service_bindings`.
+- **Constraints / Invariants:** Raw credentials SHALL NOT be stored in SQLite. Tokens SHALL be stored as hashes, not cleartext. `threads.id` for the primary owner session model SHALL remain the owner-local date string `YYYY-MM-DD`. `messages.content` SHALL be encrypted at rest when marked sensitive. `execution_checkpoints.checkpoint_key` SHALL be unique per active execution thread namespace. `approvals.status` SHALL be one of `pending`, `approved`, `rejected`, or `expired`. `schedule_runs` SHALL be idempotent per `(schedule_id, scheduled_for)`. `config_documents.document_type` SHALL be unique per active scope. Audit tables SHALL be append-oriented. Soft deletion is preferred over destructive mutation for audit-sensitive records.
+- **Indexes / Access Paths:** `threads(updated_at)` for session resume lists; `messages(thread_id, created_at)` for ordered replay; `execution_checkpoints(thread_id, created_at)` for recovery lookup; `execution_checkpoints(checkpoint_namespace, checkpoint_key)` unique lookup for resumptions; `memories_embeddings(memory_id, model)` plus vector access sidecar strategy for retrieval; `audit_events(timestamp, event_type)` for recent review; `proxy_logs(timestamp)` for network audit; `approvals(status, created_at)` for pending approval inbox; `schedules(enabled, next_run_at)` for trigger scanning; `schedule_runs(schedule_id, scheduled_for)` unique index for dedupe; `skills(name)` unique lookup; `connected_service_bindings(service_type, enabled)` for gateway routing.
+- **Migration Notes:** Migrations are forward-only and checksum-verified in `schema_versions`. Existing tables are upgraded in place through expand-migrate-contract sequencing. Breaking schema changes require a data migration plan, rollback posture, and compatibility note in the owning ADR. Startup SHALL refuse to serve the runtime API until migrations complete successfully.
 
 ```mermaid
 erDiagram
-    checkpoints {
-        text thread_id PK "Thread identifier (date as TEXT: YYYY-MM-DD)"
-        text checkpoint_ns PK "Checkpoint namespace (default: '')"
-        text checkpoint_id PK "Checkpoint unique ID (UUID6 as TEXT)"
-        text parent_checkpoint_id FK "Parent checkpoint reference (UUID as TEXT)"
-        text type "Serialization type (json, jsonplus)"
-        blob checkpoint "Serialized Checkpoint {v, id, ts, channel_values, channel_versions, versions_seen}"
-        blob metadata "Serialized CheckpointMetadata {source, step, parents}"
+    schema_versions {
+        text version PK
+        text applied_at
+        text checksum
+        text description
     }
-    
-    writes {
-        text thread_id PK "Thread identifier (date as TEXT: YYYY-MM-DD)"
-        text checkpoint_ns PK "Checkpoint namespace (default: '')"
-        text checkpoint_id PK "Checkpoint reference (UUID as TEXT)"
-        text task_id PK "Task identifier (UUID as TEXT)"
-        integer idx PK "Write order index"
-        text channel "Channel name (e.g., 'messages', '__pregel_tasks')"
-        text type "Serialization type"
-        blob value "Serialized write value"
+
+    auth_sessions {
+        text id PK
+        text subject_type
+        text subject_id
+        text token_hash
+        text issued_at
+        text expires_at
+        text revoked_at
+        blob metadata
     }
-    
-    checkpoints ||--o{ writes : "contains"
-```
 
-**Schema Notes:**
-- **LangGraph Compatibility**: Schema mirrors LangGraph's SqliteCheckpointer with BLOB storage for serialized state
-- **Composite Primary Keys**: `(thread_id, checkpoint_ns, checkpoint_id)` for checkpoints, `(thread_id, checkpoint_ns, checkpoint_id, task_id, idx)` for writes
-- **Serialization**: Uses Bun's native serialization (JSON default via `JsonPlusSerializer`)
-- **Checkpoint Structure** (BLOB):
-  ```typescript
-  interface Checkpoint {
-    v: number;           // Version (currently 4)
-    id: string;          // UUID6 identifier
-    ts: string;          // ISO timestamp
-    channel_values: Record<string, unknown>;
-    channel_versions: Record<string, unknown>;
-    versions_seen: Record<string, Record<string, unknown>>;
-  }
-  ```
-- **Metadata Structure** (BLOB):
-  ```typescript
-  interface CheckpointMetadata {
-    source: "input" | "loop" | "update" | "fork";
-    step: number;
-    parents: Record<string, string>;
-    // Additional user-defined properties
-  }
-  ```
-- **WAL Mode**: Database uses Write-Ahead Logging for concurrent access: `PRAGMA journal_mode=WAL;`
-- **Index**: No additional indexes needed—composite PKs provide efficient retrieval
-- **Special Channels**:
-  - `__pregel_tasks`: Task scheduling channel
-  - `__error__`: Error handling
-  - `__scheduled__`: Scheduled tasks
-  - `__interrupt__`: Interruptions
-  - `__resume__`: Resumptions
-
-**Table DDL:**
-```sql
-CREATE TABLE checkpoints (
-  thread_id TEXT NOT NULL,
-  checkpoint_ns TEXT NOT NULL DEFAULT '',
-  checkpoint_id TEXT NOT NULL,
-  parent_checkpoint_id TEXT,
-  type TEXT,
-  checkpoint BLOB,
-  metadata BLOB,
-  PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id)
-);
-
-CREATE TABLE writes (
-  thread_id TEXT NOT NULL,
-  checkpoint_ns TEXT NOT NULL DEFAULT '',
-  checkpoint_id TEXT NOT NULL,
-  task_id TEXT NOT NULL,
-  idx INTEGER NOT NULL,
-  channel TEXT NOT NULL,
-  type TEXT,
-  value BLOB,
-  PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx)
-);
-
-PRAGMA journal_mode=WAL;
-```
-
-### 3.2 Message Log Tables
-
-Stores cross-session conversation history for context injection and audit purposes within `openkraken.db`.
-
-```mermaid
-erDiagram
-    messages {
-        text id PK "Message unique identifier (UUID as TEXT)"
-        text thread_id FK "Conversation thread (date as TEXT: YYYY-MM-DD)"
-        text role "Message role (user/assistant/system/tool)"
-        text content_type "Content type (text/image/file)"
-        blob content "Encrypted message content (AES-256-GCM)"
-        text metadata "JSON metadata as TEXT"
-        integer created_at "Unix timestamp"
-        integer token_count "Estimated token count"
-    }
-    
     threads {
-        text id PK "Thread identifier IS the date (YYYY-MM-DD format)"
-        text channel "Channel source (telegram/mcp)"
-        integer started_at "Session start timestamp"
-        integer last_message_at "Last activity timestamp"
-        integer message_count "Total messages in session"
+        text id PK
+        text owner_id
+        text status
+        blob metadata
+        text created_at
+        text updated_at
     }
-    
-    threads ||--o{ messages : "contains"
-```
 
-**Schema Notes:**
-- `thread_id`: The thread ID IS the date (YYYY-MM-DD format). New day = new thread context, eliminating the separate date column.
-- `role`: Constrained to "user", "assistant", "system", "tool" values.
-- `content_type`: Supports "text", "image", "file", "tool_call", "tool_result".
-- `content`: Encrypted using AES-256-GCM before storage in `openkraken.db`. Decrypted on retrieval.
-- `metadata`: JSON object storing attachments (filename, MIME type, size), tool outputs, and delivery status.
-- `token_count`: Estimated via tokenizer. Used for context window management.
-- **Index:** `(thread_id, created_at)` on `messages` for chronological retrieval.
-- **Constraint:** `FOREIGN KEY (thread_id) REFERENCES threads(id)` for referential integrity.
+    messages {
+        text id PK
+        text thread_id FK
+        text role
+        blob content
+        integer encrypted
+        blob metadata
+        text created_at
+    }
 
-### 3.3 Semantic Memory Tables
+    execution_checkpoints {
+        text id PK
+        text thread_id FK
+        text checkpoint_namespace
+        text checkpoint_key
+        blob payload
+        blob metadata
+        text created_at
+    }
 
-Stores long-term semantic memories for the **RMM (Reflective Memory Management)** middleware integration within `openkraken.db`. Sensitive content and metadata fields are encrypted using AES-256-GCM before storage.
-
-```mermaid
-erDiagram
     memories {
-        text id PK "Memory unique identifier (UUID as TEXT)"
-        blob content "Encrypted memory content (AES-256-GCM ciphertext)"
-        blob metadata "Encrypted metadata (AES-256-GCM ciphertext)"
-        integer created_at "Creation timestamp"
-        integer last_accessed_at "Last retrieval timestamp"
-        text embedding "Vector embedding reference (stored separately)"
+        text id PK
+        text thread_id FK
+        text content
+        blob metadata
+        real importance
+        text created_at
+        text updated_at
     }
-```
 
-**RMM (Reflective Memory Management) Middleware:**
-
-RMM is a plug-and-play memory management middleware implementing reflective memory patterns based on arXiv:2503.08026v2 research and equivalent to Google Vertex AI Memory Bank architecture. RMM provides:
-
-- **Memory Extraction**: Automatically extracts salient information from agent conversations
-- **Consolidation**: Compacts and deduplicates memories using LLM-based consolidation
-- **Retrieval**: Semantic similarity search using vector embeddings
-- **Decay**: Time-based memory importance adjustment
-- **Owner Control**: Owner can view, edit, or purge specific memories
-
-**Notes:**
-- Database structure matches RMM Memory middleware interface requirements
-- `content` and `metadata` fields are encrypted using AES-256-GCM before INSERT, decrypted after SELECT
-- Encryption key derived from master key stored in OS-level vault
-- RMM middleware handles embedding generation, similarity search, consolidation, and decay algorithms
-- The Orchestrator provides the storage schema and middleware interface; RMM implements the algorithmic logic
-
-### 3.4 Audit Log Tables
-
-Stores security-relevant events for compliance and debugging within `openkraken.db`.
-
-```mermaid
-erDiagram
-    audit_logs {
-        text id PK "Log entry identifier (UUID as TEXT)"
-        integer timestamp "Unix timestamp"
-        text event_type "Event classification"
-        text severity "Log severity (INFO/WARN/ERROR/SECURITY)"
-        text source_component "Origin (orchestrator/sandbox/egress_gateway)"
-        text request_id FK "Associated request/correlation ID (UUID as TEXT)"
-        text event_data "Event-specific payload (JSON as TEXT)"
-        text context "Request context (JSON as TEXT)"
-        text outcome "Action result (success/failure/denied)"
+    memories_embeddings {
+        text id PK
+        text memory_id FK
+        text model
+        blob embedding
+        text created_at
     }
-    
-    correlations {
-        text id PK "Correlation identifier (UUID as TEXT)"
-        text parent_id FK "Parent request ID (UUID as TEXT)"
-        text trace_id "Distributed trace ID (UUID as TEXT)"
-        integer depth "Correlation depth"
-        integer created_at "Correlation creation timestamp"
+
+    approvals {
+        text id PK
+        text thread_id FK
+        text proposed_action
+        text status
+        text requested_at
+        text decided_at
+        text decided_by
+        blob context
     }
-    
-    audit_logs ||--o{ correlations : "traced_in"
-```
 
-**Schema Notes:**
-- `event_type`: Constrained vocabulary: "authentication", "authorization", "configuration_change", "session_lifecycle", "tool_invocation", "model_call", "policy_violation", "sandbox_event", "egress_gateway_event".
-- `severity`: "INFO" (normal operations), "WARN" (anomalies), "ERROR" (failures), "SECURITY" (security-relevant).
-- `request_id`: UUID for cross-component request tracing.
-- `event_data`: Structured JSON with event-specific fields (e.g., tool name, arguments, result).
-- **Index:** `(timestamp)` for chronological queries.
-- **Index:** `(event_type, severity)` for filtered audits.
-- **Index:** `(request_id)` for request tracing.
-- **Retention:** 30-day rolling retention with automatic archival.
+    schedules {
+        text id PK
+        text name
+        text schedule_expression
+        text timezone
+        integer enabled
+        blob payload
+        text next_run_at
+        text created_at
+        text updated_at
+    }
 
-### 3.4.1 Skill Audit and Analysis Tables
+    schedule_runs {
+        text id PK
+        text schedule_id FK
+        text scheduled_for
+        text status
+        text started_at
+        text completed_at
+        text thread_id FK
+        blob result
+    }
 
-Stores skill lifecycle events, provenance metadata, and security analysis reports within `openkraken.db`.
+    config_documents {
+        text id PK
+        text document_type
+        integer version
+        blob payload
+        text created_at
+        text superseded_at
+    }
 
-```mermaid
-erDiagram
+    connected_service_bindings {
+        text id PK
+        text service_type
+        text display_name
+        text credential_ref
+        integer enabled
+        blob metadata
+        text created_at
+        text updated_at
+    }
+
+    audit_events {
+        text id PK
+        text event_type
+        text actor
+        text target
+        text action
+        text result
+        blob metadata
+        text timestamp
+    }
+
+    proxy_logs {
+        text id PK
+        text url
+        text method
+        integer response_status
+        integer duration_ms
+        text error
+        text timestamp
+    }
+
     skills {
-        text id PK "Skill identifier (UUID as TEXT)"
-        text name "Skill name (from SKILL.md frontmatter)"
-        text description "Skill description"
-        text version "Current version (e.g., '1.2.3')"
-        text source "Source URL/repository"
-        text tier "Skill tier (system/owner/community)"
-        text directory "Relative path to skill directory"
-        text metadata_json "Additional metadata (JSON)"
-        integer approved_at "Approval timestamp"
-        text approved_by "Owner ID who approved"
-        integer auto_updated_at "Auto-update timestamp"
-        integer created_at "Skill addition timestamp"
-        integer updated_at "Last modification timestamp"
-    }
-    
-    skill_analysis_reports {
-        text id PK "Report identifier (UUID as TEXT)"
-        text skill_id FK "Reference to skills.id (UUID as TEXT)"
-        integer analysis_version "Report schema version"
-        text overall_risk "Risk level (low/medium/high/critical)"
-        text findings "JSON array of findings"
-        text recommendation "Decision (approve/review/reject)"
-        text llm_model "LLM model used for analysis"
-        integer created_at "Analysis timestamp"
-    }
-    
-    skill_audit_log {
-        text id PK "Audit entry identifier (UUID as TEXT)"
-        text skill_id FK "Reference to skills.id (UUID as TEXT)"
-        text action "Action type (ingest/approve/reject/update/remove)"
-        text performed_by "Actor (system/owner)"
-        text details "Action details (JSON)"
-        integer timestamp "Unix timestamp"
+        text id PK
+        text name
+        text version
+        text source
+        blob manifest
+        integer enabled
+        text created_at
+        text updated_at
     }
 
-    skills ||--o{ skill_analysis_reports : "analyzed_by"
-    skills ||--o{ skill_audit_log : "tracked_in"
+    skill_analysis_reports {
+        text id PK
+        text skill_id FK
+        text analysis_type
+        blob findings
+        text risk_level
+        integer approved
+        text created_at
+    }
+
+    skill_audit_log {
+        text id PK
+        text skill_id FK
+        text action
+        text actor
+        blob details
+        text timestamp
+    }
+
+    threads ||--o{ messages : contains
+    threads ||--o{ execution_checkpoints : resumes
+    threads ||--o{ memories : yields
+    threads ||--o{ approvals : blocks
+    threads ||--o{ schedule_runs : may_spawn
+    memories ||--o{ memories_embeddings : indexed_by
+    schedules ||--o{ schedule_runs : executes
+    skills ||--o{ skill_analysis_reports : reviewed_by
+    skills ||--o{ skill_audit_log : tracked_by
 ```
 
-**Schema Notes:**
-- `skills.tier`: Constrained to "system", "owner", or "community"
-- `skill_analysis_reports.findings`: JSON array of `{severity, category, location, description, evidence}`
-- `skill_audit_log.action`: Constrained vocabulary: "ingest", "approve", "reject", "update", "remove"
-- **Index:** `(skills.name, skills.tier)` for skill lookup
-- **Index:** `(skill_audit_log.timestamp)` for chronological queries
-- **Index:** `(skill_analysis_reports.skill_id)` for report history
-
-### 3.5 Proxy Access Log Tables
-
-Stores network egress requests for security auditing within `openkraken.db`.
+### 3.2 Filesystem Layout
+- **Purpose:** Provide deterministic local paths for configuration, runtime state, sandbox zones, backups, and active Skill material.
+- **Storage Shape:** Host-managed directories rooted under the platform-specific OpenKraken home, with explicit separation between mutable runtime state and read-mostly staged content.
+- **Constraints / Invariants:** Sandbox work directories are disposable and may be cleared after successful completion or session compaction. Backup directories are write-only for the runtime and read-only for the Agent. Skill source staging and active skill manifests are separated so review state cannot be bypassed by directly dropping files into the active path.
+- **Indexes / Access Paths:** Runtime resolves canonical directories through the platform abstraction layer; no interface layer hardcodes platform-specific absolute paths.
+- **Migration Notes:** Path migrations require a startup reconciliation step and MUST preserve database path, backup chain, and active skill manifests before switching.
 
 ```mermaid
 erDiagram
-    proxy_requests {
-        text id PK "Request identifier (UUID as TEXT)"
-        integer timestamp "Unix timestamp"
-        text request_id FK "Orchestrator request correlation (UUID as TEXT)"
-        text source_process "Sandbox process ID"
-        text destination_domain "Target domain (SNI)"
-        integer destination_port "Target port"
-        text request_method "HTTP method or protocol"
-        text disposition "Request outcome (allowed/denied)"
-        text applied_rule "Rule that determined disposition"
-        integer bytes_in "Bytes from client"
-        integer bytes_out "Bytes to client"
-        integer duration_ms "Request duration"
-        text tls_info "TLS handshake metadata (JSON as TEXT)"
-        integer status_code "HTTP status code (if applicable)"
-        text error_info "Error details (if denied, JSON as TEXT)"
+    CONFIG_ROOT {
+        string config_yaml
+        string cue_schema
     }
-    
-    allowlist_domains {
-        text id PK "Domain entry identifier (UUID as TEXT)"
-        text domain "Domain pattern (*.example.com, exact)"
-        text tier "Domain tier (system/skill/owner)"
-        text added_by "Source of addition (system/skill/user)"
-        integer added_at "Domain addition timestamp"
-        integer expires_at "Temporary domain expiration"
-        boolean active "Currently active in allowlist"
+    DATA_ROOT {
+        string openkraken_db
+        string backups
+        string exports
     }
-    
-    proxy_requests ||--o{ allowlist_domains : "matched_by"
-```
-
-**Schema Notes:**
-- `destination_domain`: Extracted from TLS SNI or HTTP Host header. Wildcards stored as literal patterns.
-- `request_method`: HTTP methods (GET, POST, PUT, DELETE, PATCH, CONNECT) or protocol identifiers.
-- `disposition`: "allowed" (domain in allowlist), "denied" (not in allowlist), "error" (proxy failure).
-- `applied_rule`: Specific rule identifier (e.g., "skill:python-requests", "system:api.github.com").
-- `tls_info`: JSON object with SNI hostname, negotiated cipher suite, TLS version, certificate subject.
-- `error_info`: JSON object with error type, message, and remediation for denied requests.
-- **Index:** `(timestamp)` for recent requests.
-- **Index:** `(disposition, domain)` for allowlist analysis.
-- **Index:** `(request_id)` for correlation with audit logs.
-- **Retention:** 30-day rolling retention, automatic rotation at 100MB.
-
-#### SQLite Type Conventions
-
-SQLite does not have a native UUID type. All UUID fields use `TEXT` storage with string representation (e.g., `550e8400-e29b-41d4-a716-446655440000`). ERD annotations indicate `(UUID as TEXT)` for clarity.
-
-**Supported Type Mappings:**
-
-| JavaScript | SQLite | Usage |
-|------------|--------|-------|
-| `string` (UUID) | `TEXT` | IDs, foreign keys, references |
-| `string` | `TEXT` | Names, descriptions, JSON |
-| `number` | `INTEGER` | Timestamps, counts, IDs |
-| `boolean` | `INTEGER` (0/1) | Flags, status |
-| `Uint8Array` | `BLOB` | Encrypted data, embeddings |
-| `bigint` | `INTEGER` | Large numbers |
-
-### 3.6 Migration Strategy
-
-OpenKraken uses a forward-only migration strategy with `bun:sqlite` for all database schema changes.
-
-#### Migration File Naming Convention
-
-Migrations are ordered using zero-padded prefixes:
-```
-src/orchestrator/database/migrations/
-├── 001_init.sql              # Initial schema
-├── 002_messages.sql          # Message log tables
-├── 003_memory.sql            # Semantic memory tables
-├── 004_audit.sql             # Audit log tables
-├── 005_proxy.sql             # Proxy access log tables
-└── 006_framework_decisions.sql  # Example: Future migration
-```
-
-#### Schema Version Tracking
-
-Each migration tracks its application state in the `schema_versions` table:
-```sql
-CREATE TABLE schema_versions (
-  version INTEGER PRIMARY KEY,
-  name TEXT NOT NULL,
-  applied_at INTEGER NOT NULL,  -- Unix timestamp
-  checksum TEXT NOT NULL,       -- SHA256 of migration file
-  success INTEGER NOT NULL DEFAULT 1
-);
-```
-
-#### Migration Execution
-
-1. **Checksum Verification**: Calculate SHA256 hash of migration file before execution
-2. **Atomic Transaction**: Execute migration within SQLite transaction; rollback on error
-3. **Version Recording**: Insert into `schema_versions` only after successful migration
-4. **Integrity Check**: Run `PRAGMA integrity_check` after each migration
-5. **Fail-Fast**: Stop migration chain on first error; report detailed failure info
-
-#### Custom Runner Implementation
-
-> **Note:** This is a conceptual implementation pattern. Actual implementation is deferred to the development phase.
-
-```typescript
-// src/orchestrator/database/migrations/runner.ts
-const { Database } = require("bun:sqlite");
-
-class MigrationRunner {
-  constructor(private db: Database) {}
-
-  async migrate(): Promise<void> {
-    const migrations = await loadMigrations();
-    const appliedVersions = this.getAppliedVersions();
-
-    for (const migration of migrations) {
-      if (!appliedVersions.includes(migration.version)) {
-        await this.applyMigration(migration);
-      }
+    SANDBOX_ROOT {
+        string inputs
+        string work
+        string outputs
     }
-  }
-
-  private async applyMigration(migration: Migration): Promise<void> {
-    const tx = this.db.transaction(() => {
-      // Apply migration
-      this.db.exec(migration.sql);
-
-      // Verify schema integrity
-      const integrity = this.db.query("PRAGMA integrity_check").get();
-      if (integrity.integrity_check !== "ok") {
-        throw new Error("Integrity check failed");
-      }
-
-      // Record version
-      this.db.run(
-        "INSERT INTO schema_versions (version, name, applied_at, checksum) VALUES (?, ?, ?, ?)",
-        [migration.version, migration.name, Date.now(), migration.checksum]
-      );
-    });
-
-    tx();
-  }
-}
+    SKILL_ROOT {
+        string staged
+        string active
+        string cache
+    }
 ```
 
-#### Rollback Strategy
+### 3.3 Brownfield Schema Lineage and Checkpoint Compatibility
+- **Purpose:** Preserve the actual repository schema lineage while the canonical target-state model stays expressed in the higher-level runtime database contract above.
+- **Storage Shape:** Current SQL migrations create `schema_versions`, `threads`, `messages`, `memories`, `memories_embeddings`, `audit_events`, `proxy_logs`, `skills`, `skill_analysis_reports`, and `skill_audit_log`. LangGraph-compatible resumable state remains a brownfield adjunct managed through the checkpointer-owned `checkpoints` and `writes` tables rather than through a single application-defined `execution_checkpoints` table.
+- **Constraints / Invariants:** `schema_versions.version` matches the migration filename prefix. `001_initial_schema.sql` intentionally leaves `checkpoints` and `writes` outside direct migration ownership. Any future convergence from `checkpoints` plus `writes` into the logical `execution_checkpoints` model SHALL preserve thread isolation, checkpoint namespace semantics, parent linkage, and ordered writes.
+- **Indexes / Access Paths:** Brownfield SQL currently guarantees `idx_messages_thread`, `idx_audit_events_type`, `idx_audit_events_timestamp`, `idx_proxy_logs_timestamp`, `idx_skills_name`, `idx_skill_audit_log_skill`, and `idx_skill_analysis_reports_skill`. Checkpointer tables remain responsible for their own composite-key access paths.
+- **Migration Notes:** Migrations SHALL treat checkpointer-managed tables as compatibility-sensitive state. Manual edits to persisted checkpoint payloads or composite keys are forbidden because they can break resume behavior even when the broader SQLite schema remains valid.
 
-Current implementation uses **forward-only migrations** (no rollback SQL). Justification:
-- SQLite `ALTER TABLE` constraints make rollback complex and error-prone
-- Checkpoints provide time-machine capability for agent state
-- Database file snapshots via `bun:sqlite.serialize()` enable emergency recovery
+### 3.4 RMM Memory Compatibility Contract
+- **Purpose:** Preserve the active RMM memory commitment as a canonical technical contract instead of letting it disappear behind generic "memory" language.
+- **Storage Shape:** The runtime-owned `memories` and `memories_embeddings` tables provide durable storage for topic-based memory entries, retrieval metadata, and embedding references. Additional reranker weights, gradients, or probe state owned by RMM MAY live in dedicated adjunct stores so long as they remain bound to the same audit and backup posture.
+- **Constraints / Invariants:** The Runtime Coordinator owns storage, encryption, and audit boundaries; RMM owns extraction, consolidation, retrieval, reranking, and decay logic. Prospective Reflection runs after session completion or compaction boundaries. Retrospective Reflection operates during model-turn retrieval and post-response feedback handling. Configurable retrieval width and rerank width SHALL remain exposed, with `Top-K=20` and `Top-M=5` preserved as the default profile.
+- **Indexes / Access Paths:** Memory retrieval requires ordered access by `thread_id`, recency, and embedding-model namespace. Embedding references MUST remain attributable to the memory entries they were derived from so that re-embedding or purge operations remain possible.
+- **Migration Notes:** Any future change to RMM-owned storage surfaces SHALL preserve the ability to purge, re-embed, and audit memory entries independently of chat transcript retention.
 
-Future enhancement: Consider migration rollback if rollback patterns become critical.
-
-#### Migration Testing
-
-Each migration includes inline test assertions:
-```sql
--- 006_framework_decisions.sql
--- Migration: Add framework decision tracking tables
-
--- Apply schema
-CREATE TABLE framework_decisions (
-  id TEXT PRIMARY KEY,
-  title TEXT NOT NULL,
-  decision TEXT NOT NULL,  -- JSON
-  created_at INTEGER NOT NULL
-);
-
--- Test assertions (execute during migration)
--- Should be empty initially
-SELECT assert(COUNT(*) = 0 FROM framework_decisions) FROM (SELECT 1);
-
--- Should accept INSERT
-INSERT INTO framework_decisions (id, title, decision, created_at)
-VALUES ('test-001', 'Test Decision', '{"context": "test"}', 0);
-
--- Should have 1 row after INSERT
-SELECT assert(COUNT(*) = 1 FROM framework_decisions) FROM (SELECT 1);
-```
-
-#### Integration with Application Startup
-
-> **Note:** Integration pattern is conceptual. Actual implementation deferred to development phase.
-
-```typescript
-// src/main.ts
-import { MigrationRunner } from "./orchestrator/database/migrations/runner";
-
-async function main() {
-  const db = openDatabase();
-  
-  // Run pending migrations on startup
-  const runner = new MigrationRunner(db);
-  await runner.migrate();
-  
-  // Start application
-  startOrchestrator();
-}
-```
-
----
-
-## 4. API Contract
-
-OpenKraken implements the **Open Responses API** as its primary interface contract. This positions OpenKraken as an Open Responses Provider, enabling ecosystem compatibility while maintaining its unique deterministic, sandboxed execution model. Telegram and other input sources are implemented as adapters that convert platform-specific protocols to Open Responses input items.
-
-**Open Responses Alignment:**
-- OpenKraken is an **Open Responses Provider** - any Open Responses-compatible client can consume it
-- The agent loop implements the **agentic loop** pattern (reasoning → tool call → result → continue)
-- State management uses **thread_id** and **previous_response_id** mapping to LangGraph checkpoints
-- Streaming follows the **semantic event model** (not raw text deltas)
-- Tool execution is formalized as **externally-hosted tools** (executed in sandbox)
-
-### 4.1 Open Responses API Endpoint
-
-**Endpoint:** `POST /v1/responses`  
-**Base URL:** `http://127.0.0.1:3000` (local-only)  
-**Transport:** HTTP over Unix domain socket (production), TCP (development debug)  
-**Authentication:** None (local-only access via `127.0.0.1`)  
-**Content-Type:** `application/json`  
-**Accept:** `text/event-stream` (for streaming responses)
-
-#### 4.1.1 Request Schema
+## 4. Interface Contract
+### 4.1 Open Responses Provider Contract
+- **Style:** HTTP API plus semantic SSE streaming
+- **Authentication / Authorization:** The standards-facing adapter SHALL require explicit authorization and SHALL NOT rely on implicit localhost trust. Authentication material may differ from the owner-local API, but authorization must terminate in the same runtime approval, policy, and audit boundaries.
+- **Compatibility Strategy:** OpenKraken is compliant when it implements the base Open Responses contract directly or as a proper superset. Extensions SHALL preserve standard behavior, prefer additive optionality, and use implementation-prefixed item or event names so portable clients can ignore unknown extensions safely.
+- **Error model:** Open Responses-compliant structured error payloads plus semantic stream terminal `[DONE]`
 
 ```yaml
-openapi: 3.0.3
+openapi: 3.1.0
 info:
-  title: OpenKraken Open Responses API
+  title: OpenKraken Open Responses Adapter
   version: 1.0.0
-  description: Open Responses Provider API for OpenKraken agent runtime
-  x-openkraken-version: "1.0.0"
-
 paths:
   /v1/responses:
     post:
-      operationId: createResponse
-      summary: Create agent response (Open Responses API)
+      summary: Create a response through the standards-facing adapter
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
+              required: [input]
               properties:
                 model:
                   type: string
-                  description: Agent model identifier (e.g., 'claude-4')
-                  default: "claude-sonnet-4-2025"
                 input:
-                  type: array
-                  items:
-                    type: object
-                    discriminator:
-                      propertyName: type
-                      mapping:
-                        message: "#/components/schemas/MessageItem"
-                        function_call: "#/components/schemas/FunctionCallItem"
-                        function_call_output: "#/components/schemas/FunctionCallOutputItem"
-                        reasoning: "#/components/schemas/ReasoningItem"
-                        item_reference: "#/components/schemas/ItemReferenceItem"
-                  description: Input items (messages, function calls, etc.). Telegram adapter converts updates to this format.
+                  oneOf:
+                    - type: string
+                    - type: array
                 previous_response_id:
                   type: string
-                  format: uuid
-                  description: Thread/checkpoint continuation. Maps to LangGraph checkpoint.
                 instructions:
                   type: string
-                  description: Additional temporary instructions for this response (appended after DIRECTIVES.md as runtime context).
                 tools:
                   type: array
                   items:
                     type: object
-                    properties:
-                      name:
-                        type: string
-                        description: Tool name
-                      description:
-                        type: string
-                        description: Tool description
-                      type:
-                        type: string
-                        enum: [function]
-                      function:
-                        type: object
-                        properties:
-                          name:
-                            type: string
-                          description:
-                            type: string
-                          parameters:
-                            type: object
-                            description: JSON Schema for parameters
-                          strict:
-                            type: boolean
-                            description: Enforce strict parameter matching
-                    required: [name, type]
-                  description: Available tools. OpenKraken provides built-in tools (file, terminal, browser, etc.).
                 tool_choice:
-                  type: string
-                  enum: [auto, none, required]
-                  default: auto
-                  description: Controls which tools the model may use.
-                truncation:
-                  type: string
-                  enum: [auto, disabled]
-                  default: auto
-                  description: Context truncation strategy.
-                max_tool_calls:
-                  type: integer
-                  minimum: 1
-                  maximum: 100
-                  default: 10
-                  description: Maximum tool call iterations in the agent loop.
-                max_output_tokens:
-                  type: integer
-                  description: Maximum tokens in response.
-                temperature:
-                  type: number
-                  minimum: 0
-                  maximum: 2
-                  description: Sampling temperature.
-                service_tier:
-                  type: string
-                  enum: [standard, premium]
-                  default: standard
-                  description: Service tier for resource allocation.
+                  oneOf:
+                    - type: string
+                      enum: [auto, required, none]
+                    - type: object
                 stream:
                   type: boolean
                   default: true
-                  description: Stream response as SSE events.
-                # OpenKraken Provider-Specific Extensions
-                openkraken:
-                  type: object
-                  properties:
-                    sandbox:
-                      type: object
-                      properties:
-                        enabled:
-                          type: boolean
-                          default: true
-                        network_isolation:
-                          type: string
-                          enum: [strict, relaxed, none]
-                          default: strict
-                        filesystem_zones:
-                          type: object
-                          properties:
-                            skills:
-                              type: string
-                              default: "/sandbox/skills"
-                            inputs:
-                              type: string
-                              default: "/sandbox/inputs"
-                            work:
-                              type: string
-                              default: "/sandbox/work"
-                            outputs:
-                              type: string
-                              default: "/sandbox/outputs"
-                    determinism:
-                      type: object
-                      properties:
-                        seed:
-                          type: integer
-                          description: Random seed for reproducible execution.
-                        checkpoint_before_tools:
-                          type: boolean
-                          default: true
-                          description: Checkpoint state before each tool call.
-                    session:
-                      type: object
-                      properties:
-                        channel:
-                          type: string
-                          enum: [telegram, debug, api]
-                          default: api
-                        channel_id:
-                          type: string
-                          description: Channel-specific identifier (e.g., Telegram chat_id).
-              required: [input]
-
-components:
-  schemas:
-    MessageItem:
-      type: object
-      properties:
-        type:
-          type: string
-          enum: [message]
-        role:
-          type: string
-          enum: [user, assistant, system, developer]
-        content:
-          type: array
-          items:
-            type: object
-            discriminator:
-              propertyName: type
-              mapping:
-                input_text: "#/components/schemas/InputTextContent"
-                input_image: "#/components/schemas/InputImageContent"
-                input_file: "#/components/schemas/InputFileContent"
-    InputTextContent:
-      type: object
-      properties:
-        type:
-          type: string
-          enum: [input_text]
-        text:
-          type: string
-    InputImageContent:
-      type: object
-      properties:
-        type:
-          type: string
-          enum: [input_image]
-        image_url:
-          type: string
-          format: uri
-    InputFileContent:
-      type: object
-      properties:
-        type:
-          type: string
-          enum: [input_file]
-        file_url:
-          type: string
-          format: uri
-        filename:
-          type: string
-        mime_type:
-          type: string
-    FunctionCallItem:
-      type: object
-      properties:
-        type:
-          type: string
-          enum: [function_call]
-        name:
-          type: string
-        arguments:
-          type: string
-        function:
-          type: object
-          properties:
-            name:
-              type: string
-    FunctionCallOutputItem:
-      type: object
-      properties:
-        type:
-          type: string
-          enum: [function_call_output]
-        name:
-          type: string
-        content:
-          type: string
-        output_type:
-          type: string
-          enum: [string, object, error]
-    ReasoningItem:
-      type: object
-      properties:
-        type:
-          type: string
-          enum: [reasoning]
-        content:
-          type: string
-        summary:
-          type: string
-    ItemReferenceItem:
-      type: object
-      properties:
-        type:
-          type: string
-          enum: [item_reference]
-        id:
-          type: string
-```
-
-#### 4.1.2 Streaming Events (SSE)
-
-OpenKraken streams events following the Open Responses semantic event model:
-
-```yaml
-components:
-  schemas:
-    SSEvent:
-      type: object
-      properties:
-        event:
-          type: string
-          description: Event type identifier
-        data:
-          type: string
-          description: JSON-serialized event data
-        sequence_number:
-          type: integer
-          description: Event sequence number for ordering
-    EventTypes:
-      type: string
-      enum:
-        # Lifecycle
-        - response.started
-        - response.completed
-        - response.failed
-        - response.incomplete
-        # Output Items
-        - response.output_item.added
-        - response.output_item.done
-        # Content Parts
-        - response.content_part.started
-        - response.content_part.done
-        # Text Delta
-        - response.output_text.delta
-        # Reasoning (extended thinking)
-        - response.reasoning.start
-        - response.reasoning.delta
-        - response.reasoning.done
-        # Tool Calls
-        - response.tool_call.started
-        - response.tool_call.arguments.delta
-        - response.tool_call.result
-        - response.tool_call.done
-        # State
-        - response.state
-        # OpenKraken-Specific Events (colon-prefixed per spec)
-        - openkraken:sandbox.started
-        - openkraken:checkpoint.created
-```
-
-**Event Sequence Numbers:**
-All events include a `sequence_number` field for ordering. Sequence numbers start at 0 and increment by 1 for each event.
-
-**Terminal Event:**
-Streaming responses end with a `[DONE]` literal string (no JSON payload) per Open Responses specification.
-
-**OpenKraken-Specific Extensions:**
-OpenKraken extends the Open Responses protocol with custom events prefixed with `openkraken:`:
-- `openkraken:sandbox.started`: Emitted when sandbox initialization completes
-- `openkraken:checkpoint.created`: Emitted when state checkpoint is persisted
-
-**Output Item Status Machine:**
-Output items transition through states:
-- `in_progress`: Item being constructed
-- `completed`: Item fully formed
-- `incomplete`: Response truncated or interrupted
-```
-
-**Example SSE Stream:**
-```
-event: response.started
-data: {"response_id": "resp_abc123", "thread_id": "2026-03-08", "model": "claude-4"}
-
-event: response.message.start
-data: {"message_id": "msg_1", "role": "assistant"}
-
-event: response.message.delta
-data: {"message_id": "msg_1", "delta": "I'll help you with that."}
-
-event: response.tool_call.start
-data: {"tool_call_id": "tool_1", "function": {"name": "read_file", "arguments": {}}}
-
-event: response.tool_call.result
-data: {"tool_call_id": "tool_1", "content": "file contents..."}
-
-event: openkraken:checkpoint.created
-data: {"checkpoint_id": "cp_abc123", "thread_id": "2026-03-08"}
-
-event: response.completed
-data: {"response_id": "resp_abc123", "status": "completed"}
-```
-
-#### 4.1.3 Error Response Schema
-
-OpenKraken returns errors following the Open Responses error format:
-
-```yaml
-components:
-  schemas:
-    ErrorResponse:
-      type: object
-      properties:
-        error:
-          type: object
-          properties:
-            message:
-              type: string
-              description: Human-readable error message
-            type:
-              type: string
-              description: Error type classification
-            code:
-              type: string
-              description: Machine-readable error code
-            param:
-              type: string
-              description: Parameter that caused the error
-          required: [message]
-      required: [error]
-
-ErrorTypes:
-  - invalid_request_error
-  - authentication_error
-  - permission_error
-  - rate_limit_error
-  - service_unavailable_error
-  - openkraken_sandbox_error
-  - openkraken_policy_violation
-  - openkraken_checkpointer_error
-```
-
-**Common Error Codes:**
-| Code | Description |
-|------|-------------|
-| `invalid_request_error` | Malformed request or invalid parameters |
-| `authentication_error` | Credential retrieval failed |
-| `permission_error` | Policy violation or access denied |
-| `rate_limit_error` | Request rate limit exceeded |
-| `service_unavailable_error` | Backend service unavailable |
-| `openkraken_sandbox_error` | Sandbox initialization or execution |
-| `openkraken_policy_violation` | Content policy violation detected |
-| `openkraken_checkpointer_error` | State persistence failed |
-
-#### 4.1.4 Tool Definitions (Open Responses Format)
-
-OpenKraken exposes its capabilities as Open Responses tools:
-
-```yaml
-components:
-  schemas:
-    OpenKrakenTool:
-      type: object
-      properties:
-        name:
-          type: string
-          description: Tool identifier
-        description:
-          type: string
-          description: What the tool does
-        type:
-          type: string
-          enum: [function]
-        function:
-          type: object
-          properties:
-            name:
-              type: string
-            description:
-              type: string
-            parameters:
-              type: object
-              description: JSON Schema for arguments
-              properties:
-                type:
-                  type: string
-                  enum: [object]
-                properties:
-                  type: object
-                  additionalProperties: true
-                required:
-                  type: array
-                  items:
-                    type: string
-                additionalProperties:
-                  type: boolean
-            strict:
-              type: boolean
-              default: true
-```
-
-**OpenKraken Built-in Tools:**
-```yaml
-tools:
-  - name: read_file
-    description: Read contents of a file in the sandbox work directory.
-    type: function
-    function:
-      name: read_file
-      description: Read file contents
-      parameters:
-        type: object
-        properties:
-          path:
-            type: string
-            description: Absolute path within sandbox (e.g., /sandbox/work/file.txt)
-        required: [path]
-
-  - name: write_file
-    description: Write content to a file in the sandbox work directory.
-    type: function
-    function:
-      name: write_file
-      parameters:
-        type: object
-        properties:
-          path:
-            type: string
-            description: Absolute path within sandbox
+      responses:
+        "200":
+          description: Response resource or semantic event stream
           content:
-            type: string
-            description: File content to write
-        required: [path, content]
-
-  - name: list_directory
-    description: List contents of a directory in the sandbox.
-    type: function
-    function:
-      name: list_directory
-      parameters:
-        type: object
-        properties:
-          path:
-            type: string
-            description: Directory path
-
-  - name: execute_terminal
-    description: Execute a terminal command in the sandbox.
-    type: function
-    function:
-      name: execute_terminal
-      parameters:
-        type: object
-        properties:
-          command:
-            type: string
-            description: Command to execute
-          timeout:
-            type: integer
-            description: Timeout in seconds (default: 30)
-        required: [command]
-
-  - name: browse_url
-    description: Browse a URL and return rendered content.
-    type: function
-    function:
-      name: browse_url
-      parameters:
-        type: object
-        properties:
-          url:
-            type: string
-            description: URL to browse
-          timeout:
-            type: integer
-            description: Request timeout in seconds
-
-  - name: search_web
-    description: Search the web for information.
-    type: function
-    function:
-      name: search_web
-      parameters:
-        type: object
-        properties:
-          query:
-            type: string
-          num_results:
-            type: integer
-            default: 5
+            application/json:
+              schema:
+                type: object
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  Semantic SSE stream. Canonical lifecycle includes:
+                  - response.created
+                  - response.output_item.added
+                  - response.content_part.added
+                  - response.content_part.done
+                  - response.output_item.done
+                  - response.completed
+                  - [DONE]
 ```
 
-### 4.2 Input Adapters
+**Tool invocation contract:**
+- Function tool calls are surfaced through standard tool declarations and `tool_choice` semantics.
+- Tool results return through the same response lifecycle rather than a proprietary side channel.
+- OpenKraken-specific tool metadata or event semantics SHALL use prefixed extension names rather than mutating standard item meaning.
 
-OpenKraken separates input sources from the API layer. Telegram, future web interfaces, and other inputs are adapters that convert platform-specific protocols to Open Responses input items.
+**Adapter ownership note:**
+- The Open Responses adapter may live as a separate repository or package from this repo.
+- OpenKraken still owns the integration contract, policy mediation, approval semantics, and mapping from response identifiers to resumable runtime state.
 
-#### 4.2.1 Telegram Adapter
-
-**Integration:** Input adapter that converts Telegram Bot API updates to Open Responses input items.
-
-**Flow:**
-1. Telegram sends webhook POST to `/webhook/telegram`
-2. Adapter extracts message content and metadata
-3. Adapter constructs Open Responses `input` array:
-   ```typescript
-   interface TelegramInputAdapter {
-     convert(update: TelegramUpdate): InputItem[] {
-       return [
-         {
-           type: "message",
-           role: "user",
-           content: update.message.text
-         },
-         {
-           type: "message",
-           role: "system",
-           content: `Telegram metadata: chat_id=${update.message.chat.id}, from=${update.message.from.username}`
-         }
-       ];
-     }
-   }
-   ```
-4. Adapter calls `POST /v1/responses` with constructed input
-5. Response events are streamed back to Telegram as messages
-
-**Endpoint:** `POST /webhook/telegram`  
-**Authentication:** Shared secret token validation using Telegram's `X-Telegram-Bot-Api-Secret-Token` header and grammY's `secretToken` webhook option. This is header comparison, not HMAC request signing.
+### 4.2 Runtime Control API
+- **Style:** HTTP API
+- **Authentication / Authorization:** Loopback-bound runtime API. CLI uses bearer tokens. Browser flows may use bearer tokens or an HttpOnly session cookie. All mutating endpoints require authenticated Owner identity. Approval and skill-review endpoints additionally require explicit confirmation semantics in request payloads.
+- **Compatibility Strategy:** `/v1` is the canonical stable namespace. Additive fields and endpoints are allowed within `/v1`. Field removals, enum narrowing, authentication changes, or semantic changes to approval, scheduling, or chat execution require `/v2` plus migration guidance. Streaming event names are part of the compatibility contract and may only be extended additively within a version.
+- **Error model:** RFC 9457 Problem Details using `application/problem+json`
 
 ```yaml
+openapi: 3.1.0
+info:
+  title: OpenKraken Runtime Control API
+  version: 1.0.0
+  summary: Canonical local control surface for CLI and Web UI clients
+servers:
+  - url: http://127.0.0.1:3000/v1
+security:
+  - bearerAuth: []
+  - sessionCookie: []
 paths:
-  /webhook/telegram:
+  /health:
+    get:
+      summary: Runtime liveness check
+      security: []
+      responses:
+        "200":
+          description: Runtime is alive
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+  /status:
+    get:
+      summary: Runtime readiness and dependency status
+      responses:
+        "200":
+          description: Full runtime status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+        default:
+          $ref: "#/components/responses/Problem"
+  /auth/login:
     post:
-      operationId: telegramWebhook
-      summary: Telegram Bot API webhook (Input Adapter)
-      security:
-        - apiKey: []
+      summary: Issue an Owner session
+      security: []
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              description: Telegram Bot API Update object
+              $ref: "#/components/schemas/AuthLoginRequest"
       responses:
-        '200':
-          description: Update processed (response streamed separately)
-        '401':
-          description: Missing or invalid secret token
-        '400':
-          description: Invalid update format
-        '500':
-          description: Processing error
+        "200":
+          description: Session issued
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthSessionResponse"
+        default:
+          $ref: "#/components/responses/Problem"
+  /auth/session:
+    get:
+      summary: Inspect the current session
+      responses:
+        "200":
+          description: Session state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthSessionResponse"
+        default:
+          $ref: "#/components/responses/Problem"
+    delete:
+      summary: Revoke the current session
+      responses:
+        "204":
+          description: Session revoked
+        default:
+          $ref: "#/components/responses/Problem"
+  /chat:
+    post:
+      summary: Execute a synchronous chat turn
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatRequest"
+      responses:
+        "200":
+          description: Completed turn result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatResponse"
+        default:
+          $ref: "#/components/responses/Problem"
+  /chat/stream:
+    post:
+      summary: Execute a streaming chat turn
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatRequest"
+      responses:
+        "200":
+          description: Event stream of agent progress
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  SSE events named:
+                  - message.delta
+                  - tool.started
+                  - tool.finished
+                  - approval.requested
+                  - message.final
+                  - error
+        default:
+          $ref: "#/components/responses/Problem"
+  /config:
+    get:
+      summary: List active configuration documents
+      responses:
+        "200":
+          description: Configuration documents
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ConfigDocument"
+        default:
+          $ref: "#/components/responses/Problem"
+  /config/{documentId}:
+    put:
+      summary: Replace an active configuration document
+      parameters:
+        - $ref: "#/components/parameters/DocumentId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConfigDocumentWrite"
+      responses:
+        "200":
+          description: Updated configuration document
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigDocument"
+        default:
+          $ref: "#/components/responses/Problem"
+  /credentials:
+    get:
+      summary: List configured credential references
+      responses:
+        "200":
+          description: Credential descriptors
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CredentialDescriptor"
+        default:
+          $ref: "#/components/responses/Problem"
+  /approvals:
+    get:
+      summary: List pending and recent approvals
+      responses:
+        "200":
+          description: Approval queue
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Approval"
+        default:
+          $ref: "#/components/responses/Problem"
+  /approvals/{approvalId}/decision:
+    post:
+      summary: Approve or reject a pending action
+      parameters:
+        - $ref: "#/components/parameters/ApprovalId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApprovalDecisionRequest"
+      responses:
+        "200":
+          description: Updated approval state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Approval"
+        default:
+          $ref: "#/components/responses/Problem"
+  /schedules:
+    get:
+      summary: List configured schedules
+      responses:
+        "200":
+          description: Schedule list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Schedule"
+        default:
+          $ref: "#/components/responses/Problem"
+    post:
+      summary: Create or replace a schedule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScheduleWrite"
+      responses:
+        "200":
+          description: Persisted schedule
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Schedule"
+        default:
+          $ref: "#/components/responses/Problem"
+  /skills:
+    get:
+      summary: List active and staged skills
+      responses:
+        "200":
+          description: Skill inventory
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SkillSummary"
+        default:
+          $ref: "#/components/responses/Problem"
+  /logs:
+    get:
+      summary: Query recent audit events
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+        - in: query
+          name: eventType
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Audit event page
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AuditEventSummary"
+        default:
+          $ref: "#/components/responses/Problem"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: openkraken_session
+  parameters:
+    DocumentId:
+      in: path
+      name: documentId
+      required: true
+      schema:
+        type: string
+    ApprovalId:
+      in: path
+      name: approvalId
+      required: true
+      schema:
+        type: string
+  responses:
+    Problem:
+      description: Problem details response
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+  schemas:
+    Problem:
+      type: object
+      required: [type, title, status]
+      properties:
+        type:
+          type: string
+          format: uri-reference
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        instance:
+          type: string
+          format: uri-reference
+        code:
+          type: string
+        correlationId:
+          type: string
+    HealthResponse:
+      type: object
+      required: [status, version]
+      properties:
+        status:
+          type: string
+          const: ok
+        version:
+          type: string
+    StatusResponse:
+      type: object
+      required: [status, uptimeMs, dependencies]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded, failed]
+        uptimeMs:
+          type: integer
+        dependencies:
+          type: object
+          additionalProperties:
+            type: string
+            enum: [ok, degraded, failed]
+    AuthLoginRequest:
+      type: object
+      required: [username, secret]
+      properties:
+        username:
+          type: string
+        secret:
+          type: string
+          format: password
+    AuthSessionResponse:
+      type: object
+      required: [authenticated]
+      properties:
+        authenticated:
+          type: boolean
+        token:
+          type: string
+        expiresAt:
+          type: string
+          format: date-time
+        subjectId:
+          type: string
+    ChatRequest:
+      type: object
+      required: [message]
+      properties:
+        sessionId:
+          type: string
+        message:
+          type: string
+        clientRequestId:
+          type: string
+        stream:
+          type: boolean
+          default: false
+    ChatResponse:
+      type: object
+      required: [sessionId, status]
+      properties:
+        sessionId:
+          type: string
+        status:
+          type: string
+          enum: [completed, approval_required, blocked, failed]
+        response:
+          type: string
+        approvalId:
+          type: string
+        auditId:
+          type: string
+    ConfigDocument:
+      type: object
+      required: [id, documentType, version, payload]
+      properties:
+        id:
+          type: string
+        documentType:
+          type: string
+        version:
+          type: integer
+        payload:
+          type: object
+          additionalProperties: true
+    ConfigDocumentWrite:
+      type: object
+      required: [documentType, payload]
+      properties:
+        documentType:
+          type: string
+        payload:
+          type: object
+          additionalProperties: true
+    CredentialDescriptor:
+      type: object
+      required: [id, serviceType, configured]
+      properties:
+        id:
+          type: string
+        serviceType:
+          type: string
+        configured:
+          type: boolean
+        backend:
+          type: string
+    Approval:
+      type: object
+      required: [id, status, proposedAction, requestedAt]
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum: [pending, approved, rejected, expired]
+        proposedAction:
+          type: string
+        requestedAt:
+          type: string
+          format: date-time
+        decidedAt:
+          type: string
+          format: date-time
+        context:
+          type: object
+          additionalProperties: true
+    ApprovalDecisionRequest:
+      type: object
+      required: [decision]
+      properties:
+        decision:
+          type: string
+          enum: [approve, reject]
+        reason:
+          type: string
+    Schedule:
+      type: object
+      required: [id, name, scheduleExpression, timezone, enabled]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        scheduleExpression:
+          type: string
+        timezone:
+          type: string
+        enabled:
+          type: boolean
+        nextRunAt:
+          type: string
+          format: date-time
+    ScheduleWrite:
+      type: object
+      required: [name, scheduleExpression, timezone, payload]
+      properties:
+        name:
+          type: string
+        scheduleExpression:
+          type: string
+        timezone:
+          type: string
+        payload:
+          type: object
+          additionalProperties: true
+        enabled:
+          type: boolean
+          default: true
+    SkillSummary:
+      type: object
+      required: [id, name, version, state]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        version:
+          type: string
+        state:
+          type: string
+          enum: [staged, active, disabled]
+        riskLevel:
+          type: string
+    AuditEventSummary:
+      type: object
+      required: [id, eventType, timestamp]
+      properties:
+        id:
+          type: string
+        eventType:
+          type: string
+        actor:
+          type: string
+        target:
+          type: string
+        result:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
 ```
 
-#### 4.2.2 Future Input Adapters
+**Input adapter contract:**
+- Telegram is the primary non-local owner adapter and SHALL translate channel payloads into the runtime's canonical interaction shape.
+- MCP-mediated channels remain follow-on scope and SHALL map into the same runtime interaction path when they arrive.
+- The Open Responses adapter is standards-facing rather than owner-primary, but it still terminates in the same runtime orchestration boundary.
 
-OpenKraken's architecture supports additional input adapters:
+### 4.3 CLI Surface
+- **Style:** CLI
+- **Authentication / Authorization:** CLI stores an opaque bearer token in an owner-readable file under the OpenKraken home. Token file mode SHALL be `0600` where supported.
+- **Compatibility Strategy:** Command names and exit codes are stable within a minor line. New flags may be added additively. Renames require deprecation warnings for one minor release before removal.
+- **Error model:** Human-readable stderr plus machine-stable exit codes
 
-- **Web UI Adapter:** Browser-based chat interface → Open Responses input
-- **MCP Adapter:** MCP protocol → Open Responses input (planned Phase 2)
-- **CLI Adapter:** Terminal input → Open Responses input
-- **Scheduling Adapter:** Cron triggers → Open Responses input
+```text
+openkraken
+├── auth
+│   ├── login [--username <value>]
+│   ├── logout
+│   └── whoami
+├── chat [--session <id>] [--stream] <message>
+├── status
+├── config
+│   ├── list
+│   ├── get <document>
+│   └── set <document> --file <path>
+├── credentials
+│   ├── list
+│   ├── set <service>
+│   └── delete <service>
+├── approvals
+│   ├── list
+│   └── decide <approval-id> --approve|--reject [--reason <text>]
+├── schedules
+│   ├── list
+│   ├── add --name <name> --expr <schedule> --tz <timezone> --file <payload>
+│   └── remove <schedule-id>
+├── skills
+│   ├── list
+│   ├── add <source>
+│   ├── update <skill-id>
+│   └── remove <skill-id>
+└── logs
+    ├── list [--limit <n>] [--event-type <type>]
+    └── tail
 
-All adapters follow the same pattern: convert platform input → call `POST /v1/responses` → stream events → convert output to platform format.
+Exit codes:
+0  success
+2  usage error
+3  authentication failure
+4  policy denial
+5  dependency unavailable
+6  unexpected runtime failure
+```
 
-### 4.3 Health and Observability Endpoints
+### 4.4 Operational Endpoints
+- **Style:** HTTP API
+- **Authentication / Authorization:** Loopback-bound operational endpoints. `/health`, `/ready`, and `/version` MAY be unauthenticated on loopback. `/metrics` MAY be exposed for local scraping only when explicitly enabled by configuration; otherwise it remains owner-authenticated.
+- **Compatibility Strategy:** Endpoint names are stable within `/v1` once published. Dependency keys in readiness payloads may be extended additively. Metrics names follow exporter conventions and may grow additively but shall not silently repurpose an existing metric.
+- **Error model:** `application/problem+json` for JSON endpoints; plain-text exporter output for `/metrics`
 
 ```yaml
 paths:
-  /health:
-    get:
-      operationId: getHealth
-      summary: Liveness probe
-      description: Returns 200 OK if process is running
-      responses:
-        '200':
-          description: Process is healthy
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                    enum: [healthy]
-                  timestamp:
-                    type: string
-                    format: date-time
-                required: [status, timestamp]
-        '503':
-          description: Process not running or crashed
-
   /ready:
     get:
-      operationId: getReadiness
-      summary: Readiness probe
-      description: Returns 200 only when all dependencies are healthy
+      summary: Runtime readiness probe
+      security: []
       responses:
-        '200':
-          description: All dependencies available
+        "200":
+          description: Core dependencies are ready for real work
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                    enum: [ready, not_ready]
-                  dependencies:
-                    type: object
-                    properties:
-                      database:
-                        type: string
-                        enum: [connected, disconnected]
-                      sandbox:
-                        type: string
-                        enum: [available, unavailable]
-                      mcpServers:
-                        type: string
-                        enum: [connected, disconnected, not_configured]
-                      egressGateway:
-                        type: string
-                        enum: [connected, disconnected]
-                    required: [database, sandbox, mcpServers, egressGateway]
-                  timestamp:
-                    type: string
-                    format: date-time
-                required: [status, dependencies, timestamp]
-        '503':
-          description: Dependencies not ready
-
+                $ref: "#/components/schemas/ReadinessResponse"
+        "503":
+          description: One or more required dependencies are unavailable
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
   /metrics:
     get:
-      operationId: getMetrics
-      summary: Prometheus metrics endpoint
-      description: Returns Prometheus-compatible metrics
+      summary: Prometheus-compatible metrics surface
       responses:
-        '200':
+        "200":
           description: Metrics exported
           content:
             text/plain:
               schema:
                 type: string
                 description: Prometheus exposition format
-
   /version:
     get:
-      operationId: getVersion
-      summary: Version information
-      description: Returns version for debugging
+      summary: Build and version information
+      security: []
       responses:
-        '200':
-          description: Version info available
+        "200":
+          description: Runtime build metadata
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  version:
-                    type: string
-                    description: Semantic version
-                  commit:
-                    type: string
-                    description: Git commit hash
-                  buildTimestamp:
-                    type: string
-                    format: date-time
-                  runtime:
-                    type: string
-                    enum: [bun]
-                  openresponses_version:
-                    type: string
-                    description: Open Responses API version
+                $ref: "#/components/schemas/VersionResponse"
+components:
+  schemas:
+    ReadinessResponse:
+      type: object
+      required: [status, dependencies]
+      properties:
+        status:
+          type: string
+          enum: [ready, not_ready, degraded]
+        dependencies:
+          type: object
+          required: [database, credentials, sandbox, egressGateway]
+          properties:
+            database:
+              type: string
+              enum: [ok, degraded, failed]
+            credentials:
+              type: string
+              enum: [ok, degraded, failed]
+            sandbox:
+              type: string
+              enum: [ok, degraded, failed]
+            egressGateway:
+              type: string
+              enum: [ok, degraded, failed]
+            modelProvider:
+              type: string
+              enum: [ok, degraded, failed, not_configured]
+    VersionResponse:
+      type: object
+      required: [version, runtime]
+      properties:
+        version:
+          type: string
+        commit:
+          type: string
+        buildTimestamp:
+          type: string
+          format: date-time
+        runtime:
+          type: string
+          enum: [bun]
+        gatewayVersion:
+          type: string
 ```
 
----
+### 4.5 Owner Authentication Lifecycle
+- **Style:** Hybrid HTTP session contract plus local CLI token cache
+- **Authentication / Authorization:** The runtime is the authority for owner authentication. CLI flows obtain a bearer token, persist only the issued session token locally, and present that token on subsequent API calls. Browser flows exchange the same owner secret for an HttpOnly session cookie backed by runtime session state.
+- **Compatibility Strategy:** The canonical browser cookie name within `/v1` is `openkraken_session`. The CLI cache file contract is stable within a major version and may only grow fields additively. Expired or malformed cached sessions SHALL be ignored rather than partially trusted.
+- **Error model:** `401` for missing or invalid credentials, `403` for authenticated but disallowed actions, and local CLI cache miss/expiry represented as an unauthenticated state rather than as a special transport error.
+
+```yaml
+cliTokenCache:
+  type: object
+  required: [token, expiresAt]
+  properties:
+    token:
+      type: string
+      description: Opaque bearer token issued by the runtime
+    expiresAt:
+      type: integer
+      description: Unix epoch milliseconds after which the cache is invalid
+    userId:
+      type: string
+      description: Optional owner identifier echoed back by the runtime
+  x-storage:
+    path: "$OPENKRAKEN_HOME/.openkraken-token"
+    permissions: "0600 where supported"
+    invalidation:
+      - logout
+      - expiry
+      - runtime-side revocation
+```
+
+Brownfield note: the current CLI already implements the local JSON cache shape in [auth.ts](/home/oscar/GitHub/OpenKraken/apps/cli/src/lib/auth.ts#L10). The current Web UI route in [auth/+server.ts](/home/oscar/GitHub/OpenKraken/apps/web-ui/src/routes/api/auth/+server.ts#L13) still uses a placeholder `session` cookie and mock token issuance, so it MUST NOT be treated as the final canonical auth implementation.
+
+**Session issuance and rotation contract:**
+1. `openkraken init` provisions one owner authentication secret and stores it in the system credential class.
+2. CLI login exchanges that owner secret for an opaque bearer token with bounded expiry and stores only the issued session material in the local token cache.
+3. Browser login exchanges the same owner secret for an HttpOnly session cookie whose server-side state lives in `auth_sessions`.
+4. Rotation of the owner authentication secret invalidates all outstanding browser sessions and CLI session tokens.
+5. Runtime validation uses constant-time comparison or equivalent non-leaky secret validation for root authentication material.
+6. The canonical owner token prefix remains `ok_` for shell/profile identification, and root token rotation invalidates all derived runtime sessions immediately.
 
 ## 5. Implementation Guidelines
-
-### 5.1 Monorepo Structure (devenv-managed)
-
-OpenKraken uses a **devenv-managed monorepo** to coordinate the TypeScript/Bun Orchestrator and Go Egress Gateway. This structure leverages devenv's multi-language support and process orchestration for reproducible development environments.
-
-#### Monorepo Layout
-
-```
-openkraken/
-├── README.md
-├── AGENTS.md
-├── docs/PRD.md
-├── docs/Architecture.md
-├── docs/TechSpec.md                    # This document
-├── devenv.nix                     # Root devenv configuration
-├── devenv.yaml                    # devenv inputs and imports
-├── .envrc                         # direnv auto-activation
-├── flake.nix                      # Nix flake for CI/builds
-├── flake.lock                     # Pinned flake dependencies
-│
-├── packages/                      # Monorepo packages
-│   ├── shared/                    # Shared configurations
-│   │   └── devenv.nix             # Common devenv settings
-│   │
-│   ├── orchestrator/              # Bun/TypeScript Orchestrator
-│   │   ├── devenv.yaml            # Imports /packages/shared
-│   │   ├── devenv.nix             # TypeScript/Bun environment
-│   │   ├── package.json           # Bun dependencies
-│   │   ├── tsconfig.json          # TypeScript config
-│   │   ├── src/
-│   │   │   ├── main.ts            # Application entry
-│   │   │   ├── config/
-│   │   │   │   └── constitution/  # Constitutional source documents
-│   │   │   │       ├── SOUL.md
-│   │   │   │       ├── SAFETY.md
-│   │   │   │       ├── CAPABILITIES.md
-│   │   │   │       └── DIRECTIVES.md
-│   │   │   ├── api/
-│   │   │   ├── agent/
-│   │   │   ├── middleware/
-│   │   │   ├── callbacks/
-│   │   │   ├── sandbox/
-│   │   │   ├── credentials/
-│   │   │   ├── channels/
-│   │   │   ├── database/
-│   │   │   └── observability/
-│   │   └── test/                  # Orchestrator tests
-│   │
-│   └── egress-gateway/            # Go Egress Gateway
-│       ├── devenv.yaml            # Imports /packages/shared
-│       ├── devenv.nix             # Go environment
-│       ├── go.mod                 # Go module
-│       ├── go.sum                 # Go dependencies
-│       ├── src/
-│       │   ├── main.go
-│       │   ├── proxy/
-│       │   ├── logging/
-│       │   ├── api/
-│       │   └── platform/
-│       └── test/                  # Gateway tests
-│
-├── apps/                          # Deployable applications
-│   ├── cli/                       # CLI tool (Bun)
-│   │   ├── devenv.nix
-│   │   ├── src/
-│   │   └── package.json
-│   │
-│   └── web-ui/                    # SvelteKit Web UI
-│       ├── devenv.nix
-│       ├── src/
+### 5.1 Project Structure
+```text
+.
+├── apps
+│   ├── cli
+│   │   ├── package.json
+│   │   └── src
+│   │       ├── commands
+│   │       ├── lib
+│   │       └── main.ts
+│   └── web-ui
 │       ├── package.json
-│       └── svelte.config.js
-│
-├── services/                      # Background services (devenv processes)
-│   └── local-development.nix      # Procfile-like process definitions
-│
-├── skills/                        # Bundled skills
-│   ├── system/                    # System-provided skills
-│   └── owner/                     # Owner-uploaded skills (gitignored)
-│
-└── storage/                       # Runtime data (gitignored)
-    ├── data/
-    ├── cache/
-    ├── logs/
-    └── sandbox/
+│       └── src
+│           ├── lib
+│           │   ├── api
+│           │   ├── components
+│           │   └── stores
+│           └── routes
+├── docs
+│   ├── PRD.md
+│   ├── Architecture.md
+│   ├── TechSpec.md
+│   └── Tasks.md
+├── nix
+│   ├── schema
+│   │   ├── config.cue
+│   │   └── example.config.yaml
+│   ├── package.nix
+│   ├── gateway-package.nix
+│   └── shell.nix
+├── packages
+│   ├── egress-gateway
+│   │   ├── go.mod
+│   │   └── src
+│   │       └── main.go
+│   └── orchestrator
+│       ├── contracts
+│       │   └── runtime.openapi.yaml
+│       ├── migrations
+│       ├── package.json
+│       ├── scripts
+│       └── src
+│           ├── agent
+│           ├── api
+│           ├── auth
+│           ├── config
+│           ├── credentials
+│           ├── middleware
+│           ├── platform
+│           ├── sandbox
+│           ├── scheduler
+│           ├── services
+│           ├── skills
+│           ├── state
+│           ├── telemetry
+│           ├── tools
+│           └── main.ts
+├── services
+│   ├── local-development.nix
+│   └── process-compose.yml
+├── flake.nix
+└── Justfile
 ```
 
-#### devenv Configuration
-
-**Root devenv.yaml** (with version pinning):
-```yaml
-inputs:
-  nixpkgs:
-    url: github:NixOS/nixpkgs/nixos-25.11
-    # Pin to commit for maximum reproducibility:
-    # url: github:NixOS/nixpkgs/abc123def456...  # Specific SHA
-  devenv:
-    url: github:cachix/devenv/latest
-    inputs.nixpkgs.follows = "nixpkgs"
-imports:
-  - /packages/shared
-```
-
-**Alternative: Pin devenv to specific version:**
-```yaml
-inputs:
-  nixpkgs:
-    url: github:NixOS/nixpkgs/nixos-25.11
-  devenv:
-    url: github:cachix/devenv/v1.5.0  # Specific version
-imports:
-  - /packages/shared
-```
-
-**Shared Configuration** (`packages/shared/devenv.nix`):
-```nix
-{ pkgs, lib, config, ... }:
-{
-  # Common packages for all packages
-  packages = with pkgs; [
-    git
-    jq
-    just          # Command runner
-    parallel      # Parallel execution
-  ];
-
-  # Pre-commit hooks
-  git-hooks.hooks = {
-    nixpkgs-fmt.enable = true;
-    typos.enable = true;
-  };
-
-  # Common environment variables
-  env = {
-    OPENKRAKEN_ENV = "development";
-    OPENKRAKEN_HOME = "./storage";
-  };
-
-  # Common scripts
-  scripts = {
-    build.exec = "just build";
-    test.exec = "just test";
-    lint.exec = "just lint";
-  };
-}
-```
-
-**Orchestrator devenv.nix** (`packages/orchestrator/devenv.nix`):
-```nix
-{ pkgs, lib, config, ... }:
-{
-  # Import shared config
-  imports = [ ../shared/devenv.nix ];
-
-  # Bun runtime
-  languages.javascript = {
-    enable = true;
-    package = pkgs.bun;  # Bun 1.3.8
-  };
-
-  # TypeScript support
-  languages.typescript.enable = true;
-
-  # SQLite for development
-  services.sqlite.enable = true;
-
-  # Environment-specific variables
-  env = {
-    ORCHESTRATOR_PORT = "3000";
-    DATABASE_PATH = "./storage/data/openkraken.db";
-  };
-
-  # Development scripts
-  scripts = {
-    dev.exec = "bun run src/main.ts";
-    test.exec = "bun test";
-    migrate.exec = "bun run migrate";
-  };
-
-  # Processes (run with `devenv up`)
-  processes.orchestrator = {
-    exec = "bun run src/main.ts";
-    cwd = "packages/orchestrator";
-  };
-}
-```
-
-**Egress Gateway devenv.nix** (`packages/egress-gateway/devenv.nix`):
-```nix
-{ pkgs, lib, config, ... }:
-{
-  imports = [ ../shared/devenv.nix ];
-
-  # Go toolchain
-  languages.go = {
-    enable = true;
-    package = pkgs.go_1_25;  # Go 1.25.6
-  };
-
-  # Environment
-  env = {
-    EGRESS_GATEWAY_PORT = "3001";
-    EGRESS_SOCKET_PATH = "/tmp/openkraken-egress.sock";
-  };
-
-  # Scripts
-  scripts = {
-    build.exec = "go build -o bin/egress-gateway ./src";
-    test.exec = "go test ./...";
-    run.exec = "go run ./src";
-  };
-
-  # Processes
-  processes.egress-gateway = {
-    exec = "go run ./src";
-    cwd = "packages/egress-gateway";
-  };
-}
-```
-
-**Root Process Orchestration** (`services/local-development.nix`):
-```nix
-{ pkgs, lib, config, ... }:
-{
-  # Import both package processes
-  imports = [
-    ../packages/orchestrator/devenv.nix
-    ../packages/egress-gateway/devenv.nix
-  ];
-
-  # Additional development services
-  services.redis.enable = true;  # For caching (optional)
-
-  # NOTE: devenv processes run concurrently. Use tasks with `before`
-  # or scripts with wait_for_port to coordinate startup order.
-
-  # Pattern 1: Create task that waits for gateway before starting orchestrator
-  tasks = {
-    "wait:gateway" = {
-      exec = "wait_for_port 3001";
-      before = [ "devenv:processes:egress-gateway" ];
-    };
-
-    "start:orchestrator" = {
-      exec = "bun run src/main.ts";
-      cwd = "${config.git.root}/packages/orchestrator";
-    };
-  };
-
-  # Pattern 2: Simple dev script that starts everything
-  scripts = {
-    dev-server.exec = ''
-      echo "Starting development environment..."
-      devenv processes run egress-gateway &
-      sleep 2
-      wait_for_port 3001 || exit 1
-      echo "Gateway ready, starting orchestrator..."
-      devenv processes run orchestrator
-    '';
-
-    dev.exec = "dev-server";
-  };
-}
-```
-
-#### Scripts vs Tasks (devenv Distinction)
-
-**Scripts** (short-running commands, available as shell commands):
-```nix
-scripts = {
-  dev.exec = "bun run src/main.ts";
-  test.exec = "bun test";
-  migrate.exec = "bun run migrate";
-  lint.exec = "biome lint src/";
-};
-```
-Usage: `dev`, `test`, `migrate`, `lint` (no prefix, no `devenv` prefix)
-
-**Tasks** (workflow automation with dependencies, caching, modification detection):
-```nix
-tasks = {
-  "app:build" = {
-    exec = "bun run build";
-    execIfModified = [ "src/**/*.ts" "package.json" ];  # Only builds if files changed
-    description = "Build the application";
-  };
-
-  "db:migrate" = {
-    exec = "bun run db:migrate";
-    before = [ "devenv:enterTest" ];  # Runs enterTest before migration
-  };
-
-  "db:setup" = {
-    exec = "bun run db:migrate";
-    before = [ "devenv:processes:egress-gateway" ];  # Waits for gateway
-  };
-
-  "test:integration" = {
-    exec = "bun test --testPathPattern='integration'";
-    before = [ "devenv:enterTest" ];  # Runs enterTest hook first
-  };
-};
-```
-Usage: `devenv tasks run app:build`, `devenv tasks run test:integration`
-
-| Feature | Scripts | Tasks |
-|---------|---------|-------|
-| Command syntax | `script-name` | `devenv tasks run task-name` |
-| Caching | None | `execIfModified` (file-based) |
-| Dependencies | None | `before` / `after` keywords |
-| Test integration | Manual | `devenv:enterTest` hook |
-| Conditional execution | None | `status` field (skip if ready) |
-| Input/output chaining | None | Full JSON I/O support |
-
-#### Test Environment Pattern with enterTest
-
-**Orchestrator devenv.nix** (with enterTest - top-level option):
-```nix
-{ pkgs, lib, config, ... }:
-{
-  imports = [ ../shared/devenv.nix ];
-
-  languages.javascript = {
-    enable = true;
-    package = pkgs.bun;
-  };
-  languages.typescript.enable = true;
-
-  # SQLite for development
-  packages = [ pkgs.sqlite ];
-
-  # Environment
-  env = {
-    ORCHESTRATOR_PORT = "3000";
-    DATABASE_PATH = "./storage/data/openkraken.db";
-  };
-
-  # Test environment setup (runs before `devenv test` and before tasks with before = ["devenv:enterTest"])
-  enterTest = ''
-    echo "Setting up test environment..."
-
-    # Create storage directory
-    mkdir -p "$DEVENV_STATE/data"
-
-    # Initialize test database
-    if [ ! -f "$DATABASE_PATH" ]; then
-      echo "Creating test database..."
-      bun run db:init
-    fi
-
-    # Seed test data
-    bun run db:seed
-
-    echo "Test environment ready"
-  '';
-
-  # Test task (requires enterTest to run first)
-  tasks = {
-    "test:unit" = {
-      exec = "bun test --testPathPattern='unit'";
-      before = [ "devenv:enterTest" ];
-    };
-
-    "test:integration" = {
-      exec = "bun test --testPathPattern='integration'";
-      before = [ "devenv:enterTest" ];
-    };
-  };
-
-  # Scripts
-  scripts = {
-    test.exec = "bun test";
-  };
-}
-```
-
-**Usage:**
-```bash
-# Run all tests (enterTest executes automatically)
-devenv test
-
-# Run specific task (enterTest executes first due to before clause)
-devenv tasks run test:integration
-
-# Run specific script manually (enterTest does NOT run)
-test
-```
-
-#### Direnv Auto-Activation
-
-**.envrc** (auto-activates on cd):
-```bash
-use devenv
-watch_file devenv.nix devenv.yaml devenv.lock
-```
-
-**Activation workflow:**
-```bash
-# First time: approve direnv
-cd openkraken
-# Output: direnv: error /path/to/.envrc is blocked. Run `direnv allow` to approve its content.
-direnv allow
-# Output: direnv: loading /path/to/.envrc
-# Output: devenv: Welcome to OpenKraken development environment
-
-# Subsequent times: automatic
-cd openkraken  # Shell auto-activates instantly
-
-# Verify activation (shows devenv.nix contents)
-direnv reload
-```
-
-**Benefit:** Zero-thought environment switching - no manual `devenv shell` needed.
-
-#### Development Workflow
-
-**Enter development environment:**
-```bash
-# Auto-activate with direnv
-cd openkraken
-
-# Or manually enter
-devenv shell
-```
-
-**Start all services:**
-```bash
-devenv up
-# Starts: egress-gateway → orchestrator
-```
-
-**Work on specific package:**
-```bash
-cd packages/orchestrator
-devenv shell
-bun test
-```
-
-**Build for production:**
-```bash
-just build
-# Builds both TypeScript and Go binaries
-```
-
-#### Cross-Language Coordination
-
-**Justfile** (task runner at root):
-```just
-# Build all packages
-build:
-    cd packages/egress-gateway && go build -o ../../bin/egress-gateway ./src
-    cd packages/orchestrator && bun build --compile --outfile ../../bin/openkraken ./src/main.ts
-
-# Run all tests
-test:
-    cd packages/egress-gateway && go test ./...
-    cd packages/orchestrator && bun test
-
-# Development mode (uses devenv)
-dev:
-    devenv up
-```
-
-**Key Benefits:**
-1. **Language Isolation**: Each package has its own toolchain (Bun vs Go)
-2. **Shared Configuration**: Common tools (git, jq, just) defined once in `packages/shared`
-3. **Process Orchestration**: `devenv up` starts both services with proper dependencies
-4. **Reproducible**: All dependencies pinned via `devenv.lock` and `flake.lock`
-5. **CI-Ready**: Same environment locally and in CI via Nix
-
-#### devenv Maintenance
-
-**Updating dependencies:**
-```bash
-devenv update            # Update all pinned inputs (nixpkgs, devenv)
-devenv search ncdu       # Search for new packages
-```
-
-**Development debugging:**
-```bash
-devenv info             # Show environment configuration
-devenv test --no-cached # Force rebuild of tests
-```
-
-**Garbage collection:**
-```bash
-devenv gc               # Garbage collect old environments
-nix store gc --delete-old   # Clean up Nix store (more aggressive)
-```
-
-**Lockfile management:**
-```bash
-# Check if lockfile is up to date
-devenv update --dry-run
-git diff --quiet devenv.lock && echo "Lockfile is current" || echo "Lockfile needs update"
-
-# Commit both lockfiles
-git add devenv.lock flake.lock
-git commit -m "chore: update devenv and flake lockfiles"
-```
-
-### 5.2 Clean Architecture Layer Definitions
-
-**Domain Layer** (`src/orchestrator/domain/`):
-Contains enterprise-wide business rules. This layer has no dependencies on other layers. Pure TypeScript interfaces and types defining the core concepts of the domain.
-
-**Application Layer** (`src/orchestrator/application/`):
-Contains use cases and application-specific business rules. Coordinates between domain entities and infrastructure. Defines service interfaces that infrastructure implements.
-
-**Infrastructure Layer** (`src/orchestrator/infrastructure/`):
-Contains implementations of application interfaces: database adapters, HTTP servers, external service clients. Depends on application layer interfaces, not concrete implementations.
-
-**Interface Layer** (`src/orchestrator/api/`, `src/orchestrator/channels/`):
-Contains HTTP handlers, webhook processors, and external protocol implementations. Depends on application layer to process requests.
-
-### 5.3 Coding Standards
-
-**TypeScript Configuration:**
-```json
-{
-  "compilerOptions": {
-    "strict": true,
-    "noImplicitAny": true,
-    "strictNullChecks": true,
-    "strictFunctionTypes": true,
-    "strictBindCallApply": true,
-    "strictPropertyInitialization": true,
-    "noImplicitThis": true,
-    "alwaysStrict": true,
-    "noUnusedLocals": false,
-    "noUnusedParameters": false,
-    "noImplicitReturns": true,
-    "noFallthroughCasesInSwitch": true,
-    "noUncheckedIndexedAccess": true,
-    "noPropertyAccessFromIndexSignature": false,
-    "esModuleInterop": true,
-    "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true,
-    "target": "ES2022",
-    "module": "ESNext",
-    "moduleResolution": "bundler"
-  }
-}
-```
-
-**Code Quality Tools:**
-- **Biome** with Ultracite preset for linting and formatting
-- Replaces ESLint and Prettier with single unified tool
-- Uses opt-in rule approach with full visibility into enabled rules
-- No console.log statements in production code (use structured logger)
-
-**Async/Await Patterns:**
-- All async functions must have try/catch blocks
-- Errors must be logged with context before propagation
-- Use `Promise.all()` for parallel independent operations
-- Use `Promise.allSettled()` when partial failures are acceptable
-- Timeouts required for all external service calls (configurable, default 30s)
-
-**Error Handling:**
-- Custom error hierarchy extending `Error` class
-- Domain errors: `DomainError` with error codes
-- Infrastructure errors: wrapped with context
-- Structured error responses with request IDs for correlation
-- No sensitive data in error messages (credentials, PII)
-
-**Logging Standards:**
-- Use structured JSON logging for production
-- Log levels: DEBUG, INFO, WARN, ERROR, SECURITY
-- All log entries include: timestamp, level, message, context, requestId
-- Sensitive fields must be scrubbed before logging
-- Performance metrics logged at INFO level for significant operations
-
-**Testing Requirements:**
-- Unit tests for all pure functions (100% coverage goal for domain layer)
-- Integration tests for database operations
-- E2E tests for critical user journeys (Telegram webhook → agent → response)
-- Test fixtures for middleware combinations
-- No integration tests in CI require external services (use mocks)
-
-### 5.4 Database Access Patterns
-
-**Bun Native SQLite API:**
-The Orchestrator uses Bun's native `bun:sqlite` module for all database operations. This module provides a synchronous, typesafe SQLite interface with full WAL mode support.
-
-**Application-Level Encryption (AES-256-GCM):**
-Sensitive fields in `messages` and `memories` tables are encrypted using AES-256-GCM before storage and decrypted after retrieval. SQLCipher is incompatible with Bun's embedded SQLite, so encryption is implemented at the application layer.
-
-```typescript
-import { createCipheriv, createDecipheriv, randomBytes, createHash } from "node:crypto";
-
-// Master key derived from OS-level vault
-const MASTER_KEY = await credentialVault.retrieve("memory-encryption-key");
-
-interface EncryptedPayload {
-  ciphertext: Buffer;
-  iv: Buffer;
-  tag: Buffer;
-}
-
-function encrypt(plaintext: string): EncryptedPayload {
-  const iv = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", MASTER_KEY, iv);
-  
-  let encrypted = cipher.update(plaintext, "utf8");
-  encrypted = Buffer.concat([encrypted, cipher.final()]);
-  const tag = cipher.getAuthTag();
-  
-  return {
-    ciphertext: encrypted,
-    iv,
-    tag,
-  };
-}
-
-function decrypt(payload: EncryptedPayload): string {
-  const decipher = createDecipheriv("aes-256-gcm", MASTER_KEY, payload.iv);
-  decipher.setAuthTag(payload.tag);
-  
-  let decrypted = decipher.update(payload.ciphertext);
-  decrypted = Buffer.concat([decrypted, decipher.final()]);
-  
-  return decrypted.toString("utf8");
-}
-
-// Usage in repository
-class EncryptedMemoryRepository implements MemoryRepository {
-  create(memory: Memory): Memory {
-    const encrypted = encrypt(memory.content);
-    this.db.run(
-      "INSERT INTO memories (id, content, metadata, created_at) VALUES (?, ?, ?, ?)",
-      [memory.id, JSON.stringify(encrypted), memory.metadata, Date.now()]
-    );
-    return memory;
-  }
-  
-  findById(id: string): Memory | null {
-    const row = this.db.query("SELECT * FROM memories WHERE id = ?").get(id);
-    if (!row) return null;
-    
-    const encrypted = JSON.parse(row.content);
-    return {
-      id: row.id,
-      content: decrypt(encrypted),
-      metadata: row.metadata,
-      created_at: row.created_at,
-    };
-  }
-}
-```
-
-```typescript
-import { Database, Statement, constants, SQLiteError } from "bun:sqlite";
-
-// Open database with WAL mode
-const db = new Database('/path/to/data.db');
-db.run("PRAGMA journal_mode = WAL");
-db.run("PRAGMA synchronous = NORMAL");
-
-// Prepared statements
-const stmt = db.prepare("SELECT * FROM messages WHERE thread_id = ?");
-const messages = stmt.all(threadId);
-
-// Transaction API
-const insertMany = db.transaction((items) => {
-  for (const item of items) insert.run(item);
-});
-insertMany([{ $name: "Alice" }, { $name: "Bob" }]);
-
-// Blob handling (for embeddings and checkpoints)
-const encoder = new TextEncoder();
-const blobData = encoder.encode(vectorData);
-db.run("INSERT INTO memories (vector) VALUES (?)", [blobData]);
-```
-
-**Supported Types:**
-| JavaScript | SQLite |
-|------------|--------|
-| `string` | TEXT |
-| `number` | INTEGER |
-| `boolean` | INTEGER (0/1) |
-| `Uint8Array` | BLOB |
-| `bigint` | INTEGER |
-| `null` | NULL |
-
-**Repository Pattern:**
-Each domain entity has a corresponding repository interface and implementation. Repositories abstract database operations behind domain-specific methods.
-
-```typescript
-// Example: Repository implementation with Bun SQLite
-interface MessageRepository {
-  create(message: Message): Message;
-  findByThreadId(threadId: string, limit?: number): Message[];
-  findById(id: string): Message | null;
-  countByThreadId(threadId: string): number;
-  deleteOlderThan(timestamp: number): number;
-}
-
-class SqliteMessageRepository implements MessageRepository {
-  private db: Database;
-  private insertStmt: Statement;
-  private selectByThreadStmt: Statement;
-  private selectByIdStmt: Statement;
-  private countStmt: Statement;
-  private deleteStmt: Statement;
-  
-  constructor(dbPath: string) {
-    this.db = new Database(dbPath);
-    this.db.run("PRAGMA journal_mode = WAL");
-    this.db.run("PRAGMA synchronous = NORMAL");
-    
-    this.insertStmt = this.db.prepare(`
-      INSERT INTO messages (id, thread_id, role, content_type, content, metadata, created_at, token_count)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    
-    this.selectByThreadStmt = this.db.prepare(`
-      SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at ASC LIMIT ?
-    `);
-    
-    this.selectByIdStmt = this.db.prepare(`SELECT * FROM messages WHERE id = ?`);
-    this.countStmt = this.db.prepare(`SELECT COUNT(*) FROM messages WHERE thread_id = ?`);
-    this.deleteStmt = this.db.prepare(`DELETE FROM messages WHERE created_at < ?`);
-  }
-  
-  create(message: Message): Message {
-    this.insertStmt.run(
-      message.id,
-      message.threadId,
-      message.role,
-      message.contentType,
-      message.content,
-      JSON.stringify(message.metadata),
-      message.createdAt,
-      message.tokenCount
-    );
-    return message;
-  }
-  
-  findByThreadId(threadId: string, limit: number = 100): Message[] {
-    return this.selectByThreadStmt.all(threadId, limit) as Message[];
-  }
-  
-  findById(id: string): Message | null {
-    return this.selectByIdStmt.get(id) as Message | null;
-  }
-  
-  countByThreadId(threadId: string): number {
-    return this.countStmt.get(threadId) as number;
-  }
-  
-  deleteOlderThan(timestamp: number): number {
-    const result = this.deleteStmt.run(timestamp);
-    return result.changes;
-  }
-}
-
-**Migration Strategy:**
-Migrations are SQL files applied sequentially using `db.run()`. Each migration idempotent (can run multiple times safely). Migrations forward-only (no down migrations). Schema documented alongside migration SQL.
-
-```typescript
-// Migration runner using Bun SQLite
-function runMigrations(db: Database, migrationsDir: string) {
-  const migrations = fs.readdirSync(migrationsDir)
-    .filter(f => f.endsWith('.sql'))
-    .sort();
-    
-  for (const file of migrations) {
-    const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
-    db.run(sql); // Throws on error, transaction-safe
-  }
-}
-```
-
-### 5.5 Middleware Composition Order
-
-Middleware executes in the order defined below. Later middleware operates on the outputs of earlier middleware. This order is intentional—foundational policy must execute before capabilities.
-
-#### 5.5.1 Complete Middleware List with Execution Order
-
-| Order | Tier | Middleware | Purpose | Input Contract | Output Contract |
-|-------|------|-----------|---------|----------------|-----------------|
-| 1 | **Policy** | Policy Middleware | Security boundary enforcement: package validation, rate limiting, content scanning (non-PII) | Raw user input | Validated input or rejection |
-| 2 | **Policy** | PII Middleware | Credential/PII detection and scrubbing via LangChain built-in piiMiddleware | Validated input | PII-scrubbed input or block |
-| 3 | **Capabilities** | Cron Middleware | Scheduled task detection | Proceed signal | Task context or proceed |
-| 4 | **Capabilities** | Web Search Middleware | Web capability injection | Proceed signal | web_search tools available |
-| 5 | **Capabilities** | Browser Middleware | Browser automation tools | Proceed signal | browser tools available |
-| 6 | **Capabilities** | Memory Middleware | Memory retrieval/injection via RMM (Reflective Memory Management) | Proceed signal | Context with memories |
-| 7 | **Capabilities** | MCP Adapter Middleware | MCP server access | Proceed signal | MCP tools available |
-| 8 | **Capabilities** | Skill Loader Middleware | Skill manifest injection, version tracking, auto-update within approved bounds | Proceed signal | Skill tools available, skill_version metadata |
-| 9 | **Capabilities** | Sub-Agent Middleware | Task delegation via createSubAgentMiddleware() pattern | Proceed signal | Sub-agent tools available |
-| 10 | **Operational** | Summarization Middleware | Context compression | Full context | Compressed context |
-| 11 | **Operational** | Human-in-the-Loop Middleware | Owner approval requests | Proceed signal | Approval or block |
-
-#### 5.5.2 Tier Organization
-
-**Tier 1: Foundational Policy**
-- Executes first on every request
-- **Policy Middleware**: Validates terminal package requests against allowlist, enforces rate limiting, performs content scanning (excluding PII which is handled by dedicated PII Middleware)
-- **PII Middleware**: LangChain's built-in `piiMiddleware` specifically handles credential/PII detection and scrubbing
-- Determines if request should proceed
-- No capability expansion—only validation and gating
-
-**Tier 2: Agent Capabilities**
-- Expands agent capabilities based on configuration
-- Injects tools and context
-- **Memory Middleware**: Uses RMM (Reflective Memory Management) for semantic memory operations
-- Order matters for context injection priority
-
-**Tier 3: Operational Concerns**
-- Handles cross-cutting operational needs
-- Context optimization (summarization)
-- Human-in-the-loop workflows
-
-#### Middleware Responsibility Matrix
-
-| Concern | Implementation | Layer |
-|---------|---------------|-------|
-| Package validation | Policy Middleware | Tier 1 |
-| Rate limiting | Policy Middleware | Tier 1 |
-| Content scanning (general) | Policy Middleware | Tier 1 |
-| PII/Credential detection | LangChain `piiMiddleware` | Tier 1 |
-| Semantic memory | RMM Memory Middleware | Tier 2 |
-| Observability | Langfuse CallbackHandler | Callback (parallel) |
-
-#### 5.5.3 Middleware Input/Output Contracts
-
-Each middleware must implement the following interface contract:
-
-```typescript
-interface Middleware {
-  // Input validation before processing
-  validateInput(input: unknown): boolean;
-  
-  // Transform or validate the input
-  process(input: unknown): Promise<MiddlewareOutput>;
-  
-  // Handle errors gracefully
-  handleError(error: Error): MiddlewareOutput;
-  
-  // Middleware health check
-  isHealthy(): boolean;
-}
-
-interface MiddlewareOutput {
-  status: 'proceed' | 'block' | 'error';
-  data?: unknown;
-  reason?: string;
-  metadata?: Record<string, unknown>;
-}
-```
-
-**Execution Guarantees:**
-- Each middleware receives output from previous middleware
-- Blocked requests bypass downstream middleware
-- Errors are caught and logged without cascading
-- Performance overhead tracked per middleware
-
-### 5.6 Callback Execution Order
-
-Callbacks execute in parallel across all middleware layers. Callbacks do not modify behavior—they observe and record. The callback system implements observability as described in docs/Architecture.md Section 5.2.
-
-#### 5.6.1 Complete Event Types List
-
-The callback system intercepts the following LangChain.js event types:
-
-| Event Type | Description | Payload Includes |
-|------------|-------------|------------------|
-| `on_llm_start` | LLM invocation initiated | model name, prompts, run_id |
-| `on_llm_end` | LLM invocation completed | model response, token usage, run_id |
-| `on_llm_error` | LLM invocation failed | error message, run_id |
-| `on_chain_start` | Chain execution began | chain name, inputs, run_id |
-| `on_chain_end` | Chain execution completed | chain outputs, run_id |
-| `on_chain_error` | Chain execution failed | error, run_id |
-| `on_tool_start` | Tool invocation began | tool name, input, run_id |
-| `on_tool_end` | Tool invocation completed | tool output, run_id |
-| `on_tool_error` | Tool invocation failed | error, run_id |
-| `on_agent_action` | Agent decision made | action, run_id |
-| `on_agent_finish` | Agent turn completed | final output, run_id |
-
-#### 5.6.2 Handler Execution Order
-
-Callbacks execute in the following order to ensure complete capture and proper data flow:
-
-1. **Logger Callback Handler** (First in chain)
-   - Captures all events without modification
-   - Writes structured JSON to SQLite `audit_logs` table
-   - Includes correlation_id for request tracing
-   - Sanitizes sensitive data before storage
-
-2. **OpenTelemetry Callback Handler** (Last in chain)
-   - Emits distributed traces via OTLP exporter
-   - Records span attributes for performance analysis
-   - Exports metrics to Prometheus endpoint
-   - Handles export failures gracefully (fallback to local buffer)
-
-**Note:** PII detection and content scanning are handled by LangChain's built-in `piiMiddleware` in the middleware layer, not as callbacks.
-   - Supports configurable detection patterns
-
-#### 5.6.3 Error Handling Requirements
-
-All callback handlers must implement the following error handling:
-
-```typescript
-interface CallbackHandler {
-  // Errors must not propagate to agent execution
-  handleError(error: Error, context: CallbackContext): void;
-  
-  // Graceful degradation if handler fails
-  isHealthy(): boolean;
-  
-  // Retry logic for transient failures
-  maxRetries: number;
-}
-```
-
-- **Non-blocking:** Handler failures must not interrupt agent execution
-- **Logging:** Handler errors captured and logged to separate audit stream
-- **Recovery:** Handler automatically reinitializes after failure
-- **Timeout:** Each handler invocation has 100ms timeout ceiling
-
-#### 5.6.4 Sanitization Rules for Logs
-
-All callbacks must sanitize sensitive data before logging or export. LangChain provides built-in middleware for content moderation and sensitive data detection.
-
-| Data Type | Action | Method |
-|-----------|--------|--------|
-| **API Keys** | Remove entirely | Regex match and strip |
-| **Bearer Tokens** | Hash with SHA-256 | Keep first 4 chars for debugging |
-| **Email Addresses** | Mask | `u***@domain.com` format |
-| **Phone Numbers** | Mask | `***-***-1234` format |
-| **Credit Cards** | Remove entirely | Luhn validation + regex |
-| **File Paths** | Hash with SHA-256 | Preserve structure only |
-
-Sanitization applies to:
-- Log entries stored in SQLite
-- Traces exported via OTLP
-- Metrics published to Prometheus
-- Debug output in development mode
-
----
-
-### 5.7 Testing Strategy
-
-OpenKraken follows **Test-Driven Development (TDD)**: Red → Green → Refactor. All code changes must include tests meeting the requirements below.
-
-#### Methodology
-
-**TDD Cycle (Mandatory):**
-1. **Red**: Write failing test describing expected behavior
-2. **Green**: Implement minimal code to make test pass
-3. **Refactor**: Improve code without breaking tests
-
-**Requirements:**
-- All PRs must include tests for changed code
-- Tests pass in CI before merge
-- Coverage reports generated on every build
-
-#### Test Categories
-
-**Unit Tests** (Mandatory, ≥90% coverage)
-- Domain logic in `src/orchestrator/domain/`
-- Pure functions and business rules
-- Mock all external dependencies
-- Location: `__tests__/` alongside source files
-- Execution: Fast (<100ms per test file)
-
-**Integration Tests** (Mandatory for data layer)
-- Database repository implementations
-- Middleware stack composition
-- MCP adapter connections
-- Use in-memory SQLite or temp database
-- Location: `src/orchestrator/infrastructure/__tests__/`
-- Execution: Moderate (<1s per test file)
-
-**E2E Tests** (Recommended, not mandatory)
-- Full request flows (Telegram webhook → response)
-- Sandbox command execution
-- Require running services
-- Location: `test/e2e/`
-- Execution: Slow (full system startup)
-
-#### Test Tooling
-
-| Tool | Purpose | Command |
-|------|---------|---------|
-| Bun Test | Test runner | `bun test` |
-| Bun Coverage | Coverage reports | `bun test --coverage` |
-| bun:test | Mocking utilities | `import { mock } from "bun:test"` |
-| Snapshot | Regression testing | `bun test --snapshot` |
-
-#### Coverage Requirements
-
-| Layer | Minimum | Target |
-|-------|---------|--------|
-| Domain | 90% | 95% |
-| Application | 80% | 90% |
-| Infrastructure | 70% | 80% |
-| Integration | 60% | 75% |
-
-**CI Enforcement:**
-```yaml
-- name: Test with Coverage
-  run: |
-    bun test --coverage
-    # Fail if domain coverage < 90%
-    npx coverage-thresholds --domain 90 --application 80
-```
-
-#### Test Patterns
-
-**Unit Test Example:**
-```typescript
-// src/orchestrator/domain/__tests__/policy.test.ts
-import { describe, it, expect } from "bun:test";
-import { PolicyService } from "../policy";
-
-describe("PolicyService", () => {
-  it("should reject paths outside allowlist", () => {
-    const service = new PolicyService(["/sandbox/work"]);
-    expect(service.validatePath("/etc/passwd")).toBe(false);
-    expect(service.validatePath("/sandbox/work/file.txt")).toBe(true);
-  });
-  
-  it("should block dangerous command patterns", () => {
-    const service = new PolicyService();
-    expect(service.validateCommand("rm -rf /")).toBe(false);
-    expect(service.validateCommand("ls -la")).toBe(true);
-  });
-});
-```
-
-**Integration Test Example:**
-```typescript
-// src/orchestrator/infrastructure/__tests__/message-repository.test.ts
-import { describe, it, expect, beforeAll, afterAll } from "bun:test";
-import { Database } from "bun:sqlite";
-import { SqliteMessageRepository } from "../database/message-repository";
-import { runMigrations } from "../database/migrations";
-
-describe("MessageRepository Integration", () => {
-  let db: Database;
-  let repo: SqliteMessageRepository;
-  
-  beforeAll(() => {
-    db = new Database(":memory:");
-    runMigrations(db);
-    repo = new SqliteMessageRepository(db);
-  });
-  
-  afterAll(() => {
-    db.close();
-  });
-  
-  it("should persist and retrieve messages", () => {
-    const message = {
-      id: crypto.randomUUID(),
-      threadId: "2026-02-08",
-      role: "user" as const,
-      content: "test message",
-      createdAt: Date.now()
-    };
-    
-    repo.create(message);
-    const retrieved = repo.findById(message.id);
-    
-    expect(retrieved).toEqual(message);
-  });
-  
-  it("should find messages by thread with pagination", () => {
-    // Create multiple messages
-    for (let i = 0; i < 10; i++) {
-      repo.create(createTestMessage({ threadId: "test-thread" }));
-    }
-    
-    const messages = repo.findByThreadId("test-thread", 5);
-    expect(messages).toHaveLength(5);
-  });
-});
-```
-
-#### Test Data Factories
-
-Use factory functions instead of fixtures:
-
-```typescript
-// test/factories.ts
-export function createTestMessage(overrides?: Partial<Message>): Message {
-  return {
-    id: crypto.randomUUID(),
-    threadId: "2026-02-08",
-    role: "user",
-    content: "Test message content",
-    contentType: "text",
-    metadata: {},
-    createdAt: Date.now(),
-    tokenCount: 0,
-    ...overrides
-  };
-}
-
-export function createTestCheckpoint(overrides?: Partial<Checkpoint>): Checkpoint {
-  return {
-    threadId: crypto.randomUUID(),
-    checkpointId: crypto.randomUUID(),
-    timestamp: Date.now(),
-    ...overrides
-  };
-}
-```
-
-#### CI Integration
-
-**GitHub Actions:**
-```yaml
-- name: Unit Tests
-  run: bun test --coverage --testPathPattern="__tests__"
-
-- name: Integration Tests  
-  run: bun test --testPathPattern="infrastructure/__tests__"
-  env:
-    DATABASE_URL: ":memory:"
-
-- name: Coverage Report
-  uses: codecov/codecov-action@v3
-  with:
-    files: ./coverage/lcov.info
-    fail_ci_if_error: true
-```
-
-#### Key Test Areas
-
-| Area | Test Focus | Type |
-|------|-----------|------|
-| Middleware Stack | Order, state propagation, interrupts | Unit + Integration |
-| Checkpointer | Serialization, WAL recovery | Integration |
-| Credential Vault | Retrieval, caching, fallback | Unit + Integration |
-| Schema Migrations | Forward migration, idempotency | Integration |
-| Policy Enforcement | Path validation, command filtering | Unit |
-| Egress Gateway | Allowlist, health monitoring | Integration |
-| Alerting | Threshold evaluation, deduplication | Unit |
-
-#### Test Environment
-
-**Development:**
-```bash
-# Run all tests
-bun test
-
-# Run specific test file
-bun test src/orchestrator/domain/__tests__/policy.test.ts
-
-# Run with coverage
-bun test --coverage
-
-# Watch mode
-bun test --watch
-```
-
-**Environment Variables:**
-```bash
-# Use in-memory database for tests
-DATABASE_URL=":memory:"
-
-# Disable external calls
-MOCK_EXTERNAL_SERVICES=true
-
-# Verbose test output
-TEST_VERBOSE=true
-```
-
----
-
-### 5.8 OpenTelemetry Implementation with Langfuse
-
-OpenKraken uses **Langfuse v4** for OpenTelemetry observability. Langfuse v4 is built on OpenTelemetry and provides a production-tested `CallbackHandler` for LangChain.js integration.
-
-#### Stack Specification
-
-| Component | Version | Package | Purpose |
-|-----------|---------|---------|---------|
-| **Langfuse SDK** | v4.x | `@langfuse/langchain` | OpenTelemetry-based tracing for LangChain |
-| **Langfuse Core** | v4.x | `@langfuse/core` | Base SDK for custom traces |
-| **OpenTelemetry** | v1.x | `@opentelemetry/sdk-node` | OTLP export infrastructure |
-
-#### Langfuse CallbackHandler Integration
-
-**Installation:**
-```bash
-bun add @langfuse/langchain@latest
-```
-
-**Basic Configuration:**
-```typescript
-import { CallbackHandler } from "@langfuse/langchain";
-
-const langfuseHandler = new CallbackHandler({
-  // Credentials retrieved from CredentialVault at runtime
-  publicKey: await credentialVault.retrieve("langfuse-public-key"),
-  secretKey: await credentialVault.retrieve("langfuse-secret-key"),
-  baseUrl: "https://cloud.langfuse.com", // or self-hosted URL
-  
-  // Trace metadata
-  sessionId: threadId,
-  userId: ownerId,
-  tags: ["openkraken", OPENKRAKEN_ENV],
-  
-  // Performance tuning
-  flushAt: 10,        // Batch size for events
-  flushInterval: 5000, // Flush every 5 seconds
-});
-```
-
-**Agent Integration:**
-```typescript
-const result = await agent.invoke(
-  { messages: inputMessages },
-  { callbacks: [langfuseHandler] }
-);
-```
-
-**LangGraph Integration:**
-```typescript
-const result = await graph.invoke(
-  { messages: inputMessages },
-  { callbacks: [langfuseHandler] }
-);
-```
-
-#### Automatic Tracing
-
-The Langfuse `CallbackHandler` automatically captures:
-
-| Operation | Captured Data | OpenTelemetry Attribute |
-|-----------|---------------|------------------------|
-| **LLM Calls** | Model name, token counts, latency, cost | `llm.model.name`, `llm.prompt_tokens`, `llm.completion_tokens` |
-| **Tool Calls** | Tool name, inputs, outputs, duration | `langchain.tool.name`, `langchain.tool.input` |
-| **Chain Execution** | Chain type, inputs/outputs, step count | `langchain.chain.name`, `langchain.chain.inputs` |
-| **Agent Actions** | Action type, reasoning, tool selection | `langchain.agent.action` |
-| **Errors** | Error type, message, stack trace | `error.type`, `error.message` |
-
-#### Export Configuration
-
-Langfuse supports multiple export backends:
-
-**Primary: Langfuse Cloud/Self-Hosted**
-- Direct export to Langfuse API
-- Rich UI for trace visualization
-- Cost and token tracking
-- Annotation and scoring
-
-**Secondary: OTLP Export**
-```typescript
-import { NodeSDK } from "@opentelemetry/sdk-node";
-import { LangfuseSpanProcessor } from "@langfuse/otel";
-
-const sdk = new NodeSDK({
-  spanProcessors: [
-    new LangfuseSpanProcessor(),
-    // Additional OTLP exporters can be added here
-  ],
-});
-sdk.start();
-```
-
-#### Shutdown Handling
-
-For clean shutdown (ensures all traces are flushed):
-```typescript
-// On process exit
-process.on("SIGTERM", async () => {
-  await langfuseHandler.shutdownAsync();
-  process.exit(0);
-});
-```
-
-#### Security Considerations
-
-- **Credential Isolation**: Langfuse credentials stored in OS-level vault, retrieved at runtime
-- **PII Handling**: Langfuse automatically scrubs common PII patterns; additional scrubbing via middleware
-- **Data Residency**: Self-hosted Langfuse option for data sovereignty requirements
-
-#### Alternatives Considered
-
-| Alternative | Rejected Because |
-|-------------|-----------------|
-| Custom OpenTelemetry implementation | Langfuse provides proven, maintained integration |
-| LangSmith | PRD explicitly excludes LangSmith support; also LangSmith requires OpenAI-specific patterns |
-| Native OTEL SDK only | Would require reimplementing LangChain-specific instrumentation |
-
-> **Langfuse v4 Selection Rationale:** Langfuse v4 is built on OpenTelemetry (meeting our OTLP requirement), provides a maintained LangChain.js CallbackHandler, supports Bun runtime, and offers both cloud and self-hosted deployment options. This aligns with the "Build on Proven Foundations" philosophy.
-
----
-
-## 6. Configuration Specification
-
-### 6.1 Environment Variables
-
-The Orchestrator reads configuration from environment variables set by the Platform Manager (Nix).
-
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `OPENKRAKEN_ENV` | No | `production` | Runtime environment: `production` (vault-only credentials) or `development` (env var fallback with WARNING logs) |
-| `OPENKRAKEN_HOME` | Yes | - | Platform-appropriate data directory |
-| `OPENKRAKEN_CONFIG` | No | `$OPENKRAKEN_HOME/config.yaml` | Configuration file path |
-| `OPENKRAKEN_LOG_LEVEL` | No | `INFO` | Logging verbosity |
-| `OPENKRAKEN_SANDBOX_PATH` | No | Platform default | Sandbox binary location |
-| `OPENKRAKEN_EGRESS_GATEWAY_URL` | No | `http://127.0.0.1:3001` | Egress Gateway URL (Go binary) |
-| `OPENKRAKEN_TELEGRAM_TOKEN` | Yes* | - | Telegram bot token (Keychain/macOS, secret-service/Linux) |
-| `OPENKRAKEN_ANTHROPIC_API_KEY` | Yes* | - | Anthropic API key (Keychain/secret-service) |
-| `OPENKRAKEN_VERCEL_API_KEY` | No | - | Vercel Agent Browser API key |
-| `OPENKRAKEN_EXA_API_KEY` | No | - | Exa API key for web search |
-| `OPENKRAKEN_MCP_SERVERS` | No | - | JSON array of MCP server configurations |
-
-*Required for respective integrations. May be empty if integration not configured.
-
-**Vault-Stored Credentials (provisioned via `openkraken init`):**
-
-| Vault Identifier | Purpose | Rotation Command |
-|------------------|---------|-----------------|
-| `openkraken-master-key` | AES-256-GCM encryption master key for messages and memories | `openkraken credentials rotate-master-key` |
-| `openkraken-egress-hmac-key` | HMAC-SHA256 shared secret for Egress Gateway request signing | `openkraken credentials rotate-egress-key` |
-| `openkraken-api-token` | Bearer token for CLI and Web UI authentication | `openkraken credentials rotate-api-token` |
-
-These credentials are never exposed as environment variables in production. They are read from the OS-level vault at Orchestrator startup and cached in process memory. In development mode (`OPENKRAKEN_ENV=development`), only integration API keys fall back to environment variables — vault-stored system credentials have no env var fallback.
-
-### 6.2 Configuration File Schema
-
-The Orchestrator reads configuration from a YAML file at `$OPENKRAKEN_CONFIG`.
+**Canonical monorepo method:**
+- `devenv` is the development-environment orchestrator, not the production service manager.
+- `flake.nix` defines reproducible packages, modules, and checks.
+- `just` is the human-facing entrypoint for routine build, test, and lint workflows.
+- External integration units may be referenced from adjacent repositories, but the OpenKraken repo remains the source of truth for integration contracts, service topology, and owner-facing semantics.
+
+**Clean architecture guidance:**
+- `packages/orchestrator/src/agent`, `services`, `state`, and `skills` own application orchestration and domain-adjacent logic.
+- `api`, `auth`, `credentials`, `platform`, `sandbox`, and `telemetry` own infrastructure and interface concerns.
+- `contracts` and `migrations` are first-class reviewed artifacts and SHALL evolve with their corresponding runtime behavior.
+
+### 5.2 Coding Standards
+- **Formatting / Linting:** TypeScript uses Biome as the canonical formatter and linter. Go uses `gofmt` and `go vet`. All OpenAPI, YAML, and SQL artifacts are treated as reviewable source and must remain deterministic under formatting.
+- **Testing Expectations:** Unit tests cover policy evaluation, credential boundary behavior, middleware ordering, config loading, provider routing, filesystem tool wrappers, and gateway domain decisions. Migration tests validate forward-only application on empty and brownfield databases. Contract tests validate the OpenAPI and Open Responses artifacts against runtime handlers or adapters. End-to-end tests cover chat turn, approval pause/resume, schedule execution, Telegram ingress, Open Responses adapter ingress, and outbound denial behavior.
+- **Observability Hooks:** Emit correlation IDs at ingress. Record spans and audit events for auth, chat turn lifecycle, model calls, tool dispatch, approval state transitions, schedule execution, gateway allow/deny decisions, and migration startup. Health endpoints SHALL expose liveness and readiness separately. Runtime exports MAY forward telemetry to external collectors, but the local audit store remains the primary source of truth.
+- **Migration / Deployment Notes:** `just build`, `just test`, and `just lint` remain the canonical task entrypoints. Runtime startup order is: config load, migration run, credential boundary init, gateway health verification, runtime API bind. Deployments MUST be able to run migrations before accepting traffic. Breaking API or schema changes require a rollout note and compatibility plan inside the same change set.
+- **Performance / Capacity Notes:** Optimize for one active Owner and low concurrent session count, not multi-tenant throughput. SQLite WAL is acceptable for this profile, but writes should be batched where possible around audit-heavy flows. Streaming chat responses should use backpressure-aware SSE emission. Request, message, and artifact size limits must be explicit in the runtime config to avoid unbounded growth of session state, audit payloads, or sandbox outputs.
+
+**Test categories:**
+- Unit: pure policy/config/path/provider logic
+- Integration: database, vault abstraction, sandbox/gateway, adapter mapping
+- Contract: native runtime API, Open Responses adapter, CUE config schema
+- End-to-end: owner interaction, approval suspension/resume, Telegram path, scheduled work path
+
+**Performance requirements:**
+- Interactive overhead introduced by the runtime should remain materially below model latency.
+- Standard isolated tool invocation should remain fast enough that the sandbox/control path does not dominate a routine owner workflow.
+- Checkpoint, audit, and message persistence should not stall owner-facing streaming output under nominal single-owner load.
+
+### 5.3 Configuration Contract
+The runtime uses a layered configuration model that combines bootstrap environment variables, a root YAML configuration file, validated CUE schema, and persisted configuration documents.
+
+**Canonical bootstrap environment variables:**
+
+| Variable | Required | Default | Contract |
+| --- | --- | --- | --- |
+| `OPENKRAKEN_ENV` | No | `production` | Bootstrap runtime mode. Enables or disables explicit development-only fallbacks. |
+| `OPENKRAKEN_HOME` | Yes | none | Root directory for runtime state, token file placement, sandbox zones, and local artifacts. |
+| `OPENKRAKEN_CONFIG` | No | `$OPENKRAKEN_HOME/config.yaml` | Root configuration file path used before persisted config documents load. |
+| `OPENKRAKEN_LOG_LEVEL` | No | `INFO` | Bootstrap logging level before full runtime config is active. |
+| `OPENKRAKEN_EGRESS_GATEWAY_URL` | No | `http://127.0.0.1:3001` | Canonical runtime-to-gateway address. |
+| `OPENKRAKEN_LANGFUSE_ENABLED` | No | `false` | Bootstrap override for tracing export enablement. |
+| `OPENKRAKEN_LANGFUSE_PUBLIC_KEY` | No | none | Optional tracing credential override for dev/bootstrap use. |
+| `OPENKRAKEN_LANGFUSE_SECRET_KEY` | No | none | Optional tracing credential override for dev/bootstrap use. |
+
+Brownfield note: the current loader in [config/index.ts](/home/oscar/GitHub/OpenKraken/packages/orchestrator/src/config/index.ts#L15) still consumes a narrower transitional shape including aliases such as `OPENKRAKEN_SANDBOX_TYPE`, `OPENKRAKEN_EGRESS_HOST`, and `OPENKRAKEN_EGRESS_PORT`. The target implementation SHALL converge these aliases onto the canonical contract above.
+
+**Canonical root configuration document:**
 
 ```yaml
-# OpenKraken Configuration Schema v1.0
 version: "1.0"
 
 orchestrator:
@@ -4771,13 +1359,10 @@ sandbox:
   memoryLimitMb: 4096
   cpuLimitPercent: 100
   zones:
-    skills: "/sandbox/skills/"
-    inputs: "/sandbox/inputs/"
-    work: "/sandbox/work/"
-    outputs: "/sandbox/outputs/"
-  nix:
-    enabled: true
-    cacheUrl: "https://cache.nixos.org"
+    skills: "/var/lib/openkraken/skills"
+    inputs: "/var/lib/openkraken/inputs"
+    work: "/var/lib/openkraken/work"
+    outputs: "/var/lib/openkraken/outputs"
 
 egressGateway:
   http:
@@ -4795,1489 +1380,438 @@ egressGateway:
     ttlSeconds: 3600
 
 credentials:
-  vault: "keychain"  # macOS: keychain, Linux: secret-service, dev: environment
+  backend: "keychain"
   cacheTimeoutMinutes: 60
 
 channels:
   telegram:
-    enabled: true
-    mode: "webhook"  # or "polling" for development
-    webhookUrl: "https://your-domain.com/webhook/telegram"
-    secretToken: "${TELEGRAM_SECRET}"  # Interpolated from vault
+    enabled: false
+    mode: "webhook"
+    webhookUrl: "https://example.invalid/webhook/telegram"
+    secretToken: "${TELEGRAM_SECRET}"
   mcp:
-    enabled: true
-    servers: []  # Configurable list of MCP server configurations
+    enabled: false
+    servers: []
     connectionTimeoutSeconds: 30
 
 middleware:
-  policy:
-    rateLimit:
-      enabled: true
-      requestsPerMinute: 60
-    contentScan:
-      enabled: true
-      blockCredentials: true
-      blockPii: true
-  memory:
-    enabled: true
-    # RMM Memory middleware configuration deferred to middleware documentation
-  humanInLoop:
-    enabled: true
-    operations:
-      - "file:create"
-      - "file:delete"
-      - "terminal:exec"
-      - "skill:install"
-    # No timeout — Checkpointer maintains suspended state indefinitely until Owner responds
+  humanInTheLoop: true
+  memory: true
+  skillLoader: true
 
 skills:
-  enabled: true
-  defaultTier: "owner"  # Default tier for imported skills (owner/community)
-  autoApproveOwnerInstructionOnly: true  # Skip approval for Owner-tier instruction-only skills
-  autoUpdate: true  # Auto-update approved skills within version bounds
-  analysisModel: "claude-haiku-4-5-2026-02-01"  # Configurable LLM for security analysis
-  sources:
-    - url: "https://github.com/vercel-labs/skills"
-      tier: "community"
-      autoApprove: false
-      # allowedSkills: []  # Optional whitelist of specific skills
-
-# NOTE: Skills zone includes Nix dependencies provisioned from skill metadata.
-# Skills declaring dependencies via metadata.x-openkraken.dependencies have
-# those packages pre-installed before sandbox invocation.
+  autoUpdate: true
+  updateCheckIntervalHours: 24
+  directory: "/var/lib/openkraken/skills"
+  executionTimeoutSeconds: 300
 
 observability:
-  logging:
-    enabled: true
-    level: "INFO"
-    rotateBytes: 104857600  # 100MB
-    retentionDays: 30
-  tracing:
-    enabled: true
-    exporter: "sqlite"  # or "otlp", "langsmith"
-    otlpEndpoint: "http://localhost:4318/v1/traces"
-  metrics:
-    enabled: true
-    exportIntervalSeconds: 15
+  langfuse: false
+  langfusePublicKey: "${LANGFUSE_PUBLIC_KEY}"
+  langfuseSecretKey: "${LANGFUSE_SECRET_KEY}"
+  otelEndpoint: "http://127.0.0.1:4318"
+  logLevel: "INFO"
 
 storage:
-  directory: "${OPENKRAKEN_HOME}/data"
+  database:
+    path: "/var/lib/openkraken/db/openkraken.db"
+    walMode: true
+    cacheSize: 2000
   backup:
     enabled: true
-    schedule: "0 3 * * *"  # Daily at 3 AM
-    retentionDays: 7
-    # Single database file backup (openkraken.db contains all tables)
+    directory: "/var/lib/openkraken/backups"
+    retentionDays: 30
+    intervalHours: 24
 
 alerting:
   enabled: true
-  evaluationIntervalSeconds: 60
-  suppressionMinutes: 30  # Deduplicate identical alerts
-  
-  # Multi-channel routing by severity
+  evaluationIntervalSeconds: 30
+  suppressionMinutes: 15
   channels:
     telegram:
       enabled: true
-      severity: ["CRITICAL", "ERROR"]  # Urgent alerts only
-      immediate: true                  # Send immediately
+      severity: ["CRITICAL", "ERROR"]
+      immediate: true
     email:
-      enabled: true
-      severity: ["WARN", "INFO"]       # Informational alerts
-      digest: true                     # Batch non-urgent alerts
-      digestIntervalMinutes: 60        # Hourly digest
-      smtp:
-        host: "${SMTP_HOST}"           # From environment/vault
-        port: 587
-        username: "${SMTP_USER}"
-        password: "${SMTP_PASS}"
-        from: "openkraken@localhost"
-        to: "owner@example.com"
-  
-  conditions:
-    databaseSize:
-      enabled: true
-      warnThresholdGb: 8
-    databaseIntegrity:
-      enabled: true
-    backupNotifications:
-      onSuccess: false  # Suppress routine success messages
-      onFailure: true
-    egressGatewayHealth:
-      enabled: true
-      consecutiveFailures: 3
-    llmProviderErrors:
-      enabled: true
-      windowMinutes: 5
-      threshold: 5
-    credentialVaultHealth:
-      enabled: true
-    scheduledTaskFailure:
-      enabled: true
-    skillAutoUpdate:
-      enabled: true
+      enabled: false
+      severity: ["CRITICAL", "ERROR", "WARN", "INFO"]
+      digest: true
+      digestIntervalMinutes: 60
 ```
 
-### 6.3 Configuration Validation
+**Validation points:**
+1. Build-time validation via `cue vet` against [config.cue](/home/oscar/GitHub/OpenKraken/nix/schema/config.cue#L1).
+2. Startup validation before database migration or API bind.
+3. Runtime update validation before `config_documents` writes become active.
+4. Unknown fields, invalid enums, and structurally invalid documents SHALL be rejected rather than coerced.
 
-OpenKraken validates `config.yaml` against a CUE schema at startup and during Nix builds (per ADR-010).
+**Implementation posture for channels:**
+- `channels.telegram` is the primary non-local owner interaction channel for the first implementation line.
+- `channels.mcp` represents the follow-on path for broader mediated channel and service interaction, but it is not required for Epic 1 completeness.
+- Additional asynchronous channels SHALL reuse the same runtime auth, audit, and policy boundaries rather than introducing a parallel orchestration path.
 
-**CUE Schema Definition:**
+**Mutability classes:**
 
-The schema is defined in `nix/schema/config.cue`:
+| Class | Examples | Contract |
+| --- | --- | --- |
+| Bootstrap-only | `OPENKRAKEN_HOME`, `OPENKRAKEN_CONFIG`, path-resolution mode | Read once before config load; changes require restart and path reconciliation |
+| Restart-required | `orchestrator.host`, `orchestrator.port`, sandbox zone paths, gateway bind ports | Persisted updates may be accepted, but they do not take effect until controlled restart |
+| Live-reloadable | allowlist entries, alerting thresholds, skill update cadence, telemetry export enablement | May be activated after validation and audit recording without full process restart |
 
-```cue
-package config
+### 5.4 Migration and Schema Operations
+OpenKraken uses forward-only SQL migrations with checksum verification, transactionality, and integrity checks. The brownfield runner already implements this contract in [migrate.ts](/home/oscar/GitHub/OpenKraken/packages/orchestrator/scripts/db/migrate.ts#L57).
 
-// OpenKraken Configuration Schema v1.0
-#Config: {
-    version: "1.0"
-    
-    orchestrator: #OrchestratorConfig
-    sandbox: #SandboxConfig
-    egressGateway: #EgressGatewayConfig
-    credentials: #CredentialsConfig
-    channels: #ChannelsConfig
-    middleware: #MiddlewareConfig
-    skills: #SkillsConfig
-    observability: #ObservabilityConfig
-    storage: #StorageConfig
-    alerting: #AlertingConfig
-}
+**Migration file contract:**
 
-#OrchestratorConfig: {
-    host: string & net.IPv4
-    port: int & >=1024 & <=65535
-    session: {
-        maxConcurrent: int & >0 & <=10
-        idleTimeoutMinutes: int & >=1
-        dayBoundaryEnabled: bool
-    }
-    context: {
-        maxTokens: int & >=1000 & <=200000
-        summarizationThreshold: int
-        summarizationPrompt?: string
-    }
-}
-
-#SandboxConfig: {
-    enabled: bool
-    timeoutSeconds: int & >=60
-    memoryLimitMb: int & >=512
-    cpuLimitPercent: int & >=10 & <=100
-    zones: {
-        skills: string
-        inputs: string
-        work: string
-        outputs: string
-    }
-}
-
-#EgressGatewayConfig: {
-    http: {
-        enabled: bool
-        port: int & >=1024 & <=65535
-    }
-    socks5: {
-        enabled: bool
-        port: int & >=1024 & <=65535
-    }
-    allowlist: {
-        system: [...string]
-        owner: [...string]
-        ttlSeconds: int & >=60
-    }
-}
-
-#ChannelsConfig: {
-    telegram?: {
-        enabled: bool
-        mode: "webhook" | "polling"
-        webhookUrl?: string
-        secretToken?: string
-    }
-    mcp?: {
-        enabled: bool
-        servers: [...#McpServerConfig]
-        connectionTimeoutSeconds: int
-    }
-}
-
-#AlertingConfig: {
-    enabled: bool
-    evaluationIntervalSeconds: int & >=10
-    suppressionMinutes: int & >=0
-    channels: {
-        telegram: #TelegramChannelConfig
-        email?: #EmailChannelConfig
-    }
-}
-
-#TelegramChannelConfig: {
-    enabled: bool
-    severity: ["CRITICAL", "ERROR", "WARN", "INFO"]
-    immediate: bool
-}
-
-#EmailChannelConfig: {
-    enabled: bool
-    severity: ["CRITICAL", "ERROR", "WARN", "INFO"]
-    digest: bool
-    digestIntervalMinutes: int
-}
+```text
+packages/orchestrator/migrations/
+├── 001_initial_schema.sql
+├── 002_add_encrypted_fields.sql
+├── 003_add_skills_tables.sql
+└── NNN_descriptive_change.sql
 ```
 
-**Validation Points:**
+**Schema version tracking contract:**
 
-1. **Build-Time Validation** (Nix):
-   ```nix
-   checkPhase = ''
-     cue vet -c ${./schema/config.cue} $out/config.yaml
-   '';
-   ```
-
-2. **Runtime Validation** (Orchestrator startup):
-   ```typescript
-   import { $ } from "bun";
-   
-   async function validateConfig(configPath: string): Promise<void> {
-     const result = await $`cue vet -c ${import.meta.dir}/schema/config.cue ${configPath}`
-       .nothrow();
-     
-     if (result.exitCode !== 0) {
-       throw new Error(`Configuration validation failed:\n${result.stderr}`);
-     }
-   }
-   ```
-
-3. **Development CLI**:
-   ```bash
-   openkraken config validate --strict
-   ```
-
-**Error Messages:**
-
-Validation errors provide clear path references:
-```
-config.yaml:42:15: conflicting values "abc" and int (mismatched types string and int):
-    ./nix/schema/config.cue:15:10
-    ./config.yaml:42:15
+```sql
+CREATE TABLE schema_versions (
+  version TEXT PRIMARY KEY,
+  applied_at TEXT NOT NULL,
+  checksum TEXT NOT NULL,
+  description TEXT
+);
 ```
 
-**Dependencies:**
+**Execution guarantees:**
+1. Migration files are ordered lexically by numeric prefix.
+2. The SHA-256 checksum of each file is computed before execution.
+3. Each migration runs inside a SQLite transaction.
+4. `PRAGMA integrity_check` runs after execution before version recording.
+5. Applied migrations are never silently re-run with a new checksum.
+
+**Rollback posture:**
+- OpenKraken does not define reverse SQL as the primary rollback mechanism.
+- Rollback is restore-based: recover the previous database snapshot and matching recovery material when necessary.
+- Breaking schema changes SHALL use expand-migrate-contract sequencing so that brownfield upgrades do not require synchronized cutovers.
+
+**Startup integration:**
+1. Resolve runtime paths and open the configured database.
+2. Enable WAL, foreign keys, busy timeout, and other required pragmas.
+3. Execute pending migrations.
+4. Refuse API bind if migration or integrity validation fails.
+5. Record the active schema version for operational review.
+
+### 5.5 Middleware and Callback Semantics
+The runtime relies on deterministic middleware ordering because control flow, not prompting, enforces safety. The current repo contains a minimal composition framework in [framework.ts](/home/oscar/GitHub/OpenKraken/packages/orchestrator/src/middleware/framework.ts#L66), but the canonical ordering contract is broader than the brownfield implementation.
+
+**Middleware tier order:**
+
+| Order | Tier | Concern | Notes |
+| --- | --- | --- | --- |
+| 1 | Policy | Policy and input validation | Rejects or constrains work before capability expansion. |
+| 2 | Safety | PII and sensitive-content controls | Scrubs or blocks content that would violate safety policy. |
+| 3 | Context | RMM-backed memory retrieval and context augmentation | Adds durable context without changing earlier policy decisions or exposing raw memory management internals to the Agent. |
+| 4 | Capability | Skill and tool exposure | Injects only approved bounded capabilities. |
+| 5 | Operational | Summarization and context compression | Optimizes context after capability set is known. |
+| 6 | Approval | Human-in-the-loop gating | Pauses sensitive actions before execution leaves the runtime. |
+
+**Callback rules:**
+- Callbacks are observational only and SHALL NOT alter agent control flow.
+- Local audit capture runs before external telemetry export.
+- Callback failure SHALL NOT convert an allowed action into success or failure; it only affects observability health.
+- Sensitive values SHALL be sanitized before persistence or export.
+
+**Canonical callback order:**
+1. Correlation and request context creation
+2. Local audit capture
+3. Telemetry/tracing emission
+4. Optional export-oriented post-processing
+5. Best-effort error reporting for observability failures
+
+**Minimum sanitization rules:**
+
+| Data Type | Persistence Rule |
+| --- | --- |
+| API keys and credentials | Remove entirely or store only a stable fingerprint |
+| Bearer/session tokens | Never log raw value; hash or redact |
+| Email addresses | Mask local part |
+| Phone numbers | Mask all but trailing digits |
+| File paths outside owner-visible diagnostics | Hash or normalize before export |
+
+### 5.6 Lifecycle, Deployment, and Service Management
+OpenKraken distinguishes between development orchestration and production service management.
+
+**Execution surfaces:**
+
+| Surface | Purpose | Canonical Use |
+| --- | --- | --- |
+| `devenv` and `process-compose` | Local development loops | Developer-only |
+| NixOS module | Linux production deployment | Canonical production path on Linux |
+| Darwin module | macOS owner-operated deployment | Canonical production path on macOS |
+
+**Startup sequence:**
+1. Resolve canonical paths from the platform abstraction layer.
+2. Load and validate bootstrap configuration.
+3. Open the SQLite database and run migrations.
+4. Initialize the credential vault and determine whether fallback mode is active.
+5. Verify sandbox and egress gateway dependencies.
+6. Bind the runtime API and begin serving owner traffic.
+
+**Shutdown sequence:**
+1. Stop accepting new interactive requests.
+2. Allow in-flight work to settle within a bounded timeout.
+3. Persist resumable execution state where required.
+4. Flush audit/telemetry exporters as best effort.
+5. Close database and dependent resources.
+
+**Linux production contract:**
+- Service names: `openkraken-orchestrator` and `openkraken-egress-gateway`
+- Environment variables: `OPENKRAKEN_HOME`, `OPENKRAKEN_CONFIG`, `ORCHESTRATOR_PORT`, `EGRESS_GATEWAY_PORT`, `EGRESS_SOCKET_PATH`
+- Directory provisioning and permissions are managed by the NixOS module in [openkraken.nix](/home/oscar/GitHub/OpenKraken/nix/nixos-modules/openkraken.nix#L31)
+- Restart policy, resource limits, and temp/runtime directories are declared in systemd service config
+
+**macOS production contract:**
+- Launchd labels: `com.openkraken.orchestrator` and `com.openkraken.egress-gateway`
+- Environment variables mirror Linux at the logical layer even when paths differ
+- Directory provisioning and agent definitions are managed by the Darwin module in [openkraken.nix](/home/oscar/GitHub/OpenKraken/nix/darwin-modules/openkraken.nix#L17)
+- launchd resource limits replace Linux cgroup-style quotas where the platform lacks equivalent primitives
+
+**Brownfield note:**
+The deployment modules are materially ahead of the orchestrator entry point in [main.ts](/home/oscar/GitHub/OpenKraken/packages/orchestrator/src/main.ts#L10). The service-management contract therefore remains canonical target state even though runtime bootstrap is still incomplete.
+
+**CI/CD and release contract:**
+- CI is Nix-first and multi-platform.
+- Release candidates SHALL validate runtime API artifacts, CUE schema, migrations, and package builds together.
+- SBOM generation belongs in the release path, not as an afterthought client-side script.
 
-CUE is provided via Nix:
-```nix
-packages = with pkgs; [
-  cue  # Configuration validation
-];
-```
-
----
-
-## 7. Performance Requirements
-
-This section defines measurable SLAs for system performance. These benchmarks guide implementation decisions and provide acceptance criteria for operational readiness.
-
-### 7.1 Latency Requirements
-
-| Operation | Target P50 | Target P99 | Measurement Method |
-|-----------|------------|------------|-------------------|
-| **Sandbox invocation** | < 50ms | < 100ms | Time from `invoke()` call to first output |
-| **Egress Gateway allowlist update** | < 10ms | < 25ms | HTTP response time for add/remove operations |
-| **Policy middleware validation** | < 5ms | < 15ms | Time to evaluate request against policies |
-| **Memory retrieval (top-k=5)** | < 20ms | < 50ms | Vector similarity search + content fetch |
-| **Checkpointer write** | < 10ms | < 30ms | SQLite WAL append operation |
-| **Egress Gateway HTTP API response** | < 10ms | < 50ms | End-to-end request handling (health endpoints) |
-| **Telegram webhook processing** | < 100ms | < 200ms | From secret token validation to acknowledgment |
-
-### 7.2 Throughput Requirements
-
-| Metric | Target | Conditions |
-|--------|--------|------------|
-| **Concurrent sessions** | 1 | Single-tenant design. Maximum one active session per Owner |
-| **Messages per session** | Unlimited | Practically limited by checkpoint storage (default 10MB) |
-| **Proxy connections/second** | 100 | Per-session connection rate limit |
-| **Embedding computations/second** | 10 | Sequential embedding model. Supports real-time retrieval |
-
-### 7.3 Resource Utilization
-
-| Resource | Target | Threshold |
-|----------|--------|-----------|
-| **Memory (Orchestrator)** | < 500MB | < 2GB (OOM killer threshold) |
-| **CPU utilization** | < 80% | Sustained during agent execution |
-| **Database size** | < 10GB | Per database file. Triggers Owner alert |
-| **Proxy log retention** | 30 days | 100MB automatic rotation |
-
-### 7.4 Benchmark Methodology
-
-Performance benchmarks are measured using:
-
-1. **Synthetic Tests:** Automated benchmarks run hourly via cron job
-2. **Production Metrics:** Prometheus counters track real-world performance
-3. **Profile-Guided Optimization:** pprof analysis identifies bottlenecks
-
-All benchmarks produce structured output stored in `audit.db` for trend analysis.
-
----
-
-## 8. Security Considerations
-
-### 8.1 Threat Model
-
-This section provides a comprehensive threat analysis using the STRIDE framework (Spoofing, Tampering, Repudiation, Information Disclosure, Denial of Service, Elevation of Privilege). STRIDE is a well-established threat modeling methodology that categorizes threats by the type of attack they represent. For each STRIDE category, we identify potential threats to the OpenKraken system and document the architectural mitigations that ensure deterministic safety.
-
-#### 8.1.1 STRIDE Overview
-
-The STRIDE framework provides a systematic approach to threat identification by considering what an attacker might accomplish against each system component:
-
-| STRIDE Category | Description | Applicability to OpenKraken |
-|----------------|-------------|----------------------------|
-| **S**poofing | Impersonating users or components | Agent identity, Owner authentication |
-| **T**ampering | Unauthorized modification of data | Messages, memories, checkpoints, configuration |
-| **R**epudiation | Denying actions without proof | Audit logging, cryptographic signing |
-| **Information Disclosure** | Unauthorized access to information | Credentials, memories, Agent prompts |
-| **D**enial of Service | Making services unavailable | Egress Gateway, Orchestrator, sandbox |
-| **E**levation of Privilege | Gaining capabilities beyond intended | Agent escaping sandbox, credential access |
-
-#### 8.1.2 Spoofing Threats
-
-Spoofing threats involve an attacker falsely identifying as a legitimate user or component. OpenKraken addresses spoofing through multiple identity verification mechanisms.
-
-**Threat S1: Agent Identity Spoofing**
-- **Scenario**: An unauthorized process attempts to impersonate the Agent to receive messages or execute tools
-- **Architectural Mitigation**: Agent identity is established through Unix domain socket connection to the Orchestrator. The sandboxed Agent process has a verifiable process ID that the Orchestrator validates before dispatching messages. No authentication token is exposed to the Agent, preventing token-based spoofing
-- **Verification**: Verify that only processes with valid PID can connect to the Agent domain socket
-
-**Threat S2: Owner Identity Spoofing**
-- **Scenario**: An attacker attempts to impersonate the Owner to issue commands or modify configuration
-- **Architectural Mitigation**: Telegram bot API includes native user identification. All Owner commands are verified against Telegram's user ID. CLI commands require the vault-stored bearer token. HMAC signatures on Egress Gateway requests prevent replay of management commands
-- **Verification**: Review Telegram webhook verification implementation; verify HMAC validation on all management API calls
-
-**Threat S3: Orchestrator Component Spoofing**
-- **Scenario**: A malicious process attempts to impersonate the Egress Gateway or Checkpointer
-- **Architectural Mitigation**: All inter-process communication uses Unix domain sockets with filesystem permissions (0660). Processes cannot connect to protected sockets without appropriate group membership
-- **Verification**: Verify socket file permissions restrict access to authorized processes only
-
-#### 8.1.3 Tampering Threats
-
-Tampering threats involve unauthorized modification of data, configuration, or code. OpenKraken's immutability principles and capability-based security prevent most tampering attacks.
-
-**Threat T1: Message Tampering**
-- **Scenario**: An attacker modifies messages in transit or at rest
-- **Architectural Mitigation**: Messages are transmitted over Unix domain sockets within the same host, not over the network. Messages at rest in SQLite use WAL mode with file permissions preventing unauthorized access. Integrity is verified through the checkpoint mechanism that includes message hashes in the serialized state
-- **Verification**: Review SQLite file permissions; verify checkpoint serialization includes message integrity checks
-
-**Threat T2: Memory Tampering**
-- **Scenario**: An attacker modifies long-term memories to influence Agent behavior
-- **Architectural Mitigation**: Memories are encrypted at rest using AES-256-GCM with keys derived from the master vault key. Any unauthorized modification results in decryption failure. Memory modifications require vault access or recovery code
-- **Verification**: Verify AES-256-GCM implementation; test decryption failure on tampered data
-
-**Threat T3: Checkpoint Tampering**
-- **Scenario**: An attacker modifies agent state to cause dangerous behavior across restarts
-- **Architectural Mitigation**: Checkpoints use Bun's native SQLite implementation with WAL mode. The database file permissions restrict access to the Orchestrator process. Any tampering would violate the checkpoint structure and prevent deserialization
-- **Verification**: Review checkpoint deserialization validation; verify database file permissions
-
-**Threat T4: Configuration Tampering**
-- **Scenario**: An attacker modifies the config.yaml to disable security controls
-- **Architectural Mitigation**: Configuration is validated at load time. Critical security settings (sandbox enabled, credential vault required) have no disable switches in the configuration schema. Configuration is owned by the Owner with filesystem permissions preventing unauthorized modification
-- **Verification**: Review configuration validation schema; verify security-critical settings cannot be disabled
-
-#### 8.1.4 Repudiation Threats
-
-Repudiation threats involve actors denying actions they performed. OpenKraken's comprehensive audit logging ensures all significant actions are recorded with cryptographic evidence.
-
-**Threat R1: Agent Action Repudiation**
-- **Scenario**: The Agent denies performing a specific action or the Owner disputes Agent behavior
-- **Architectural Mitigation**: All Agent operations are logged with structured fields including request ID, timestamp, operation type, target resource, and result. Logs are stored in the audit_events table with the checkpoint mechanism ensuring durability. The Owner can review complete trace history through the observability layer
-- **Verification**: Verify all Agent operations are logged; test log completeness against Agent tool invocations
-
-**Threat R2: Owner Command Repudiation**
-- **Scenario**: The Owner denies issuing a specific command or configuration change
-- **Architectural Mitigation**: Telegram commands include user ID and timestamp. CLI commands require authentication token. All configuration changes are logged to the audit_events table with actor identification
-- **Verification**: Review audit log schema for actor tracking; verify Telegram user ID capture
-
-**Threat R3: Egress Gateway Action Repudiation**
-- **Scenario**: A network request is denied or disputed
-- **Architectural Mitigation**: Egress Gateway logs all connection attempts to proxy_logs table with domain, timestamp, and disposition (allowed/blocked). HMAC signatures on management API requests provide non-repudiation for administrative actions
-- **Verification**: Review proxy_logs completeness; verify HMAC signatures on management endpoints
-
-#### 8.1.5 Information Disclosure Threats
-
-Information disclosure threats involve unauthorized access to sensitive data. OpenKraken's credential isolation and memory encryption protect against disclosure.
-
-**Threat I1: Credential Disclosure**
-- **Scenario**: Credentials are exposed to the Agent or written to persistent storage
-- **Architectural Mitigation**: Credentials are stored in OS-level vaults (Keychain on macOS, secret-service on Linux). Credentials are never materialized in the sandbox or written to persistent storage. Content scanning middleware inspects all output for credential patterns. Structured logging scrubs sensitive fields before storage
-- **Verification**: Review CredentialVault implementation; test content scanning for credential detection; audit logs for credential exposure
-
-**Threat I2: Memory Disclosure**
-- **Scenario**: Memories are accessed by unauthorized parties or the Agent reads memories not relevant to the current task
-- **Architectural Mitigation**: Memories are encrypted at rest with AES-256-GCM. The Agent receives only consolidated context from the Memory Middleware, not raw memory access. Embedding-based retrieval returns only semantically relevant memories
-- **Verification**: Review memory encryption implementation; verify Agent cannot access raw memory storage
-
-**Threat I3: Agent Prompt Disclosure**
-- **Scenario**: The Agent's system prompt constitution (`SOUL.md`, `SAFETY.md`, `CAPABILITIES.md`, `DIRECTIVES.md`) is exfiltrated
-- **Architectural Mitigation**: The full constitution is injected directly into the system prompt at runtime, never materialized as a file in the sandbox. The Agent has no filesystem access that could read configuration files. The prompt is transmitted over local Unix domain sockets only
-- **Verification**: Verify no constitutional documents are written to the sandbox filesystem; review prompt injection mechanism
-
-**Threat I4: Conversation Disclosure**
-- **Scenario**: Conversations are accessed by unauthorized parties
-- **Architectural Mitigation**: Messages are encrypted at rest using AES-256-GCM. Messages are transmitted over local Unix domain sockets. The single-tenant deployment model means no multi-user access concerns
-- **Verification**: Review message encryption; verify filesystem permissions on message storage
-
-#### 8.1.6 Denial of Service Threats
-
-Denial of service threats involve making the system unavailable. OpenKraken's resilience patterns mitigate most DoS scenarios.
-
-**Threat D1: Egress Gateway DoS**
-- **Scenario**: Attacker floods the Egress Gateway to block legitimate network access
-- **Architectural Mitigation**: The Egress Gateway is a separate process with independent lifecycle. The sandbox routes through the Gateway but cannot overwhelm it due to resource limits. Gateway health monitoring restarts the service on failure. Queue-based degradation handles temporary unavailability
-- **Verification**: Review Gateway resource limits; test health monitoring and recovery
-
-**Threat D2: Orchestrator DoS**
-- **Scenario**: Attacker overwhelms the Orchestrator with requests
-- **Architectural Mitigation**: Rate limiting middleware restricts request frequency per session. Maximum concurrent sessions are configurable. The single-tenant model limits attack surface. Long-running operations time out
-- **Verification**: Review rate limiting configuration; test timeout enforcement
-
-**Threat D3: Sandbox DoS**
-- **Scenario**: Agent executes operations that consume infinite resources
-- **Architectural Mitigation**: Bubblewrap/seatbelt enforce memory and CPU limits. Session timeouts terminate long-running operations. The Sandbox work directory is cleared at session boundaries, preventing resource accumulation
-- **Verification**: Review sandbox resource limits; test timeout enforcement
-
-**Threat D4: Checkpoint DoS**
-- **Scenario**: Checkpoint storage fills with malicious data
-- **Architectural Mitigation**: Checkpoint size limits prevent unbounded growth. Old checkpoints are cleaned up based on retention policies. Database size monitoring alerts before capacity exhaustion
-- **Verification**: Review checkpoint size limits; test cleanup policies
-
-#### 8.1.7 Elevation of Privilege Threats
-
-Elevation of privilege threats involve gaining capabilities beyond intended access. The sandbox and credential isolation are the primary defenses.
-
-**Threat E1: Sandbox Escape**
-- **Scenario**: Agent escapes the sandbox to access host resources or credentials
-- **Architectural Mitigation**: Bubblewrap on Linux and Seatbelt on macOS enforce strict isolation. Seccomp BPF filters block dangerous syscalls including socket(AF_UNIX) for Unix domain socket creation. Network isolation routes all traffic through the Egress Gateway. No host filesystem access except through explicit mounts
-- **Verification**: Test bubblewrap/seatbelt configuration; verify syscall filtering; review mount restrictions
-
-**Threat E2: Credential Access via Prompt Injection**
-- **Scenario**: Attacker crafts a prompt that tricks the Agent into revealing credentials
-- **Architectural Mitigation**: Credentials are never in the sandbox context. The Agent has no awareness of credential existence. Content scanning middleware blocks any output containing credential-like patterns. Memory middleware prevents credential persistence
-- **Verification**: Test prompt injection attempts; verify credential isolation; review content scanning
-
-**Threat E3: Memory Manipulation via Injection**
-- **Scenario**: Attacker injects false memories to influence Agent behavior
-- **Architectural Mitigation**: Memory extraction, consolidation, and retrieval are handled by Orchestrator middleware. The Agent receives only consolidated context, never raw memory access. Memories are encrypted at rest with vault-stored keys
-- **Verification**: Review memory middleware implementation; verify Agent cannot directly access memories
-
-**Threat E4: Tool Escalation**
-- **Scenario**: Attacker uses tools beyond intended capabilities
-- **Architectural Mitigation**: All tools are wrapped by the Orchestrator with strict input validation. Capability-based security limits available tools per configuration. Tools execute in the sandbox with resource limits
-- **Verification**: Review tool wrapper validation; test capability restrictions
-
-#### 8.1.8 Security Properties
-
-The following security properties are verified through the threat model:
-
-1. **Credential Isolation**: Credentials are never accessible to the Agent under any configuration
-2. **Sandbox Integrity**: The Agent cannot escape isolation boundaries regardless of input
-3. **Memory Confidentiality**: Memories are encrypted at rest and accessible only through middleware
-4. **Audit Completeness**: All significant actions are logged with actor identification
-5. **Non-Repudiation**: Actions cannot be plausibly denied due to cryptographic evidence
-6. **Configuration Integrity**: Security-critical settings cannot be disabled or bypassed
-
-#### 8.1.9 Threat Model Maintenance
-
-This threat model is a living document that must be updated when:
-
-1. New components are added to the architecture
-2. External dependencies are integrated (e.g., new LLM providers, MCP servers)
-3. Significant changes are made to the security model
-4. New attack vectors are discovered in the threat landscape
-
-The threat model should be reviewed quarterly and after any major architectural changes.
-
-### 8.2 Credential Handling
-
-Credentials follow strict lifecycle rules:
-
-1. **Provisioning:** System credentials (master encryption key, egress HMAC key, API token) are generated during `openkraken init` and stored in the OS-level vault. Integration credentials (API keys, bot tokens) are provisioned by the Owner via `openkraken credentials set` or OS-native vault tools.
-2. **Retrieval:** Orchestrator reads all credentials at startup via CredentialVault abstraction.
-3. **Caching:** Credentials cached in memory with configurable timeout (default 60 minutes).
-4. **Rotation:** Integration credentials re-read from vault on signal (SIGHUP) or timeout. System credentials rotated via dedicated CLI commands (`rotate-master-key`, `rotate-egress-key`, `rotate-api-token`). No restart required.
-5. **Destruction:** Process memory cleared on shutdown. No persistent storage.
-
-### 8.3 Sandboxing Guarantees
-
-| Capability | Linux (Bubblewrap) | macOS (Seatbelt) |
-|------------|-------------------|------------------|
-| Filesystem isolation | Bind mounts, literal paths only | Seatbelt profile rules, glob support |
-| Network isolation | Network namespace, proxy routing | Seatbelt rules, proxy routing |
-| Process limits | cgroups | Process timeout mechanisms |
-| Unix socket blocking | Seccomp BPF filter | Seatbelt rules |
-| Violation detection | Exit codes, error messages | Native `os_log` integration |
-
----
-
-### 8.4 Encryption Key Management Lifecycle
-
-The TechSpec specifies AES-256-GCM application-level encryption for `messages.content` and `memories.content`/`memories.metadata` fields. This section defines the complete key lifecycle.
-
-**Key Hierarchy — Single Master Key with HKDF Derivation:**
-
-OpenKraken uses a single 256-bit master key stored in the OS-level credential vault, combined with HKDF (RFC 5869) to derive purpose-specific subkeys:
-
-```
-Master Key (256-bit, vault-stored under "openkraken-master-key")
-  ├── Memory Encryption Key  = HKDF(master, info="openkraken-memory-v1")
-  ├── Message Encryption Key = HKDF(master, info="openkraken-messages-v1")
-  └── Backup Encryption Key  = HKDF(master, info="openkraken-backup-v1")
-```
-
-**Key Generation:**
-
-The master key is generated once during `openkraken init`:
-1. Generate 256 bits via `crypto.getRandomValues()`
-2. Store in OS-level vault under `openkraken-master-key`
-3. Display a one-time recovery code (base64-encoded master key) for Owner to record offline
-4. Log SECURITY event (key fingerprint only, never the key itself)
-
-The recovery code is the only mechanism to recover encrypted data if the vault is lost. This is explicitly communicated during provisioning.
-
-**Key Storage:**
-
-| Platform | Vault | Service Identifier | Access Control |
-|----------|-------|--------------------|----------------|
-| macOS | Keychain Services | `openkraken-master-key` | Application-specific access group |
-| Linux | secret-service | `openkraken-master-key` | Session-scoped D-Bus access |
-
-The master key is read once at Orchestrator startup, cached in process memory, and never written to disk, logs, environment variables, or network connections.
-
-**Key Rotation:**
-
-Rotation is Owner-initiated via `openkraken credentials rotate-master-key`. Automatic rotation is intentionally not implemented — in a single-tenant system, automatic rotation creates more risk (data inaccessibility from failed rotation) than it mitigates.
-
-Rotation procedure:
-1. Generate new 256-bit master key
-2. Read all encrypted records from `messages` and `memories` tables
-3. Decrypt with old key's derived subkeys
-4. Re-encrypt with new key's derived subkeys
-5. Write re-encrypted records in a single SQLite transaction
-6. Store new key in vault, replacing old
-7. Display new recovery code
-8. Log SECURITY event (rotation timestamp, record count, old/new key fingerprints)
-
-If rotation fails mid-process, the transaction rolls back and the old key remains active.
-
-**Key Derivation (Conceptual Pattern):**
-
-```typescript
-import { hkdf } from "node:crypto";
-
-async function deriveSubkey(masterKey: Buffer, purpose: string): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    hkdf("sha256", masterKey, "", purpose, 32, (err, key) => {
-      if (err) reject(err);
-      else resolve(Buffer.from(key));
-    });
-  });
-}
-```
-
-**Interaction with Backup/Restore:**
-
-Backups contain encrypted data but not the master key. Restoring a backup requires the master key (or recovery code) that was active when the backup was created. If the Owner rotated the master key after backup creation, the backup's encrypted data requires the old recovery code. This is an intentional design constraint communicated during key rotation.
-
-**NIST Alignment:** AES-256 per NIST SP 800-57 Part 1 Rev 5 (Table 2). HKDF per NIST SP 800-56C Rev 2. Key lifetime is Owner-controlled (appropriate for data-at-rest encryption in single-tenant contexts).
-
----
-
-### 8.5 Backup and Disaster Recovery
-
-A complete OpenKraken backup consists of three components:
-
-| Component | Contents | Mechanism | Frequency |
-|-----------|----------|-----------|-----------|
-| **Database snapshot** | `openkraken.db` (all tables) | `db.serialize()` → gzip | Daily (configurable) |
-| **Configuration export** | `config.yaml`, Nix flake inputs, skill directories | File archive | On change |
-| **Recovery code** | Master encryption key (base64) | Owner's offline storage | Generated during init and key rotation |
-
-**Database Backup Procedure (`openkraken backup create`):**
-
-1. Call `db.serialize()` on live database (WAL-safe, no exclusive lock required)
-2. Run `PRAGMA integrity_check` on serialized buffer
-3. Compress with gzip
-4. Write to `$OPENKRAKEN_HOME/backups/openkraken-<ISO8601-date>.db.gz`
-5. Log backup event to audit log (size, checksum, duration)
-6. Enforce retention: delete backups older than configured retention (default 7 days)
-
-**Automated Schedule:**
-
-Configured via `storage.backup.schedule` in `config.yaml` (default: `0 3 * * *`). The Platform Manager (Nix) generates a systemd timer (Linux) or launchd calendar interval (macOS).
-
-**Disaster Recovery Matrix:**
-
-| Scenario | Procedure | Data Loss |
-|----------|-----------|-----------|
-| Orchestrator crash | Automatic restart via systemd/launchd. Checkpointer restores session from WAL. | None |
-| Database corruption | `openkraken backup restore <file>`. Replaces `openkraken.db` with deserialized backup. | Since last backup |
-| Vault reset / OS reinstall | `openkraken credentials restore-master-key` with recovery code. Then restore database. | None (if recovery code + backup available) |
-| Complete host loss | Fresh Nix install → restore config → restore vault from recovery code → restore database. | Since last backup |
-| Recovery code lost + vault intact | System operates normally. Owner should rotate key immediately to generate new recovery code. | None |
-| Recovery code lost + vault lost | **Unrecoverable.** Encrypted fields permanently inaccessible. Unencrypted data (checkpoints, audit, proxy, skills) remains accessible. | Encrypted message + memory content |
-
-**Restore Command (`openkraken backup restore <file>`):**
-
-1. Stop Orchestrator gracefully
-2. Decompress backup
-3. Run `PRAGMA integrity_check` on restored data
-4. Verify `schema_versions` table compatibility with running Orchestrator version
-5. Attempt to decrypt a sample encrypted field to verify vault key matches backup encryption
-6. If decryption fails, warn Owner and require `--force` flag to proceed
-7. Replace `openkraken.db`
-8. Restart Orchestrator
-9. Log SECURITY event (restore timestamp, backup date, integrity result)
-
-**Backup Size Management:**
-
-Compressed SQLite databases typically achieve 3-5x compression with gzip. With default 7-day retention, total backup storage is bounded to approximately `7 × compressed_db_size`. The Alert Emitter warns when database size approaches the configured limit (default 8GB warning at 10GB max).
-
-**Automated Backup Verification:**
-
-Backups are automatically verified weekly to ensure restorability.
-
-**Verification Process:**
-1. Restore backup to temporary database (`:memory:` or temp file)
-2. Run `PRAGMA integrity_check`
-3. Decrypt sample encrypted field to verify key compatibility
-4. Report success/failure to Owner via configured alert channels
-5. Clean up temporary files
-
-**Configuration:**
-```yaml
-storage:
-  backup:
-    enabled: true
-    schedule: "0 3 * * *"  # Daily at 3 AM
-    retentionDays: 7
-    verifySchedule: "0 4 * * 0"  # Weekly on Sunday at 4 AM
-    verifyTimeoutMinutes: 5
-```
-
-**Verification Results:**
-| Result | Severity | Action |
-|--------|----------|--------|
-| Success | INFO | Logged, no alert |
-| Integrity failure | CRITICAL | Alert Owner immediately |
-| Decryption failure | CRITICAL | Alert Owner immediately |
-| Timeout | ERROR | Alert Owner, retry next cycle |
-
-**Implementation Pattern:**
-```typescript
-class BackupVerifier {
-  async verify(backupPath: string): Promise<VerificationResult> {
-    const tempDb = await this.decompressToTemp(backupPath);
-    
-    try {
-      // 1. Integrity check
-      const integrity = await this.checkIntegrity(tempDb);
-      if (!integrity.ok) {
-        return { ok: false, error: `Integrity check failed: ${integrity.error}` };
-      }
-      
-      // 2. Decryption test
-      const decryptTest = await this.testDecryption(tempDb);
-      if (!decryptTest.ok) {
-        return { ok: false, error: `Decryption test failed: ${decryptTest.error}` };
-      }
-      
-      return { ok: true };
-    } finally {
-      await this.cleanup(tempDb);
-    }
-  }
-}
-```
-
----
-
-### 8.6 CLI and Web UI Authentication
-
-The CLI and Web UI authenticate to the Orchestrator's local HTTP API using a vault-stored static token.
-
-**Token Generation:**
-
-During `openkraken init`, a 256-bit cryptographically random token is generated, stored in the OS-level vault under `openkraken-api-token`, and displayed once:
-
-```bash
-$ openkraken init
-# ... provisioning steps ...
-API token generated. Add to your shell profile:
-  export OPENKRAKEN_TOKEN="ok_a1b2c3d4e5f6..."
-```
-
-The `ok_` prefix enables identification in shell history and configuration.
-
-**Token Usage:**
-
-The CLI includes the token in every request:
-```
-Authorization: Bearer ok_a1b2c3d4e5f6...
-```
-
-The Orchestrator validates via constant-time comparison against the vault-stored value. Invalid tokens receive HTTP 401.
-
-The Web UI uses the same token, stored in an HTTP-only session cookie after initial authentication. Session expiry is configurable (default: 24 hours).
-
-**Token Rotation:**
-
-`openkraken credentials rotate-api-token`:
-1. Generate new 256-bit token
-2. Store in vault, replacing old
-3. Display new token for Owner's shell profile
-4. Invalidate all existing Web UI sessions immediately
-5. Log SECURITY event
-
-**Design Rationale:**
-
-JWT/OAuth/OIDC are not used because the system binds to `127.0.0.1` with exactly one user. The threat model is "prevent unauthorized local processes from issuing commands," not federated identity. A static vault-stored token provides equivalent security without token signing, refresh flows, or identity provider infrastructure.
-
-Authentication is required (rather than passwordless) because in VPS deployments, other users on a shared host could access `127.0.0.1`. The token prevents unauthorized local access without per-invocation password entry.
-
----
-
-### 8.7 Egress Gateway Resilience
-
-The Egress Gateway is a mandatory chokepoint for all sandbox network traffic. The following mitigations address the single point of failure risk.
-
-**Health Monitoring:**
+**Egress gateway resilience contract:**
 
 | Parameter | Value |
-|-----------|-------|
+| --- | --- |
 | Check interval | 30 seconds |
 | Timeout | 5 seconds |
 | Failure threshold | 3 consecutive failures |
 | Recovery threshold | 2 consecutive successes |
 
-**Automatic Restart:**
+When the gateway is unhealthy, new outbound-capable sandbox work SHALL fail closed or enter a bounded waiting state rather than bypassing the egress boundary. Recovery and repeated failure events SHALL emit distinct audit evidence.
+The bounded waiting posture uses a maximum queue of `100` requests with a per-request wait ceiling of `60` seconds before surfacing `service_unavailable_error` to the runtime.
 
-```nix
-# Nix service configuration
-services.openkraken-egress-gateway = {
-  serviceConfig = {
-    Restart = "always";
-    RestartSec = 5;
-    StartLimitIntervalSec = 60;
-    StartLimitBurst = 3;
-  };
-};
+### 5.7 Credential, Encryption, Backup, and Recovery Notes
+The credential and recovery model is part of the product's safety contract, not just an operational convenience.
+
+**Credential classes:**
+
+| Class | Examples | Storage |
+| --- | --- | --- |
+| System credentials | `openkraken-master-key`, `openkraken-egress-hmac-key`, `openkraken-api-token` | Platform vault, with explicit headless fallback where allowed |
+| Integration credentials | Anthropic API key, Telegram token, future connected-service secrets | Platform vault or approved fallback path |
+
+**Credential retrieval contract:**
+1. Resolve credentials through `CredentialVault`.
+2. Prefer platform-native storage.
+3. Fall back to age-encrypted file storage only in explicit headless or development scenarios.
+4. Expose credential references and backend state to the runtime, never raw values to the Agent.
+
+**Key hierarchy:**
+
+```text
+Master Key (vault-stored)
+├── Message Encryption Key  = HKDF(master, "openkraken-messages-v1")
+├── Memory Encryption Key   = HKDF(master, "openkraken-memory-v1")
+└── Backup Encryption Key   = HKDF(master, "openkraken-backup-v1")
 ```
 
-**Orchestrator Recovery Logic:**
+**Sensitive-field encryption contract:**
+- `messages.content` and any future sensitive memory payloads SHALL use application-level AES-256-GCM rather than relying on database-level transparent encryption.
+- Each encrypted record SHALL use a unique random IV and authenticated tag.
+- Encryption keys SHALL be derived from the vault-stored master key via HKDF purpose separation, not reused directly across message, memory, and backup domains.
+- `messages.encrypted` and related schema markers indicate ciphertext handling state and SHALL remain queryable without disclosing plaintext.
+- Filesystem encryption such as FileVault or LUKS is defense-in-depth, not a substitute for the application-level contract above.
 
-```typescript
-class EgressGatewayMonitor {
-  private consecutiveFailures = 0;
-  private readonly FAILURE_THRESHOLD = 3;
-  private readonly RECOVERY_THRESHOLD = 2;
-  private isHealthy = true;
-  
-  async checkHealth(): Promise<boolean> {
-    try {
-      const response = await fetch(`${EGRESS_URL}/health`, {
-        signal: AbortSignal.timeout(5000)
-      });
-      
-      if (response.ok) {
-        this.consecutiveFailures = 0;
-        if (!this.isHealthy) {
-          // Recovery detected
-          await this.handleRecovery();
-        }
-        return true;
-      }
-    } catch {
-      // Fall through to failure handling
-    }
-    
-    this.consecutiveFailures++;
-    
-    if (this.consecutiveFailures >= this.FAILURE_THRESHOLD && this.isHealthy) {
-      await this.handleFailure();
-    }
-    
-    return false;
-  }
-  
-  private async handleFailure(): Promise<void> {
-    this.isHealthy = false;
-    
-    // CRITICAL alert to Owner
-    await alertEmitter.send({
-      severity: "CRITICAL",
-      component: "egress_gateway",
-      message: "Egress Gateway health check failed - restarting"
-    });
-    
-    // Request restart via systemd
-    await $`systemctl restart openkraken-egress-gateway`;
-  }
-  
-  private async handleRecovery(): Promise<void> {
-    this.isHealthy = true;
-    this.consecutiveFailures = 0;
-    
-    // INFO alert on recovery
-    await alertEmitter.send({
-      severity: "INFO",
-      component: "egress_gateway",
-      message: "Egress Gateway recovered"
-    });
-  }
-}
+Brownfield note: the current repo already carries encrypted-field markers in [001_initial_schema.sql](/home/oscar/GitHub/OpenKraken/packages/orchestrator/migrations/001_initial_schema.sql#L25) and [002_add_encrypted_fields.sql](/home/oscar/GitHub/OpenKraken/packages/orchestrator/migrations/002_add_encrypted_fields.sql#L1), but the full encrypt/decrypt pipeline is still target-state work rather than completed implementation.
+
+**Backup set contract:**
+
+| Component | Required | Notes |
+| --- | --- | --- |
+| SQLite database snapshot | Yes | Must pass integrity checks before being considered valid |
+| Active configuration state | Yes | Includes root config and effective persisted config documents |
+| Recovery material for encrypted data | Yes | Required whenever encrypted records cannot be decrypted from current live vault state |
+
+**Disaster recovery matrix:**
+
+| Scenario | Procedure | Data Loss |
+| --- | --- | --- |
+| Orchestrator crash | Restart service and resume from WAL plus checkpointer state | None under healthy storage |
+| Database corruption | Restore validated backup, then restart under canonical startup sequence | Since last valid backup |
+| Vault reset or OS reinstall | Restore recovery material, then restore database and configuration | None if recovery material is intact |
+| Complete host loss | Fresh install, restore config, restore recovery material, restore database | Since last valid backup |
+| Recovery material lost while vault remains intact | System continues, but operator should rotate material immediately | None if vault remains intact |
+| Vault and recovery material both lost | Encrypted records become unrecoverable | Encrypted message and memory payloads |
+
+**Restore validation steps:**
+1. Stop the active runtime.
+2. Validate backup integrity and schema compatibility.
+3. Attempt sample decryption for encrypted fields when applicable.
+4. Replace active state only after validation succeeds.
+5. Restart under the canonical startup sequence and emit an audit event for the restore.
+
+**Headless fallback chain:**
+
+```text
+Platform vault
+  -> age-encrypted file fallback
+  -> explicit provisioning error
 ```
 
-**Graceful Degradation:**
+**Headless fallback properties:**
 
-When Gateway is unavailable:
-- New sandbox network requests are queued (max queue: 100)
-- Queued requests timeout after 60 seconds
-- Agent receives `service_unavailable_error` for timed-out requests
-- Checkpointer persists any suspended sessions
-
-**Alerting:**
-
-| Event | Severity | Channel | Deduplication |
-|-------|----------|---------|---------------|
-| Gateway failure | CRITICAL | Telegram | 5 minutes |
-| Gateway recovery | INFO | Telegram | None |
-| Multiple restarts | ERROR | Email | 30 minutes |
-
----
-
-### 8.8 Headless Linux Credential Fallback
-
-For Linux systems without secret-service (servers, containers, WSL), OpenKraken provides an encrypted file-based credential fallback.
-
-**Fallback Chain:**
-
-```
-1. Primary: secret-service (D-Bus)
-   ↓ (unavailable or fails)
-2. Fallback: age-encrypted file
-   ↓ (missing or corrupted)
-3. Error: Credential provisioning required
-```
-
-**Encrypted File Storage:**
-
-| Property | Value |
-|----------|-------|
+| Property | Contract |
+| --- | --- |
 | Location | `$OPENKRAKEN_HOME/credentials.enc` |
-| Encryption | age (modern alternative to PGP) |
-| Key derivation | HKDF from master key |
-| Permissions | 0600 (owner read/write only) |
-
-**Nix Integration:**
-
-```nix
-# Add age to dependencies
-packages = with pkgs; [
-  age  # For credential fallback encryption
-];
-```
-
-**Implementation:**
-
-```typescript
-interface CredentialVault {
-  retrieve(service: string): Promise<string | null>;
-}
-
-class SecretServiceVault implements CredentialVault {
-  // Primary: D-Bus secret-service API
-  async retrieve(service: string): Promise<string | null> {
-    // Implementation using libsecret or equivalent
-  }
-}
-
-class AgeFileVault implements CredentialVault {
-  private readonly credsPath: string;
-  private ageKey: Buffer | null = null;
-  
-  async retrieve(service: string): Promise<string | null> {
-    if (!this.ageKey) {
-      // Derive age key from master key using HKDF
-      const masterKey = await this.getMasterKey();
-      this.ageKey = await deriveSubkey(masterKey, "openkraken-credentials-v1");
-    }
-    
-    // Decrypt credentials.enc
-    const encrypted = await Bun.file(this.credsPath).text();
-    const decrypted = await ageDecrypt(encrypted, this.ageKey);
-    const creds = JSON.parse(decrypted);
-    
-    return creds[service] || null;
-  }
-}
-
-class CompositeVault implements CredentialVault {
-  private primary = new SecretServiceVault();
-  private fallback = new AgeFileVault();
-  
-  async retrieve(service: string): Promise<string | null> {
-    // Try primary first
-    try {
-      const secret = await this.primary.retrieve(service);
-      if (secret) return secret;
-    } catch (error) {
-      logger.warn("secret-service unavailable, using fallback", { error });
-    }
-    
-    // Fall back to encrypted file
-    return this.fallback.retrieve(service);
-  }
-}
-```
-
-**Credential File Format:**
-
-```yaml
-# credentials.enc (age-encrypted)
-openkraken-master-key: "base64-encoded-key"
-openkraken-egress-hmac-key: "base64-encoded-key"
-openkraken-api-token: "ok_..."
-telegram-token: "..."
-anthropic-api-key: "..."
-```
-
-**Provisioning:**
-
-```bash
-# Initialize fallback storage
-openkraken credentials init-fallback
-
-# Add credential to fallback
-openkraken credentials set --fallback <service>
-
-# Rotate fallback encryption key
-openkraken credentials rotate-fallback-key
-```
-
-**Security Considerations:**
-
-- Age key never written to disk, derived on-demand from master key
-- File permissions strictly enforced (0600)
-- Master key still required (from vault or recovery code) to decrypt
-- Falls back to file storage only when secret-service unavailable
-- Logs WARNING when using fallback (non-default path)
-
----
-
-## 9. Deployment Architecture
-
-### 9.1 Nix Flake Structure
-
-The Platform Manager uses Nix Flakes for reproducible builds across Linux and macOS.
-
-```nix
-{
-  description = "OpenKraken - Deterministic Security-First Agentic Runtime";
-
-  inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
-    flake-utils.url = "github:numtide/flake-utils";
-    bun-overlay.url = "github:oven-sh/bun/flake";
-  };
-
-  outputs = { self, nixpkgs, flake-utils, bun-overlay }:
-    flake-utils.lib.eachDefaultSystem (system:
-      let
-        pkgs = import nixpkgs {
-          inherit system;
-          overlays = [ bun-overlay ];
-        };
-      in
-      {
-        packages.openkraken-orchestrator = pkgs.callPackage ./nix/package.nix { };
-        packages.openkraken-gateway = pkgs.callPackage ./nix/gateway-package.nix { };
-        packages.openkraken-skills-cli = pkgs.callPackage ./cli/skills/skills-cli.nix { };
-        packages.default = self.packages.${system}.openkraken-orchestrator;
-
-        devShells.default = pkgs.callPackage ./nix/shell.nix { };
-
-        nixosModules.openkraken = import ./nix/nixos-modules/openkraken.nix;
-        darwinModules.openkraken = import ./nix/darwin-modules/openkraken.nix;
-      }
-    );
-}
-```
-
-### 9.2 Service Management
-
-**Linux (systemd):**
-```ini
-[Unit]
-Description=OpenKraken Orchestrator
-After=network.target
-
-[Service]
-Type=simple
-User=openkraken
-Environment=OPENKRAKEN_HOME=/var/lib/openkraken
-ExecStart=/nix/store/openkraken-orchestrator/bin/openkraken
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-```
-
-**macOS (launchd plist):**
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>com.openkraken.orchestrator</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/nix/store/openkraken-orchestrator/bin/openkraken</string>
-  </array>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>OPENKRAKEN_HOME</key>
-    <string>/Users/owner/Library/Application Support/OpenKraken</string>
-  </dict>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
-</dict>
-</plist>
-```
-
-### 9.3 CI/CD Strategy (Nix-First with Devenv)
-
-**Principles:**
-1. **Input-Addressable Builds**: Cache hits are automatic based on hash (no manual cache scripts)
-2. **Zero-Config Caching**: No `npm ci` or `restore_cache` steps needed - Nix handles this
-3. **Garnix for Incremental Builds**: Recommended for production CI (automatic binary caching with commit selection)
-
-**GitHub Actions with Devenv:**
-```yaml
-name: OpenKraken CI
-
-on:
-  push:
-    branches: [main]
-  pull_request:
-
-jobs:
-  test:
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # Required for flakes
-
-      - name: Install Nix
-        uses: cachix/install-nix-action@v31
-        with:
-          nix_path: nixpkgs=channel:nixos-25.11
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-            accept-flake-config = true
-
-      - name: Cache Nix store (eval + build cache)
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/nix
-            ~/.config/nix
-          key: nix-${{ matrix.os }}-${{ hashFiles('**/flake.lock', '**/devenv.lock') }}
-          restore-keys: |
-            nix-${{ matrix.os }}-
-
-      - name: Setup Cachix
-        uses: cachix/cachix-action@v16
-        with:
-          name: openkraken
-          authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
-          extraPullNames: devenv, cachix  # Pull from public caches
-
-      - name: Install devenv
-        run: nix profile install nixpkgs#devenv
-
-      - name: Build all packages
-        run: |
-          nix build .#packages.${{ runner.hostArch }}-linux.openkraken-orchestrator
-          nix build .#packages.${{ runner.hostArch }}-linux.openkraken-gateway
-
-      - name: Run devenv tests
-        run: devenv test --no-cached  # Run tests with enterTest
-
-      - name: Generate SBOM
-        run: nix run .#sbom
-
-      - name: Upload SBOM artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: sbom-${{ matrix.os }}
-          path: sbom-*.json
-          retention-days: 90
-
-      - name: Build and verify
-        run: |
-          devenv tasks run build
-          bun test
-
-      - name: Push to Cachix (main branch only)
-        if: github.ref == 'refs/heads/main'
-        run: |
-          nix copy --to cachix://openkraken result
-```
-
-**Garnix Configuration** (`.garnix.yaml` - Recommended for Production CI):
-```yaml
-# Garnix: Automatic binary caching and incremental builds
-builds:
-  include:
-    - system: x86_64-linux
-    - system: aarch64-linux
-    - system: x86_64-darwin
-
-cache:
-  enabled: true
-  public: true
-  name: openkraken
-
-extra_nix_config:
-  experimental-features: nix-command flakes
-```
-
-**Key CI Benefits:**
-- **Zero-config caching**: Cache hits are automatic based on flake.lock hash
-- **Cross-platform**: Same workflow runs on Linux and macOS
-- **Dev parity**: Same devenv.nix runs locally and in CI
-- **Incremental builds**: Garnix only rebuilds changed packages
-- **Binary cache sharing**: Push to Cachix on main, pull on all branches
-
----
-
-## A. Research Findings Summary (v2.1.0)
-
-This appendix summarizes findings from comprehensive technology research conducted via Librarian CLI (15/16 agents successful) and web research (3/3 credential vault searches).
-
-### A.1 Swarm Research Results
-
-| Phase | Technologies | Success Rate | Key Findings |
-|-------|--------------|--------------|--------------|
-| 1: Core Orchestration | Bun Runtime, LangChain.js/LangGraph | 100% | bun:sqlite 3-6x faster; Bun FFI experimental |
-| 2: Security & Isolation | Anthropic Sandbox, Go HTTP CONNECT | 100% | Sandbox proxy chaining confirmed; Go allowlist NOT in stdlib |
-| 3: UI & Observability | SvelteKit, OpenTUI, Langfuse, OTel | 100% | SvelteKit OTel partial; OpenTUI missing HTTP client |
-| 4: Infrastructure | Nix/Devenv, CUE | 100% | ADR-020: Cross-Platform Service Management Strategy accepted |
-| 5: Integration | grammY, Skills CLI, Agent Browser | 100% | Skills CLI missing approval workflow |
-| 6: Credential Vaults | macOS Keychain, Linux Secret Service, cross-keychain | Web research | cross-keychain recommended (2025) |
-
-### A.2 Critical Implementation Gaps
-
-| Gap | ADR | Impact | Recommendation |
-|-----|-----|--------|----------------|
-| ~~Systemd/Launchd Generation~~ | ~~ADR-009~~ | ~~HIGH~~ | ~~Build custom Nix module for service generation~~ (RESOLVED: ADR-020 accepted) |
-| Go Domain Allowlist | ADR-016 | HIGH | Implement sync.RWMutex map[string]bool with file hot-reload |
-| Go Audit Logging | ADR-016 | HIGH | Use log/slog for structured JSON |
-| Skills Owner Approval | ADR-013 | HIGH | Implement pre-install approval workflow |
-| Skills Content Validation | ADR-013 | HIGH | Integrate security pipeline scanning |
-| OpenTUI HTTP Client | ADR-006 | MEDIUM | Build custom HTTP client wrapper |
-| Bun/LangChain Compatibility | ADR-001 | MEDIUM | Test and document edge cases |
-| Langfuse @langfuse/otel Node-only | ADR-012 | LOW | Use @langfuse/client instead |
-
-### A.3 Platform-Specific Implementation Details
-
-#### A.3.1 Anthropic Sandbox Runtime (from research)
-
-**Linux (bubblewrap):**
-```typescript
-const sandbox = await Sandbox.create({
-  // Process isolation
-  unshareNet: true,
-  unsharePid: true,
-  
-  // Network proxy
-  httpProxyPort: 3128,
-  socksProxyPort: 1080,
-  
-  // Filesystem
-  bindMounts: ["/data:rw", "/etc:ro"],
-});
-```
-
-**macOS (sandbox-exec):**
-```typescript
-// Auto-generated Seatbelt profile from config
-const profile = `
-(version 1)
-(allow default)
-(deny network*)
-(allow network http-proxy://localhost:3128)
-(allow network socks5-proxy://localhost:1080)
-`;
-```
-
-**Chained Proxy Architecture:**
-```
-Orchestrator → Sandbox HTTP (3128) → Go Egress (allowlist, audit) → Internet
-              ↘ Sandbox SOCKS (1088) ─────────────────────┘
-```
-
-#### A.3.2 Go HTTP CONNECT Proxy (from research)
-
-**Core API (net/http stdlib):**
-```go
-// Client-side CONNECT (transport.go)
-func (t *Transport) dialConn(ctx context.Context, cm connectMethod) (*persistConn, error) {
-    // CONNECT request to proxy
-    // TLS upgrade
-    // Return persistConn for request/response
-}
-
-// Server-side CONNECT (server.go via Hijacker)
-func (s *Server) Serve(l net.Listener) error {
-    for {
-        conn, _ := l.Accept()
-        go s.handleConnect(conn)
-    }
-}
-```
-
-**Performance Characteristics:**
-- Dual goroutine per connection (readLoop/writeLoop)
-- bufio.NewReaderSize 32KB (default 4KB too small)
-- connLRU for connection pooling
-- io.ReaderFrom zero-copy for file transfers
-
-#### A.3.3 Credential Vaults (from web research)
-
-**macOS Keychain:**
-```swift
-// kSecClassGenericPassword for API keys
-let query: [String: Any] = [
-    kSecClass as String: kSecClassGenericPassword,
-    kSecAttrService as String: "com.openkraken",
-    kSecAttrAccount as String: "anthropic-api-key",
-    kSecReturnData as String: true,
-];
-```
-
-**Linux Secret Service:**
-```typescript
-// org.freedesktop.Secrets via D-Bus
-import { SecretService } from "libsecret-service";
-
-const service = new SecretService(sessionBus);
-const collection = await service.getDefaultCollection();
-const item = await collection.createItem(
-    "anthropic-api-key",
-    { service: "openkraken", account: "anthropic" },
-    secret
-);
-```
-
-**cross-keychain Recommendation:**
-```json
-{
-  "dependencies": {
-    "cross-keychain": "^1.1.0"
-  }
-}
-```
-
-#### A.3.4 SvelteKit + LangChain Streaming (from research)
-
-**SSE Implementation:**
-```typescript
-// Server: SSE with chunked encoding
-export async function POST({ request }) {
-    const stream = new ReadableStream({
-        start(controller) {
-            for await (const chunk of agent.stream(messages)) {
-                controller.enqueue(`data: ${JSON.stringify(chunk)}\n\n`);
-            }
-            controller.enqueue(`data: [DONE]\n\n`);
-            controller.close();
-        },
-    });
-    return new Response(stream, { headers: { "Content-Type": "text/event-stream" } });
-}
-
-// Client: SSE consumption
-const reader = response.body.getReader();
-const decoder = new TextDecoder();
-while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    const line = decoder.decode(value);
-    // Parse "data: {...}\n\n"
-}
-```
-
-### A.4 Nix + Devenv Critical Findings
-
-**CRITICAL - Service Generation Gap:**
-```nix
-# WARNING: Devenv does NOT generate systemd units or launchd plists
-# Devenv uses runtime socket activation: LISTEN_FDS, LISTEN_PID
-
-# Required: Custom Nix module
-systemd.services = lib.mapAttrs' (name: proc:
-    lib.nameValuePair "openkraken-${name}" {
-        Service.ExecStart = proc.exec;
-    }
-) config.devenv.processes;
-```
-
-**Cross-Platform Build Matrix:**
-```nix
-flake-utils.lib.eachSystem [
-    "x86_64-linux"
-    "aarch64-linux"
-    "x86_64-darwin"
-    "aarch64-darwin"
-] (system: { /* ... */ })
-```
-
-**Go Cross-Compilation:**
-```nix
-pkgs.buildGoModule {
-    overrideAttrs = (old: {
-        GOOS = if pkgs.stdenv.isDarwin then "darwin" else "linux";
-        GOARCH = if pkgs.stdenv.isAarch64 then "arm64" else "amd64";
-    });
-}
-```
-
-### A.5 LangChain.js Integration Details
-
-**createAgent() API:**
-```typescript
-// libs/langchain/src/agents/index.ts
-interface CreateAgentOptions {
-    model: LanguageModelLike;
-    tools: Tool[];
-    systemPrompt?: string;
-    responseFormat?: ZodSchema;
-    stateSchema?: Record<string, unknown>;
-    contextSchema?: Record<string, unknown>;
-    middleware?: Middleware[];
-    checkpointer?: BaseCheckpointSaver;
-    store?: BaseStore;
-    version?: "v1" | "v2";
-}
-```
-
-**Bun-Native Checkpointer:**
-```typescript
-// Bun-native LangGraph-compatible checkpointer
-import { BunSqliteSaver } from "@skroyc/bun-sqlite-checkpointer";
-
-const checkpointer = BunSqliteSaver.fromConnString("./data/openkraken.db");
-```
-
-**MultiServerMCPClient:**
-```typescript
-// @langchain/mcp-adapters connection types
-type ConnectionType = "stdio" | "streamable_http" | "sse";
-
-const client = new MultiServerMCPClient({
-    mcpServers: {
-        filesystem: {
-            command: "npx",
-            args: ["@modelcontextprotocol/server-filesystem", "/data"],
-        },
-    },
-});
-```
-
-### A.6 CUE Validation Implementation
-
-**Schema Definition:**
-```cue
-// config.cue
-#AppConfig: {
-    name: string
-    version: string
-    sandbox: {
-        httpPort: int & >=1 & <=65535
-        socksPort: int & >=1 & <=65535
-        allowedDomains: [...string]
-    }
-}
-```
-
-**Commands:**
-| Command | Purpose |
-|---------|---------|
-| `cue vet` | Validate config.yaml against schema |
-| `cue def` | Print consolidated definitions |
-| `cue export` | Export to JSON/YAML |
-| `cue import jsonschema` | Import existing JSON Schema |
-
-### A.7 Vercel Agent Browser Integration
-
-**Client-Daemon Architecture:**
-```bash
-# CLI → Daemon (Node.js) → Browser (Playwright CDP)
-agent-browser launch --profile ephemeral
-agent-browser goto "https://example.com"
-agent-browser screenshot --out output.png
-```
-
-**Sandbox Integration:**
-```typescript
-// Daemon runs inside sandbox, exposes Unix socket
-const daemon = spawn("bun", ["daemon.ts"], {
-    stdio: "inherit",
-    env: { ...sandboxEnv, SOCKET_PATH: "/tmp/browser.sock" },
-});
-```
-
-**Session Isolation:**
-- Unique socket paths per session
-- Ephemeral profiles for single-use
-- Storage state import/export for persistence
-- Automatic cleanup on session termination
-
-### A.8 Documentation Gaps Identified
-
-| Technology | Gap | Action |
-|------------|-----|--------|
-| ~~Nix/Devenv~~ | ~~No systemd/launchd generation docs~~ | ~~Build custom module~~ (RESOLVED: ADR-020) |
-| Bun/LangChain | No explicit Bun compatibility docs | Test in staging |
-| OpenTUI | No HTTP client integration patterns | Build wrapper |
-| Skills CLI | No Owner approval workflow docs | Implement from scratch |
-| Langfuse | @langfuse/otel Node-only not documented | Use @langfuse/client |
-| OTel | LLM conventions in separate repo | Reference semantic-conventions |
-
----
-
-## 10. Appendix: Version History
-
-| Version | Date | Author | Changes |
-|---------|------|--------|---------|
-| 1.0.0 | 2026-02-04 | Principal Software Engineer | Initial TechSpec from Architecture v0.11.0 |
-| 1.1.0 | 2026-02-04 | Principal Software Engineer | Verified and corrected versions; fixed SQLite type mismatches; added pending decisions section |
-| 1.2.0 | 2026-02-04 | Principal Software Engineer | Verified Bun native SQLite API via documentation; updated ADR-002 and section 5.4 with accurate API details |
-| 1.3.0 | 2026-02-04 | Principal Software Engineer | Decisions made: Go 1.25.6 for Egress Gateway (ADR-003 resolved), intfloat/e5-small-v2 for embedding model |
-| 1.4.0 | 2026-02-04 | Principal Software Engineer | Verified intfloat/e5-small-v2 details via HuggingFace model card: 384 dimensions, 33.4M params, 12 layers, 512 max tokens |
-| 1.5.0 | 2026-02-04 | Principal Software Engineer | Changed embedding model from intfloat/e5-small-v2 to intfloat/multilingual-e5-small (multilingual support). Verified via HuggingFace API: 384 dimensions, 12 layers, 512 max tokens, XLMRobertaTokenizer, 100+ languages. |
-| 1.6.0 | 2026-02-04 | Principal Software Engineer | Removed duplicate code (Repository Pattern example). Removed Section 9 "Pending Architectural Decisions" - all decisions resolved. Renumbered Appendix to Section 9. |
-| 1.7.0 | 2026-02-04 | Principal Software Engineer | Major updates: Adopted Open Responses API as primary interface contract; Updated checkpointer schema to LangGraph-compatible with BLOB serialization; Removed embedding model details (RMM Memory middleware is external integration); Replaced ESLint/Prettier with Biome + Ultracite; Removed Content Scanning callback (uses LangChain built-in piiMiddleware); Updated Nix versions (2.31.3/nixpkgs 25.11); Removed Docker Compose (Nix-driven sandboxing only); Simplified project structure. |
-| 1.8.0 | 2026-02-07 | Principal Software Engineer | Added §8.4 Encryption Key Management Lifecycle (HKDF key derivation, vault storage, rotation procedure); §8.5 Backup and Disaster Recovery (three-component strategy, recovery matrix); §8.6 CLI/Web UI Authentication (vault-stored static token). Added alerting configuration to §6.2. Removed HITL approval timeout (Checkpointer persists indefinitely). |
-| 1.9.0 | 2026-02-07 | Principal Software Engineer | **Structural fixes**: Removed duplicate Skill Schema Section (3.7); Removed malformed OpenAPI YAML duplicate event types; Removed duplicate YAML block in Request Schema. **Content updates**: Added concrete Langfuse v4 CallbackHandler implementation (§5.8); Clarified middleware stack responsibilities - Policy Middleware (rate limits, content scanning) vs PII Middleware (§5.5); Documented RMM (Reflective Memory Management) Middleware definition (§3.3); Added devenv-managed monorepo structure (§5.1); Standardized SQLite UUID type annotations across all ERDs (§3.x). |
-| 2.0.0 | 2026-02-07 | Principal Software Engineer | **Major Nix/Devenv Integration**: Fixed invalid process orchestration syntax (replaced depends_on with task-based before dependencies); Added Scripts vs Tasks distinction with comparison table; Added enterTest pattern for test environment setup; Updated Section 1.5 Stack Specification with devenv, direnv, git, just versions; Added ADR-009 (devenv over Docker Compose); Added Section 1.7 SBOM Generation & 2026 Regulatory Compliance with CRA, PCI DSS, FDA requirements; Added Section 9.3 CI/CD Strategy with GitHub Actions, Garnix, and Cachix integration; Added direnv auto-activation example; Added devenv maintenance commands (update, gc, info); Updated devenv.yaml with version pinning patterns; Added Nix version clarification (2.31.2 current / 2.33.2 latest). |
-| 2.1.0 | 2026-02-08 | Principal Software Engineer | **Research-Enhanced TechSpec**: Incorporated 16-agent swarm research findings; Enhanced §1.1 Core Runtime with Bun/Go API surfaces and warnings; Added §1.1.1 Bun Integration Patterns; Added §1.2.1 LangChain createAgent() implementation; Added §1.5.1 Nix/Devenv patterns with critical systemd/launchd gap warning; Added ADR-016 (Go HTTP CONNECT), ADR-017 (Credential Vaults), ADR-018 (SvelteKit SSE), ADR-019 (Sandbox Chained Proxy); Enhanced ADR-010 (CUE) with concrete schema examples; Enhanced ADR-013 (Skills CLI) with approval workflow gaps; Added Appendix A Research Findings Summary with platform-specific details. |
-| 2.1.1 | 2026-03-08 | Codex | **Consistency corrections**: aligned Telegram webhook authentication with grammY `secretToken` / `X-Telegram-Bot-Api-Secret-Token`; removed stale `@langchain/community` SqliteSaver examples in favor of `@skroyc/bun-sqlite-checkpointer`; clarified `createAgent()` import guidance; marked MCP input adapter as planned Phase 2 to match task decomposition. |
-| 2.1.2 | 2026-03-08 | Codex | **Follow-up consistency corrections**: standardized `thread_id` examples and checkpoint schema on the date-based session model (`YYYY-MM-DD`); replaced stale Google provider references with the current LangChain `@langchain/google` recommendation; kept provider integration guidance within LangChain packages rather than direct vendor SDKs. |
-| 2.2.0 | 2026-02-08 | Principal Software Engineer | **Cross-Platform Service Management**: Added ADR-020 (Service Management Strategy) with dual-platform generation pattern; Implemented systemd unit configuration with full security hardening (NoNewPrivileges, ProtectSystem, MemoryDenyWriteExecute); Implemented launchd plist with resource limits and KeepAlive; Added Bun signal handler for graceful shutdown (SIGTERM/SIGINT); Added NixOS module integration; Added installation script patterns with platform detection; Marked systemd/launchd generation gap as resolved.
+| Encryption | `age` with owner-restricted permissions |
+| Permissions | `0600` or platform-equivalent owner-only access |
+| Usage posture | Allowed only when platform-native vault access is unavailable or explicitly bypassed for development |
+
+**Owner auth secret lifecycle:**
+1. Provision one owner authentication secret during initialization and store it as a system credential.
+2. Issue revocable runtime sessions from that secret for CLI and browser use instead of persisting the root secret in client-local state.
+3. Persist only expiring session material in the CLI cache file defined in Section 4.4.
+4. Rotation of the owner authentication secret SHALL invalidate outstanding derived sessions and require re-authentication.
+
+**Master key rotation contract:**
+1. Generate a replacement master key.
+2. Re-derive message, memory, and backup subkeys through HKDF purpose separation.
+3. Re-encrypt affected application-level ciphertext within a transactionally safe migration or maintenance pass.
+4. Replace active vault material only after re-encryption succeeds.
+5. Emit a SECURITY audit event recording the rotation without disclosing raw key material.
+
+**Backup verification contract:**
+1. Restore the backup into a temporary validation target.
+2. Run integrity validation.
+3. Attempt sample decryption for encrypted fields.
+4. Emit success or failure evidence to local audit.
+5. Destroy the temporary validation target after verification completes.
+
+**Default backup schedules:**
+- Backup schedule default: `0 3 * * *`
+- Verification schedule default: `0 4 * * 0`
+
+Brownfield note: the fallback chain is already implemented in [vault.ts](/home/oscar/GitHub/OpenKraken/packages/orchestrator/src/credentials/vault.ts#L37), but automated backup verification, full key rotation workflows, and complete restore tooling remain target-state obligations rather than finished runtime behavior.
+
+### 5.8 Platform Path Resolution Contract
+The runtime owns all canonical path resolution. Owner interfaces, scripts, and adapters SHALL consume resolved paths instead of hardcoding platform-specific absolute locations.
+
+**Resolution precedence:**
+1. Explicit resolver mode override supplied by trusted runtime code.
+2. `OPENKRAKEN_HOME`, which forces `custom` mode.
+3. Platform default resolution:
+   - Linux on NixOS: `xdg`
+   - Linux as root outside WSL: `fhs`
+   - Other Linux environments including non-root, containers, WSL, and sandboxed hosts: `xdg`
+   - macOS: `cocoa`
+   - Windows or unknown platforms: `custom`
+
+**Canonical resolved roots:**
+
+| Mode | Config | Data | Logs | Cache |
+| --- | --- | --- | --- | --- |
+| `fhs` | `/etc/openkraken/config.yaml` | `/var/lib/openkraken` | `/var/log/openkraken` | `/var/cache/openkraken` |
+| `xdg` | `$XDG_CONFIG_HOME/openkraken/config.yaml` or `~/.config/openkraken/config.yaml` | `$XDG_DATA_HOME/openkraken/data` or `~/.local/share/openkraken/data` | `$XDG_DATA_HOME/openkraken/logs` or `~/.local/share/openkraken/logs` | `$XDG_CACHE_HOME/openkraken/cache` or `~/.cache/openkraken/cache` |
+| `cocoa` | `~/Library/Application Support/OpenKraken/config.yaml` | `~/Library/Application Support/OpenKraken` | `~/Library/Logs/OpenKraken` | `~/Library/Caches/OpenKraken` |
+| `custom` | `<OPENKRAKEN_HOME>/config.yaml` | `<OPENKRAKEN_HOME>/data` | `<OPENKRAKEN_HOME>/logs` | `<OPENKRAKEN_HOME>/cache` |
+
+**Override and validation rules:**
+- Partial XDG overrides are valid in Linux `fhs` mode; config, data, and cache may each independently honor explicitly exported XDG variables.
+- Custom base paths SHALL be absolute after tilde expansion, SHALL NOT contain `..`, and SHALL reject null bytes.
+- Config paths, data paths, and service modules SHALL agree on the same logical directory model even when platform-native roots differ.
+
+**Permission expectations:**
+
+| Surface | Expected Mode |
+| --- | --- |
+| Sensitive data directories | `0700` |
+| Config directories | `0640` or platform-equivalent owner-restricted permissions |
+| Log directories | `0750` on Linux service deployments, `0755` for macOS owner-local logs |
+| Database files and local token cache | `0600` |
+| Socket files | `0660` |
+
+### 5.9 Security Threat Model and Failure Posture
+OpenKraken is security-first infrastructure. The canonical TechSpec therefore retains a concise threat model even though the older STRIDE narrative has been removed.
+
+**Primary threat classes:**
+
+| Threat Class | Canonical Risk | Required Mitigation |
+| --- | --- | --- |
+| Owner spoofing | Another local process issues privileged commands | Owner auth secret, revocable sessions, loopback binding, owner-audited auth events |
+| State tampering | Messages, memories, checkpoints, or config are modified out of band | owner-restricted filesystem permissions, checksum-verified migrations, encrypted sensitive fields, checkpoint compatibility rules |
+| Credential disclosure | Raw credentials leak to the Agent, logs, or exports | platform vault boundary, redaction/sanitization, no raw credential persistence in SQLite, fail-closed credential resolution |
+| Sandbox escape or capability escalation | Agent obtains host or network capabilities outside policy | isolated execution runtime, policy-first middleware, egress chokepoint, bounded mounted paths |
+| Service denial or dependency failure | gateway, vault, sandbox, or database outage leads to unsafe degraded behavior | readiness semantics, startup ordering, restore-based recovery, dependency-specific degraded/failed state reporting |
+| Repudiation gaps | owner or runtime action cannot be reconstructed later | append-oriented audit events, actor identity capture, dependency health and restore events recorded locally |
+
+**Non-negotiable security properties:**
+1. Raw credentials are never exposed to the Agent.
+2. Unsafe dependency failure fails closed rather than bypassing the control boundary.
+3. Security-sensitive config cannot silently downgrade through invalid or partial configuration.
+4. Resumable state is compatibility-sensitive and cannot be manually edited as an operational shortcut.
+5. Significant owner, runtime, and gateway actions are locally auditable.
+
+**Failure posture rules:**
+1. Missing vault material, failed migrations, failed integrity checks, or unavailable mandatory control boundaries block readiness.
+2. Degraded observability may remain non-fatal if local audit persistence continues to function.
+3. Recovery from encrypted-state failure is restore-based and depends on both backup artifacts and recovery material.
+
+**STRIDE-oriented view:**
+- **Spoofing:** mitigated through owner auth secret, bounded sessions, no implicit localhost trust, and authenticated external channel ingress.
+- **Tampering:** mitigated through migration checksums, encrypted sensitive fields, owner-restricted filesystem permissions, and append-oriented audit storage.
+- **Repudiation:** mitigated through local audit, actor attribution, correlation IDs, and explicit restore/rotation events.
+- **Information disclosure:** mitigated through vault isolation, redaction, application-level encryption, and standards-prefixed extensions rather than raw secret-rich payloads.
+- **Denial of service:** mitigated through readiness semantics, bounded queues, service restart posture, and degrade-versus-fail distinctions.
+- **Elevation of privilege:** mitigated through isolated execution, policy-first middleware ordering, tool-level bounds, and no agent authority over its own constitution or credentials.
+
+**Sandboxing guarantees:**
+- The Agent does not receive host filesystem access outside bounded mounts or zones.
+- Outbound traffic is mediated by the egress boundary rather than inherited from the host.
+- Tool classes may vary in isolation mechanics, but all meaningful execution remains policy-mediated and auditable.
+
+Brownfield note: the old TechSpec's full STRIDE walkthrough, gateway resilience narrative, and backup runbook were useful context, but much of that content was explanatory rather than canonical. This section preserves the binding security intent inside the current TechSpec format.
+
+### 5.10 Build, CI, and SBOM Contract
+Build and verification remain part of the technical implementation contract because OpenKraken is a cross-language, Nix-managed system with reproducibility and supply-chain requirements.
+
+**Canonical build surfaces:**
+
+| Surface | Contract |
+| --- | --- |
+| `just` | Human-facing local entrypoint for `build`, `test`, `lint`, and `build-verified` |
+| Nix flake packages | Canonical reproducible build outputs for `openkraken-orchestrator` and `openkraken-gateway` |
+| Nix checks | Must validate shipped configuration artifacts against the CUE schema before release acceptance |
+
+**CI contract:**
+1. Run on both Linux and macOS through the matrix defined in [ci.yml](/home/oscar/GitHub/OpenKraken/.github/workflows/ci.yml#L1).
+2. Install Nix with flakes enabled.
+3. Build the orchestrator and gateway through flake package outputs, not ad hoc shell scripts.
+4. Run `devenv test --no-cached` as the development-environment integration check.
+5. Preserve artifact-generation hooks for SBOM or equivalent supply-chain outputs on production-bound builds.
+
+**SBOM contract:**
+- Production builds SHALL be capable of emitting a machine-readable SBOM in CycloneDX or SPDX-compatible form.
+- SBOM generation belongs to the Nix build/release surface, not to a client application.
+- Uploaded SBOM artifacts are release evidence, not the source of truth for dependency pinning; manifests and flake inputs remain authoritative.
+- Regulatory-facing build evidence should remain sufficient for 2026-era asks such as CRA-oriented software inventory, PCI DSS supply-chain visibility, and similar procurement or compliance requests where a machine-readable bill of materials is expected.
+
+Brownfield note: the current workflow already invokes `nix run .#sbom` in [ci.yml](/home/oscar/GitHub/OpenKraken/.github/workflows/ci.yml#L60), but [flake.nix](/home/oscar/GitHub/OpenKraken/flake.nix#L1) does not currently expose an `sbom` app or package. That is an active implementation drift to resolve, not a reason to drop the SBOM contract from the specification.
+
+### 5.11 Documentation and Artifact Drift Prevention
+The canonical docs are part of the implementation surface for this project.
+
+**Required update pairings:**
+- Runtime API contract changes -> `TechSpec.md`, formal contract artifact, and affected client docs
+- Schema or migration changes -> `TechSpec.md`, migration files, and relevant Tasks
+- Configuration contract changes -> `TechSpec.md`, CUE schema, example config, and deployment modules if affected
+- Architecture or scope-affecting delivery changes -> upstream `Architecture.md` or `PRD.md` before planning adjustments
+
+**Review discipline:**
+- Brownfield drift SHALL be called out explicitly in the spec rather than silently normalized away.
+- Issue-backed planning SHALL preserve external integration units and active commitments, even when implementation is staged across multiple repositories.
