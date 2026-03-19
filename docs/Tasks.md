@@ -1,6 +1,7 @@
 # Engineering Execution Plan
 
 ## 0. Version History & Changelog
+- v2.1.5 - Restored the remaining `CORE-B001` prerequisite edges in the Mermaid build-order graph so dependency visualization fully matches the ticket definitions.
 - v2.1.4 - Corrected the Mermaid dependency graph and executive-summary critical path so they match the ticket dependency definitions and PRD-driven approval flow.
 - v2.1.3 - Restored explicit deferred implementation targets for Vercel Agent Browser and LangChain's `MultiServerMCPClient` so adjacent integration units are not normalized away in planning.
 - v2.1.2 - Corrected the active critical-path summary so it reflects the actual ticket dependency graph instead of skipping required middleware and surface prerequisites.
@@ -93,6 +94,8 @@ flowchart LR
     end
 
     B001 --> B002
+    B001 --> B003
+    B001 --> B004
     B001 --> B005
     B002 --> B008
     B003 --> B008
