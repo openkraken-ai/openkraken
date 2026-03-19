@@ -1,9 +1,9 @@
 # Solution Architecture
 
 ## 0. Version History & Changelog
+- v2.3.1 - Restored the project-specific same-host gateway authentication pattern and the automated skill-security analysis gate that were too specific to recover from generic framework guidance.
 - v2.3.0 - Re-expanded the architecture inside the framework shape so the old rationale, layered model, middleware inventory, cross-cutting concerns, and trust-boundary language remain canonical instead of compressed summaries.
 - v2.2.0 - Restored the missing problem-context rationale, standards positioning, layered model, middleware inventory, named flows, and richer cross-cutting architecture content.
-- v2.1.0 - Restored the missing architectural philosophy detail and explicit entity/trust-boundary guidance that had been reduced too aggressively.
 - ... [Older history truncated, refer to git logs]
 
 ## 1. Architectural Strategy & Archetype Alignment
@@ -333,6 +333,7 @@ sequenceDiagram
 ### 5.1 Authentication and Authorization
 - **Security / Identity Strategy:** The Owner authenticates at the interface boundary, while the Runtime Coordinator acts as the sole path into model use, capability invocation, and service interaction. Policy evaluation is mandatory before any meaningful action. Sensitive service access is mediated through the Connected Service Gateway so the Agent never receives raw credential material. Isolated execution and outbound control remain separate boundaries to preserve fail-closed behavior.
 - **Authorization posture:** Local surfaces and asynchronous channels normalize into the same runtime authority model. Approval-required actions are not separate "exception flows"; they are first-class pauses in the normal execution path.
+- **Same-host gateway control posture:** Runtime-to-gateway management traffic uses two complementary authentication layers rather than trusting locality alone: restricted same-host transport access and signed, timestamped HMAC-SHA256 management requests with replay protection. The transport layer prevents arbitrary local callers from attaching to the channel; the application layer prevents request reuse or socket-level trust from becoming sufficient authorization.
 
 ### 5.2 Observability
 - **Observability Strategy:** Every ingress, policy decision, approval request, isolated execution, connected-service action, schedule trigger, and recovery step emits Audit Records with correlation to the owning session or task. Local review is first-class, while export remains a downstream concern rather than the primary source of truth.
@@ -346,6 +347,7 @@ sequenceDiagram
 ### 5.4 Skill Ingestion and Trusting Process
 - **Skill Ingestion and Trusting Process:** Skill intake is a separate architectural path from ordinary capability execution. Skills are staged, classified, reviewed, approved, and only then surfaced through bounded runtime capability exposure. The runtime must preserve tiered trust rather than collapsing all extensions into one undifferentiated tool surface.
 - **Ownership boundary:** Adjacent skill-ecosystem work may be implemented partly outside this repo, but OpenKraken owns the trust classification, activation boundary, and audit semantics.
+- **Automated analysis gate:** Review is not owner approval alone. Imported skills pass through automated pre-approval security analysis before owner decision, with instruction-only skills checked for prompt-injection patterns and executable skills additionally checked for encoded payloads, unauthorized network behavior, credential access attempts, and path-traversal intent. Analysis failure degrades to deny-by-default rather than bypassing the gate.
 
 ### 5.5 Service Lifecycle Management
 - **Service Lifecycle Management:** Startup order matters: configuration, state, credential boundary, sandbox/egress checks, then owner-facing bind. Shutdown likewise prioritizes quiescing ingress, settling work, persisting resumable state, and only then releasing dependencies.

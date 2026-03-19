@@ -1,9 +1,9 @@
 # Engineering Execution Plan
 
 ## 0. Version History & Changelog
+- v2.1.1 - Restored the exact constitution-prompt assembly contract and the skill-security analysis gate in the Epic 2 ticket acceptance criteria.
 - v2.1.0 - Restored one-to-one issue-backed Epic 2 tickets, reinstated RMM and secondary-provider planning, and restored full deferred ticket bodies with Gherkin.
 - v2.0.0 - Rebuilt the Epic 2 plan against the current PRD, Architecture, and TechSpec; preserved legacy GitHub issue continuity; separated active work from deferred follow-ons.
-- v1.1.0 - Legacy Epic 2 decomposition revised after infrastructure review and effort re-estimation.
 - ... [Older history truncated, refer to git logs]
 
 ## 1. Executive Summary & Active Critical Path
@@ -251,7 +251,8 @@ And provider fallback, where enabled, remains a runtime concern rather than a cl
 Given all Epic 2 foundation components are initialized
 When the agent runtime is created
 Then the runtime uses the configured provider factory, checkpointer, and RMM memory path
-And the system prompt composes the canonical constitution inputs in the required order
+And the system prompt composes the canonical constitution inputs in the strict order `SOUL -> SAFETY -> CAPABILITIES -> DIRECTIVES`
+And each constitutional segment is wrapped in its semantic XML tag `<SOUL>`, `<SAFETY>`, `<CAPABILITIES>`, and `<DIRECTIVES>`
 And thread/session state is isolated and resumable
 And the runtime can execute a chat turn without bypassing middleware or tool boundaries
 ```
@@ -521,6 +522,9 @@ And delegation activity is fully observable through audit and telemetry
 Given approved skill metadata exists in a future Epic 2 follow-on increment
 When skill loader middleware initializes
 Then only approved skills are resolved into the active runtime
+And staged skills undergo automated LLM-based security analysis before owner approval using the configured analysis model with `Claude Haiku 4.5` as the default
+And instruction-only skills are checked for prompt-injection patterns before approval
+And executable skills are checked for unauthorized network behavior, credential access, path traversal, and encoded payloads before approval
 And skill tools and manifests are exposed with version and provenance metadata
 And unapproved or invalid skills are rejected before activation
 And skill activation and failure events are recorded for audit

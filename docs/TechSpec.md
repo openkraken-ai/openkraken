@@ -1,9 +1,9 @@
 # Technical Specification
 
 ## 0. Version History & Changelog
+- v2.10.1 - Restored the missing OpenKraken-specific IPC, serialization, extension-event, prompt-assembly, skill-analysis, and config-shape contracts that were too proprietary to omit.
 - v2.10.0 - Re-expanded the TechSpec within the framework structure so the old implementation method, interface detail, data-model detail, configuration, testing, deployment, and security contracts remain canonical instead of surviving only as compressed summaries.
 - v2.9.0 - Restored the Open Responses primary interface posture, external adapter integration units, regulatory/SBOM discussion, drift-prevention rules, richer implementation contracts, and the remaining missing operational details without bringing back research-only appendices.
-- v2.8.0 - Restored missing canonical detail for RMM, constitution injection, day-bounded sessions, and the more explicit auth/recovery/service-resilience contracts that had been reduced too far.
 - ... [Older history truncated, refer to git logs]
 
 ## 1. Stack Specification (Bill of Materials)
@@ -113,7 +113,7 @@ Historical decision-number continuity from the larger pre-framework TechSpec is 
 ### Policy-011 Skill Intake through Staging, Analysis, Approval, and Activation
 - **Status:** accepted
 - **Context:** Skills are a core extensibility mechanism, but they also create one of the highest-risk ingestion paths in the system. The architecture already separates the Skill Catalog from execution, and the brownfield schema includes skill review and audit tables, so the lifecycle needs to be captured as a first-class implementation decision.
-- **Decision:** All imported Skills SHALL pass through a four-step lifecycle: staging, analysis, approval, and activation. Active skill manifests SHALL be digest-pinned and exposed to the Runtime Coordinator only after approval state is persisted. Updates SHALL re-enter the same review flow rather than mutating active skill content in place. Skill runtime dependencies SHALL be declared canonically through `metadata.x-openkraken.dependencies`, with Nix package requirements expressed there so packages can be provisioned before sandbox invocation rather than installed by native package managers at runtime. Skill trust tiers SHALL remain canonical and named: `System`, `Owner`, and `Community`.
+- **Decision:** All imported Skills SHALL pass through a four-step lifecycle: staging, analysis, approval, and activation. Active skill manifests SHALL be digest-pinned and exposed to the Runtime Coordinator only after approval state is persisted. Updates SHALL re-enter the same review flow rather than mutating active skill content in place. Skill runtime dependencies SHALL be declared canonically through `metadata.x-openkraken.dependencies`, with Nix package requirements expressed there so packages can be provisioned before sandbox invocation rather than installed by native package managers at runtime. Skill trust tiers SHALL remain canonical and named: `System`, `Owner`, and `Community`. The analysis step SHALL include automated LLM-based security review before owner approval. The default analysis model is `Claude Haiku 4.5`, though deployments may override it with an explicitly configured equivalent. Instruction-only skills SHALL be scanned for prompt-injection and hidden-instruction patterns. Executable skills SHALL also be scanned for unauthorized network behavior, credential-access attempts, file path traversal, and encoded or obfuscated payloads. Analysis failure or inconclusive results SHALL fail closed into manual-owner review rather than implicit approval.
 - **Consequences:** Extensibility remains compatible with the project's deterministic-safety posture and produces auditable review evidence. The cost is slower skill adoption, more state transitions, extra UI/API surfaces for review and lifecycle management, and the need to preserve both one project-specific manifest contract for dependency declaration and one stable tier vocabulary across adjacent skill repositories.
 
 ### Policy-012 Configuration Source of Truth and Precedence
@@ -197,7 +197,7 @@ Historical decision-number continuity from the larger pre-framework TechSpec is 
 ### Policy-025 Constitution Injection and Day-Bounded Session Model
 - **Status:** accepted
 - **Context:** The previous Architecture and TechSpec explicitly treated constitution injection and day-bounded sessions as first-class design constraints. Those commitments were weakened during the reduction pass, but they still govern how the runtime constructs identity, isolates working context, and recovers across restarts.
-- **Decision:** The Agent SHALL receive the constitutional inputs (`SOUL.md`, `SAFETY.md`, `CAPABILITIES.md`, and owner-authored directives) through runtime prompt assembly rather than as mutable sandbox files. Session identity SHALL remain day-bounded: one owner-local calendar day corresponds to one primary thread/session identifier formatted as `YYYY-MM-DD`, and workspace-reset behavior is keyed to that boundary. Previous sessions remain available for audit, recovery, and memory retrieval, but the new day starts with a clean working context.
+- **Decision:** The Agent SHALL receive the constitutional inputs (`SOUL.md`, `SAFETY.md`, `CAPABILITIES.md`, and owner-authored directives) through runtime prompt assembly rather than as mutable sandbox files. The canonical assembly format is a strict, semantic, XML-tagged concatenation in this exact order: `<SOUL>...</SOUL>`, `<SAFETY>...</SAFETY>`, `<CAPABILITIES>...</CAPABILITIES>`, then `<DIRECTIVES>...</DIRECTIVES>`. Later sections SHALL NOT be reordered above earlier sections, because the ordering encodes the constitutional precedence model. Session identity SHALL remain day-bounded: one owner-local calendar day corresponds to one primary thread/session identifier formatted as `YYYY-MM-DD`, and workspace-reset behavior is keyed to that boundary. Previous sessions remain available for audit, recovery, and memory retrieval, but the new day starts with a clean working context.
 - **Consequences:** Identity and safety instructions remain hard to exfiltrate through file access, and session lifecycle semantics stay predictable for memory, backup, and owner review. The cost is stricter thread/session modeling and the need to handle timezone-aware day rollover explicitly.
 
 ### Policy-026 Open Responses as the Primary Standards-Facing Interface Contract
@@ -414,6 +414,25 @@ erDiagram
 - **Primary key contract:** `checkpoints` use `(thread_id, checkpoint_ns, checkpoint_id)` and `writes` use `(thread_id, checkpoint_ns, checkpoint_id, task_id, idx)`.
 - **Payload contract:** Checkpoint payloads store serialized state including channel values, channel versions, and version-seen metadata. Write records preserve ordered task-channel outputs required for deterministic resume.
 - **Compatibility rule:** The runtime SHALL treat these records as compatibility-sensitive state. Manual edits to payload blobs, composite keys, or namespace semantics are forbidden operational shortcuts.
+- **Authoritative serialized BLOB shapes:** The persisted `checkpoint` and `metadata` blobs SHALL remain compatible with `@skroyc/bun-sqlite-checkpointer` and therefore use the following TypeScript-level shapes before serialization:
+
+```typescript
+interface Checkpoint {
+  v: number;
+  id: string;
+  ts: string;
+  channel_values: Record<string, unknown>;
+  channel_versions: Record<string, unknown>;
+  versions_seen: Record<string, Record<string, unknown>>;
+}
+
+interface CheckpointMetadata {
+  source: "input" | "loop" | "update" | "fork";
+  step: number;
+  parents: Record<string, string>;
+  [key: string]: unknown;
+}
+```
 
 #### 3.1.2 Message Log Tables
 - **Tables:** `threads` and `messages`
@@ -421,6 +440,17 @@ erDiagram
 - **Message role contract:** Roles are constrained to the runtime's canonical message roles, and content-type metadata SHALL distinguish text, file, tool-call, and tool-result variants where applicable.
 - **Sensitive content contract:** `messages.content` SHALL support application-level encryption with metadata sufficient to determine ciphertext handling state without exposing plaintext.
 - **Primary access path:** ordered replay by `(thread_id, created_at)`
+- **Encrypted payload wrapper:** The canonical serialized encryption wrapper for encrypted message and memory fields is:
+
+```typescript
+interface EncryptedPayload {
+  ciphertext: Buffer;
+  iv: Buffer;
+  tag: Buffer;
+}
+```
+
+This wrapper shape is part of the compatibility contract. Implementations may vary internally, but encrypted JSON payloads persisted in runtime-owned state SHALL remain recoverable through these three fields.
 
 #### 3.1.3 Semantic Memory Tables
 - **Tables:** `memories` and `memories_embeddings`
@@ -581,16 +611,87 @@ paths:
 - The canonical lifecycle includes response creation, output-item addition, content-part progression, tool-call progression, completion or failure, and terminal `[DONE]`.
 - OpenKraken-specific events SHALL remain additive and prefixed, for example `openkraken:*`, so standards clients can ignore unknown extensions safely.
 - Event ordering SHALL remain deterministic enough for adapters to replay or inspect stream progress meaningfully.
+- The canonical OpenKraken extension events are `openkraken:sandbox.started` and `openkraken:checkpoint.created`.
 
 #### 4.1.3 Error Response Model
 - The standards-facing adapter SHALL emit structured errors compatible with the Open Responses error envelope.
 - Error classes SHALL preserve at least invalid request, authentication or authorization failure, rate limiting, service unavailability, sandbox or policy failure, and checkpoint or runtime persistence failure.
 - OpenKraken-specific failures SHALL NOT be flattened into a meaningless generic error when a more precise standards-compatible error class exists.
+- The canonical OpenKraken-specific `error.code` values are `openkraken_sandbox_error`, `openkraken_policy_violation`, and `openkraken_checkpointer_error`.
 
 #### 4.1.4 Tool Declaration and Result Model
 - Core filesystem, terminal, browser, web-search, and connected-service capabilities SHALL surface as formal tool declarations rather than undocumented side channels.
 - Tool results SHALL re-enter the response lifecycle as structured result items or tool-result events.
 - Sandbox hints, checkpoint creation, review-state transitions, and similar OpenKraken-specific metadata SHALL remain extension metadata rather than redefining the meaning of standard items.
+- The canonical standards-facing built-in tool schemas are:
+
+```yaml
+tools:
+  - type: function
+    function:
+      name: read_file
+      description: Read UTF-8 text content from an allowlisted path.
+      parameters:
+        type: object
+        required: [path]
+        properties:
+          path:
+            type: string
+            description: Canonical runtime-resolved file path to read.
+          max_bytes:
+            type: integer
+            minimum: 1
+            description: Optional read limit for large files.
+  - type: function
+    function:
+      name: execute_terminal
+      description: Execute a bounded terminal command inside the capability sandbox.
+      parameters:
+        type: object
+        required: [command]
+        properties:
+          command:
+            type: string
+          working_directory:
+            type: string
+            description: Optional runtime-approved sandbox working directory.
+          timeout_seconds:
+            type: integer
+            minimum: 1
+          environment:
+            type: object
+            additionalProperties:
+              type: string
+            description: Optional explicit environment additions allowed by runtime policy.
+```
+
+- The canonical result payload shapes for these built-in tools are:
+
+```yaml
+toolResults:
+  read_file:
+    type: object
+    required: [success]
+    properties:
+      success:
+        type: boolean
+      content:
+        type: string
+      error:
+        type: string
+  execute_terminal:
+    type: object
+    required: [stdout, stderr, exitCode]
+    properties:
+      stdout:
+        type: string
+      stderr:
+        type: string
+      exitCode:
+        type: integer
+```
+
+- Adapter note: The standards-facing tool name `execute_terminal` may map to a differently named internal runtime tool implementation, but the external contract SHALL preserve the standards-facing name.
 
 #### 4.1.5 Adapter Model
 - Telegram, CLI, browser UI, scheduler triggers, and future mediated channels are adapter surfaces that normalize into either the owner-local runtime API or the standards-facing Open Responses adapter.
@@ -1131,6 +1232,13 @@ components:
           format: date-time
 ```
 
+#### 4.2.1 Runtime-to-Gateway IPC Authentication Contract
+- The Runtime Coordinator and Egress Gateway SHALL communicate over same-host IPC with two complementary controls: restricted transport access and signed application requests.
+- The Unix socket file SHALL remain owned by the service account boundary and permissioned as `0660`.
+- Management requests SHALL include a timestamp header and an HMAC-SHA256 signature header calculated from the request material with the vault-backed secret identified as `openkraken-egress-hmac-key`.
+- The gateway SHALL reject requests whose timestamp falls outside the accepted replay window and SHALL reject requests whose signature does not validate against the canonical request-signing input.
+- Filesystem permissions alone are not a sufficient authorization check for gateway management operations.
+
 **Channel and adapter boundary contract:**
 - Telegram is the primary non-local owner adapter and SHALL translate channel payloads into the runtime's canonical interaction shape.
 - MCP-mediated channels remain follow-on scope and SHALL map into the same runtime interaction path when they arrive.
@@ -1491,6 +1599,55 @@ The runtime uses a layered configuration model that combines bootstrap environme
 | `openkraken-api-token` | Root owner authentication secret or seed material for session issuance |
 
 Brownfield note: the current loader in [config/index.ts](/home/oscar/GitHub/OpenKraken/packages/orchestrator/src/config/index.ts#L15) still consumes a narrower transitional shape including aliases such as `OPENKRAKEN_SANDBOX_TYPE`, `OPENKRAKEN_EGRESS_HOST`, and `OPENKRAKEN_EGRESS_PORT`. The target implementation SHALL converge these aliases onto the canonical contract above.
+
+**Canonical CUE schema excerpt:**
+
+```cue
+#Config: {
+  version: "1.0"
+  orchestrator: #OrchestratorConfig
+  sandbox: #SandboxConfig
+  egressGateway: #EgressGatewayConfig
+  credentials: #CredentialsConfig
+  channels: #ChannelsConfig
+  middleware: #MiddlewareConfig
+  skills: #SkillsConfig
+  observability: #ObservabilityConfig
+  storage: #StorageConfig
+  alerting: #AlertingConfig
+}
+
+#ChannelsConfig: {
+  telegram?: {
+    enabled: bool
+    mode: "webhook" | "polling"
+    if mode == "webhook" {
+      webhookUrl!: string
+    }
+    secretToken?: string
+  }
+  mcp?: {
+    enabled: bool
+    servers: [...#McpServerConfig]
+    connectionTimeoutSeconds: int
+  }
+}
+
+#MiddlewareConfig: {
+  humanInTheLoop: bool
+  memory: bool
+  skillLoader: bool
+}
+
+#SkillsConfig: {
+  autoUpdate: bool
+  updateCheckIntervalHours: int
+  directory: string
+  executionTimeoutSeconds: int
+}
+```
+
+The authoritative schema file remains [`nix/schema/config.cue`](/home/oscar/GitHub/OpenKraken/nix/schema/config.cue), but the top-level shape and the unique OpenKraken keys above are part of the canonical contract and SHALL NOT be guessed or renamed by downstream implementations.
 
 **Canonical root configuration document:**
 

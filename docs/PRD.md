@@ -1,9 +1,9 @@
 # Product Requirements Document
 
 ## 0. Version History & Changelog
+- v2.2.1 - Restored the hard release-quality success thresholds so QA and acceptance decisions keep the original OpenKraken-specific behavioral bars.
 - v2.2.0 - Re-expanded the PRD inside the framework structure so the old success criteria, persona posture, capability continuity, named integration scope, and anti-pattern commitments are preserved rather than merely summarized.
 - v2.1.0 - Restored the missing success criteria, value/constitution model, explicit capability IDs, named integration scope, and anti-pattern commitments within the current framework structure.
-- v2.0.0 - Reframed the PRD to the current framework structure and restored strict product-layer boundaries.
 - ... [Older history truncated, refer to git logs]
 
 ## 1. Executive Summary & Target Archetype
@@ -13,6 +13,12 @@
 - **Jobs to Be Done:** Help me delegate real work to an AI agent without surrendering control; let me connect the agent to my files, tools, and services under explicit rules; let me audit, pause, approve, and recover the agent's actions as the sole operator of the system.
 - **Success Metrics:** The Owner can provision credentials for integrations without those credentials appearing in logs, files, or agent-visible traffic; the Agent cannot reach unapproved files or network destinations regardless of prompt framing; every meaningful action is observable and reconstructable; the runtime remains continuously available enough for scheduled work and fast owner interaction; and the system feels like a capable assistant that happens to be unbreakable rather than an unbreakable runtime that refuses useful work.
 - **Cross-Platform Consistency Criteria:** Supported platforms shall preserve equivalent capability semantics for path validation, egress policy enforcement, credential handling, owner interfaces, and session recovery, with platform-specific differences limited to the underlying host mechanism rather than the product behavior experienced by the Owner.
+
+The qualitative product posture above is backed by explicit release-quality thresholds:
+- **Helpfulness threshold:** The Agent completes at least `80%` of non-policy-violating Owner requests within the configured capability scope, with meaningful progress communicated when full completion requires Owner intervention.
+- **Honesty threshold:** `Zero confirmed hallucinations` are accepted in Owner-audited sessions; uncertainty must be stated explicitly instead of masked by plausible synthesis.
+- **Harmlessness threshold:** `Zero policy violations that result in actual harm` are accepted for release.
+- **Transparency threshold:** The Owner can audit `100%` of meaningful Agent decisions and actions through the product's review surfaces and durable evidence model.
 
 OpenKraken is not meant to feel like a research demo or a "safe mode" wrapper around an unsafe agent. The product promise is stronger and narrower: it should feel like a capable personal operator that happens to be architecturally hard to misuse. The Owner should not have to trade away usefulness to obtain trust.
 
