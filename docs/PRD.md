@@ -1,6 +1,7 @@
 # Product Requirements Document
 
 ## 0. Version History & Changelog
+- v2.2.0 - Re-expanded the PRD inside the framework structure so the old success criteria, persona posture, capability continuity, named integration scope, and anti-pattern commitments are preserved rather than merely summarized.
 - v2.1.0 - Restored the missing success criteria, value/constitution model, explicit capability IDs, named integration scope, and anti-pattern commitments within the current framework structure.
 - v2.0.0 - Reframed the PRD to the current framework structure and restored strict product-layer boundaries.
 - v1.1.0 - Consolidated the earlier planning narrative around owner control, constitutional safety, and interface scope.
@@ -14,6 +15,10 @@
 - **Jobs to Be Done:** Help me delegate real work to an AI agent without surrendering control; let me connect the agent to my files, tools, and services under explicit rules; let me audit, pause, approve, and recover the agent's actions as the sole operator of the system.
 - **Success Metrics:** The Owner can provision credentials for integrations without those credentials appearing in logs, files, or agent-visible traffic; the Agent cannot reach unapproved files or network destinations regardless of prompt framing; every meaningful action is observable and reconstructable; the runtime remains continuously available enough for scheduled work and fast owner interaction; and the system feels like a capable assistant that happens to be unbreakable rather than an unbreakable runtime that refuses useful work.
 - **Cross-Platform Consistency Criteria:** Supported platforms shall preserve equivalent capability semantics for path validation, egress policy enforcement, credential handling, owner interfaces, and session recovery, with platform-specific differences limited to the underlying host mechanism rather than the product behavior experienced by the Owner.
+
+OpenKraken is not meant to feel like a research demo or a "safe mode" wrapper around an unsafe agent. The product promise is stronger and narrower: it should feel like a capable personal operator that happens to be architecturally hard to misuse. The Owner should not have to trade away usefulness to obtain trust.
+
+The project also preserves a specific emotional and operational posture. The Owner is expected to feel cautious confidence rather than blind trust: they should be able to inspect boundaries, verify outcomes, and understand why the Agent could or could not perform an action. That owner-facing clarity is itself part of the product requirement.
 
 ## 2. Ubiquitous Language (Glossary)
 | Term | Definition | Do Not Use |
@@ -38,11 +43,15 @@
 - **Goals:** Delegate meaningful work to an AI agent; maintain sovereignty over credentials, data, and policy; understand what the Agent did and why; keep the system operable without enterprise overhead.
 - **Frictions:** Existing agents overreach, hide behavior, blur trust boundaries, expose secrets, or become unusably timid when safety is bolted on after the fact.
 
+The Owner is the entire user base for this version of OpenKraken. They are not looking for shared workspaces, delegated administration, team RBAC, or hosted convenience. They want one instance they fully control, can reason about, and can recover themselves. Telegram may be the first non-local interaction path, but the Owner remains the only human authority across all channels.
+
 ### 3.2 Secondary Actor
 - **Role:** Agent
 - **Context:** A managed subsystem asked to reason, use tools, interact with services, and continue work across sessions without becoming an authority over its own constraints.
 - **Goals:** Complete Owner-authorized tasks, stay within policy, explain limitations clearly, and hand control back when approval is required.
 - **Frictions:** Limited access by design, incomplete context, temporary external failures, and the need to remain useful without bypassing constraints.
+
+The Agent is not a co-equal user of the system. It is a bounded subsystem. It does not own credentials, cannot redefine its constitutional inputs, and does not get to decide that a constraint is optional because a task feels urgent. Its usefulness comes from operating well inside that envelope, not from being treated as a privileged shell user.
 
 ### 3.3 Secondary Actor
 - **Role:** Connected Service
@@ -50,17 +59,24 @@
 - **Goals:** Receive bounded requests, return predictable results, and support the Owner's workflows without becoming implicit trust anchors.
 - **Frictions:** Variable reliability, rate limits, changing interfaces, and the risk of becoming a path for exfiltration or prompt injection.
 
+Connected Services include both first-class named channels and broader mediated integrations. Named early scope includes Telegram, Slack, Discord, email, and calendar-class services. Additional services may arrive later, but they must still behave as explicit, owner-authorized edges of the system rather than as trusted internal components.
+
 ### 3.4 Operating Values
 - **Helpfulness:** The Agent should complete real owner-authorized work rather than degrade into a permanently apologetic chat surface.
 - **Honesty:** The Agent should state uncertainty, refusal reason, or missing context explicitly rather than fabricate confidence.
 - **Harmlessness:** The system shall not facilitate clearly harmful or disallowed actions even when the Owner frames them indirectly.
 - **Transparency:** The Owner should be able to understand what the Agent did, why it did it, and what constrained it.
 
+These values are product-visible commitments, not implementation trivia. "Helpful" does not mean maximally permissive, and "harmless" does not mean pathologically inert. The intended balance is a system that remains capable because boundaries are explicit and enforceable, not because the Agent is allowed to improvise outside them.
+
 ### 3.5 Constitutional Framework
 - **Constitution Hierarchy:** `SOUL.md` defines immutable core identity and allegiance; `SAFETY.md` defines normative boundaries; `CAPABILITIES.md` defines the factual operating environment; `DIRECTIVES.md` defines owner-authored standing instructions. Higher-priority documents override lower-priority ones.
 - **Product Meaning:** The constitution is part of the product contract, not merely an implementation prompt. OpenKraken is expected to preserve this hierarchy as the Owner-visible model of how agent behavior is shaped and bounded.
+- **Continuity Rule:** The constitution SHALL remain intelligible to the Owner as a four-part model. Even if later implementations alter prompt assembly details, the user-facing semantics of these four documents and their precedence SHALL remain stable unless the PRD itself changes.
 
 ## 4. Functional Capabilities
+The following capability inventory preserves the legacy capability identifiers so that downstream architecture, TechSpec, issue planning, and external workstreams can continue to refer to stable product commitments. Missing numeric ranges are intentional continuity gaps rather than omitted requirements.
+
 ### Epic: Owner Interaction
 - **Priority:** P0
 - **Capability ID:** CAP-001
@@ -133,6 +149,10 @@
 - **Capability ID:** CAP-051
 - **Capability:** The System shall let the Owner configure integrations through owner-facing interfaces while preserving credential-mediated access and explicit per-service authorization.
 - **Rationale:** The runtime should support real workflows across the services the Owner actually uses.
+- **Priority:** P1
+- **Capability ID:** CAP-052
+- **Capability:** The System shall support Telegram as a first-class integration channel, providing real-time bidirectional interaction semantics under the same owner, audit, and policy model as the local interfaces.
+- **Rationale:** Telegram is the primary first-wave non-local channel and must be treated as an explicit product capability rather than incidental adapter behavior.
 - **Priority:** P1
 - **Capability:** The System shall let the Owner review, rotate, revoke, and re-authorize service access over time.
 - **Rationale:** Long-lived personal systems need ongoing secret hygiene and reversible integration management.
@@ -240,12 +260,14 @@
 - **Domain-specific Constraints:** The first version remains single-owner and single-instance; command and browser interfaces must be accessible by keyboard and screen reader; the runtime must remain useful even when some external services are temporarily unavailable.
 - **Prohibited Patterns:** Prompt-based safety as the primary control model, credentials in agent-accessible config or environment files, implicit localhost trust, agent-modifiable identity or governing constraints, flat permission models, unaudited durable memory writes, uncontrolled outbound access, runtime package-manager installs for capability acquisition, and file-materialized constitutional identity inside the execution environment are all explicitly disallowed.
 
+The prohibition list is normative because these are the exact failure classes the product exists to avoid. OpenKraken is not allowed to "temporarily" violate them for convenience. If a future capability appears to require any of these patterns, that is evidence that the capability needs to be redesigned or re-scoped.
+
 ## 6. Boundary Analysis
 ### In Scope
 - A single-owner personal AI agent runtime
 - Deterministic control over what the Agent may access, invoke, or transmit
 - Local command and browser-based interfaces for operation and oversight
-- Owner-approved external interaction channels and Connected Services
+- Owner-approved external interaction channels and Connected Services, including Telegram as the first non-local channel and Slack, Discord, email, and calendar-class services as named mediated integration scope
 - Durable sessions, Memory Records, Scheduled Tasks, and Audit Records
 - Skill-based extensibility with trust-aware review and activation controls
 
@@ -258,6 +280,8 @@
 - Voice-first experiences, consumer social features, or native mobile applications
 - A general-purpose container, cluster, or infrastructure orchestration platform
 - An open marketplace where unreviewed extensions execute with broad trust by default
+
+Direct WhatsApp support remains excluded because it would require a distinct mediation bridge and trust story not yet accepted into the product scope. Additional channels are allowed only when they fit the same owner-authorized, auditable, and bounded interaction model.
 
 ## 7. Conceptual Diagrams (Mermaid)
 ### 7.1 System Context
@@ -325,3 +349,4 @@ classDiagram
 - Preserve the single-tenant, owner-operated product stance as a non-negotiable direction.
 - Existing project preferences to honor in later layers, without treating them as product requirements: Bun for the orchestration runtime, OS-native isolation, SQLite-based durable state, LangChain/LangGraph-style agent orchestration, OpenTelemetry-compatible observability, and Nix-based packaging/deployment.
 - Existing repo direction suggests the first owner-facing surfaces should remain a command-line interface and a browser-based interface, with additional external channels added under explicit owner control.
+- Several important capabilities are being built as adjacent integration units outside this repo and must remain visible in downstream docs as explicit integration workstreams rather than being normalized away: the Open Responses adapter, AgentSkills.io-compatible skill tooling, the core filesystem tools bundle, and the RMM memory bank line.

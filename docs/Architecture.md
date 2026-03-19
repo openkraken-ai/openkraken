@@ -1,6 +1,7 @@
 # Solution Architecture
 
 ## 0. Version History & Changelog
+- v2.3.0 - Re-expanded the architecture inside the framework shape so the old rationale, layered model, middleware inventory, cross-cutting concerns, and trust-boundary language remain canonical instead of compressed summaries.
 - v2.2.0 - Restored the missing problem-context rationale, standards positioning, layered model, middleware inventory, named flows, and richer cross-cutting architecture content.
 - v2.1.0 - Restored the missing architectural philosophy detail and explicit entity/trust-boundary guidance that had been reduced too aggressively.
 - v2.0.0 - Realigned the architecture to the current framework structure and the revised PRD, with stricter logical boundaries.
@@ -15,6 +16,16 @@
 - **Why this pattern fits the PRD:** The PRD describes a single-owner personal runtime that needs deterministic control, durable local state, explicit review points, and low operational overhead. A central coordinating runtime with clear internal boundaries satisfies those needs better than a distributed architecture. Brownfield repo reality already points in this direction: separate owner surfaces, a central runtime package, and dedicated outbound-control logic exist today, even though implementation depth is still uneven.
 - **Core trade-offs accepted:** A central coordinator becomes a deliberate chokepoint; some tasks take extra hops through policy and approval boundaries before execution; extensibility is intentionally constrained by review and trust controls; deployment simplicity is favored over horizontal scale or multi-tenant elasticity.
 
+**Named failure classes this architecture answers:**
+- **Probabilistic safety failure:** The model is not the enforcement point.
+- **Localhost trust failure:** Local network origin is never treated as equivalent to authorization.
+- **Flat credential storage failure:** Secret access is separated from agent execution and ordinary state.
+- **Unaudited memory write failure:** Durable context is mediated by runtime boundaries rather than direct agent mutation.
+- **Uncontrolled egress failure:** Outbound access is always forced through a chokepoint.
+- **Supply-chain integrity failure:** Capability growth is staged, reviewed, and bounded instead of installed ad hoc at runtime.
+- **Network inheritance failure:** Isolated execution does not inherit the host's network posture as-is.
+- **Custom security fragility:** The architecture prefers proven categories of isolation and telemetry foundation instead of bespoke trust-critical mechanisms where avoidable.
+
 ### 1.2 Scope Definition and Interaction Boundaries
 - **Local owner surfaces remain mandatory:** Command-line and browser-based operation are the baseline interaction surfaces for configuration, review, and direct work.
 - **Asynchronous owner interaction remains in scope:** The architecture allows owner-approved external interaction channels, but they must normalize into the same runtime control path rather than creating sidecar orchestration logic.
@@ -22,6 +33,20 @@
 - **Follow-on mediated channels:** Broader messaging and service channels may arrive through MCP-mediated paths later, but they inherit the same audit, approval, and policy boundaries.
 - **Separate integration workstreams:** External units such as the Open Responses compliance adapter, AgentSkills.io-compatible skill intake, core filesystem tool bundle, and the RMM memory bank remain valid architectural commitments even when their source repositories or package publication live outside this repo.
 - **Layer model:** The system still follows the five-layer conceptual model of Platform Manager, Host, Sandbox, Middleware Stack, and Runtime Coordinator; the container model below refines that layered view into explicit logical boundaries.
+
+**Primary capabilities represented by this architecture:**
+- Conversational interaction through local and approved asynchronous channels
+- Sandboxed terminal and file work
+- Web and browser-mediated work under the same outbound-control posture
+- Credential-mediated service interaction
+- Skill ingestion and bounded activation
+- Durable memory, scheduling, and resumable approvals
+- Local-first observability with optional export
+
+**Security boundaries represented by this architecture:**
+- Deterministic enforcement over prompt obedience
+- Zero implicit trust across network, files, channels, or configuration
+- Isolated execution separated from secret material and owner authority
 
 ### 1.3 Core Philosophies
 1. **Trust the sandbox, not the model.** Safety is enforced by isolated execution, policy boundaries, and explicit review points rather than by assuming the Agent will obey prompts.
@@ -52,12 +77,23 @@
 - **Platform Manager:** The host-facing provisioning and service-definition authority that translates canonical runtime requirements into native service-management behavior.
 - **Trust posture:** The Owner chooses to trust the Project. The Project grants authority to the Owner. Neither the Owner nor the Project grants implicit trust to the Agent. The Runtime Coordinator does not blindly trust the Egress Gateway, external channels, or connected services; they are all explicit dependencies governed by narrow contracts.
 
+**Terminology continuity:**
+- Historical references to `Gateway` in older docs may mean either the Runtime Coordinator or the Egress Gateway.
+- In current architecture language, `Runtime Coordinator` is the orchestration core and `Egress Gateway` is the outbound-policy component.
+
 ### 1.5 Standards Positioning and Competitive Posture
 - **Primary standards direction:** OpenKraken treats Open Responses as the primary interoperable external interface direction for standards-facing integration, while preserving a distinct owner-local control API for native CLI and browser operation.
 - **Why it matters architecturally:** A standards-based response protocol keeps the runtime client-agnostic, makes external adapters less proprietary, and allows OpenKraken-specific extensions to be isolated behind explicit prefixed extension points instead of leaking custom behavior into every client.
 - **Competitive posture:** OpenKraken differentiates by combining standards-based interoperability with deterministic local enforcement. The goal is not only to be compatible with emerging client ecosystems, but to offer a stricter trust boundary model than agent runtimes that treat shell access, memory writes, or secret handling as soft conventions.
 
 ## 2. System Containers
+### Layer Mapping Reference
+- **Platform Manager:** Host provisioning, native service generation, and path/service definition ownership.
+- **Host:** Native credential facilities, clocks, filesystems, and service managers.
+- **Sandbox:** The isolated execution substrate for bounded local work.
+- **Middleware Stack:** Ordered policy, capability, approval, memory, and operational extensions shaping agent execution.
+- **Runtime Coordinator:** The central orchestration boundary that assembles context and mediates all other containers.
+
 **Middleware classes in scope:**
 - **Policy middleware:** Validates and constrains work before capability expansion.
 - **Safety middleware:** Scrubs or blocks sensitive content and unsafe output.
@@ -66,6 +102,18 @@
 - **Scheduler middleware:** Injects scheduled execution context into the normal runtime path.
 - **Human-in-the-loop middleware:** Suspends execution indefinitely until explicit owner decision is available.
 - **Browser, web-search, and sub-agent middleware:** Valid capability classes that remain part of the architectural inventory even when some stay deferred in implementation planning.
+
+### Architectural Middleware Inventory
+- **Policy middleware:** Foundational enforcement for package, path, rate, and action-policy validation.
+- **Safety middleware:** Content-level scrubbing and blocking for sensitive or disallowed output.
+- **Scheduler middleware:** Detects scheduled triggers and injects scheduled context into the normal runtime path.
+- **Web-search middleware:** Exposes bounded retrieval capabilities through the same policy and outbound controls as other work.
+- **Browser middleware:** Exposes browser automation while preserving session isolation and outbound mediation.
+- **Memory middleware:** Owns extraction, retrieval, consolidation, and memory injection, keeping durable context outside direct agent mutation.
+- **Skill middleware:** Exposes approved skills, provenance, and trust metadata.
+- **Sub-agent middleware:** Represents bounded delegation as a capability class rather than hidden internal privilege; delegation depth remains intentionally constrained.
+- **Human-in-the-loop middleware:** Suspends execution until explicit owner decision is available and resumes from persisted continuation state.
+- **Summarization middleware:** Compresses older working context to preserve utility under context-window limits.
 
 ### Owner Interfaces
 - **Logical Type:** local client boundary
@@ -313,10 +361,23 @@ sequenceDiagram
 ```
 
 ## 5. Resilience & Cross-Cutting Concerns
+### 5.1 Authentication and Authorization
 - **Security / Identity Strategy:** The Owner authenticates at the interface boundary, while the Runtime Coordinator acts as the sole path into model use, capability invocation, and service interaction. Policy evaluation is mandatory before any meaningful action. Sensitive service access is mediated through the Connected Service Gateway so the Agent never receives raw credential material. Isolated execution and outbound control remain separate boundaries to preserve fail-closed behavior.
+- **Authorization posture:** Local surfaces and asynchronous channels normalize into the same runtime authority model. Approval-required actions are not separate "exception flows"; they are first-class pauses in the normal execution path.
+
+### 5.2 Observability
 - **Observability Strategy:** Every ingress, policy decision, approval request, isolated execution, connected-service action, schedule trigger, and recovery step emits Audit Records with correlation to the owning session or task. Local review is first-class, while export remains a downstream concern rather than the primary source of truth.
+- **Operational principle:** The architecture assumes that local audit evidence is canonical and external telemetry is derivative.
+
+### 5.3 Error Handling and Degradation
 - **Failure Handling and Degradation:** The architecture fails closed on policy uncertainty, approval ambiguity, credential retrieval failure, and outbound-control failure. Capability failures degrade only the affected action, not the entire runtime, and resumable state allows recovery after restarts. If a mandatory control boundary is unhealthy, the runtime remains alive but not ready for unsafe work.
+- **Retry posture:** Transient external failures may retry within bounded policy, but retries never erase audit evidence or convert ambiguous state into silent success.
+
+### 5.4 Skill Ingestion and Trusting Process
 - **Skill Ingestion and Trusting Process:** Skill intake is a separate architectural path from ordinary capability execution. Skills are staged, classified, reviewed, approved, and only then surfaced through bounded runtime capability exposure. The runtime must preserve tiered trust rather than collapsing all extensions into one undifferentiated tool surface.
+- **Ownership boundary:** AgentSkills.io-aligned skill behavior may be implemented partly outside this repo, but OpenKraken owns the trust classification, activation boundary, and audit semantics.
+
+### 5.5 Service Lifecycle Management
 - **Service Lifecycle Management:** Startup order matters: configuration, state, credential boundary, sandbox/egress checks, then owner-facing bind. Shutdown likewise prioritizes quiescing ingress, settling work, persisting resumable state, and only then releasing dependencies.
 - **Configuration Strategy:** Owner-managed configuration is separated logically into interaction settings, policy rules, service authorizations, skill trust metadata, and schedule definitions. Runtime state and audit evidence are not used as configuration stores. Secret material remains outside normal configuration and is accessed only through the credential-mediated boundary.
 - **Data Integrity / Consistency Notes:** Session state, memory state, schedule state, and approval continuation state are durable and authoritative for recovery. Audit storage is append-oriented to preserve reconstructability. Memory is derived from prior work but remains owner-reviewable and purgeable. Scheduled work and approval resumption must be safe to retry without duplicating the logical outcome.

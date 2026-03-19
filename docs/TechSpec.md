@@ -1,6 +1,7 @@
 # Technical Specification
 
 ## 0. Version History & Changelog
+- v2.10.0 - Re-expanded the TechSpec within the framework structure so the old implementation method, interface detail, data-model detail, configuration, testing, deployment, and security contracts remain canonical instead of surviving only as compressed summaries.
 - v2.9.0 - Restored the Open Responses primary interface posture, external adapter integration units, regulatory/SBOM discussion, drift-prevention rules, richer implementation contracts, and the remaining missing operational details without bringing back research-only appendices.
 - v2.8.0 - Restored missing canonical detail for RMM, constitution injection, day-bounded sessions, and the more explicit auth/recovery/service-resilience contracts that had been reduced too far.
 - v2.7.0 - Realigned interaction-channel posture with the revised architecture: restored the asynchronous channel boundary logically, while keeping Telegram primary and MCP-backed channels as delayed follow-on implementation scope.
@@ -25,6 +26,36 @@
 - **Version Pinning / Compatibility Policy:** Runtime and build dependencies SHALL be pinned exactly in manifests. Lockfiles SHALL be committed. Bun and Go patch upgrades may land without ADR changes when interface compatibility is preserved; minor or major upgrades for agent, sandbox, UI, or gateway packages require ADR review. The canonical Owner-facing runtime API SHALL remain at `/v1` until a breaking contract change is explicitly versioned and migrated.
 - **External Integration Units:** The following remain canonical integration targets even when their source repositories or publication lifecycle live outside this repo: the Open Responses compliance adapter, the AgentSkills.io-compatible skill intake/tooling line, the core filesystem tools bundle, and the RMM memory bank package. They SHALL be treated as explicit integration units rather than as undocumented future magic.
 - **Compliance / Regulatory Posture:** Production-bound build and release flows SHALL preserve machine-readable SBOM capability and enough dependency traceability to support CRA-oriented supply-chain evidence, PCI DSS-style inventory expectations, FDA-style software bill of materials requests where relevant, and similar 2026-era compliance asks. This is a contract for build evidence and traceability, not a claim of immediate certification.
+
+### 1.1 Core Runtime and Language Posture
+- **Bun runtime role:** Bun remains the canonical Runtime Coordinator and CLI runtime because the repo, build model, and brownfield execution surfaces already assume Bun-native package and SQLite behavior.
+- **Go gateway role:** The Egress Gateway remains a separately compiled network-control unit because outbound enforcement is intentionally outside the main runtime trust boundary.
+- **TypeScript posture:** Strict TypeScript remains mandatory for runtime-facing packages. The TypeScript contract is part of the maintainability posture, not optional style.
+
+### 1.2 Agent-Orchestration and Middleware Stack
+- **LangChain / LangGraph role:** LangChain provides model, tool, middleware, and callback abstractions; LangGraph provides resumable execution and checkpoint semantics.
+- **RMM role:** Reflective Memory Management is not generic "future memory"; it is the intended middleware-backed memory-bank contract for the active Epic 2 line.
+- **Connector readiness:** Secondary provider readiness for OpenAI- and Google-family access remains in scope through LangChain-native connectors even where manifests have not yet been updated to exact pins.
+
+### 1.3 Protocol and Integration Libraries
+- **Standards-facing protocol:** Open Responses is the primary standards-facing contract through a dedicated adapter/unit.
+- **Owner-local control protocol:** Native runtime control remains loopback HTTP with SSE for streaming.
+- **Channel and service posture:** Telegram remains the first non-local interaction channel. MCP-backed channels and services remain a follow-on mediated path, not a separate orchestration architecture.
+
+### 1.4 Persistence and Storage Method
+- **Relational persistence:** SQLite with WAL remains the single authoritative store for non-secret runtime data.
+- **Credential persistence:** Platform vaults are the primary secret backend; age-encrypted fallback exists only under explicit headless or development posture.
+- **Filesystem method:** Sandbox zones, staged skills, backups, and export directories remain a first-class part of the physical design rather than incidental local folders.
+
+### 1.5 Infrastructure, Build, and Compliance Method
+- **Nix and devenv:** Flakes are authoritative for packaging and deployment. `devenv` is the development orchestration substrate, not the production service manager.
+- **Task runner:** `just` remains the human-facing entrypoint across Bun and Go.
+- **SBOM and compliance evidence:** The build pipeline SHALL remain capable of producing software inventory evidence suitable for CRA-oriented supply-chain traceability, PCI DSS-style dependency inventory, and FDA-style SBOM requests when procurement or regulated deployment contexts demand it.
+
+### 1.6 Dependency Management Policy
+- **Exact pinning target state:** Manifests are expected to move to exact pins. Until brownfield manifests finish converging, lockfiles remain the immediate compatibility floor and exact pins remain the contractual target state.
+- **Reversibility threshold:** Runtime, sandbox, orchestration, and UI stack changes that are expensive to reverse SHALL remain ADR-governed.
+- **Publication-gap rule:** Dependencies that are authoritative but not yet public, such as the RMM middleware package, SHALL still be named canonically with their source-of-truth location and integration contract.
 
 ## 2. Architecture Decision Records (ADRs)
 ### ADR-001 Runtime Topology and Language Split
@@ -386,6 +417,47 @@ erDiagram
     skills ||--o{ skill_audit_log : tracked_by
 ```
 
+#### 3.1.1 Checkpoint and Resumable Execution Tables
+- **Logical tables:** `checkpoints` and `writes` remain the brownfield LangGraph-compatible persistence pair for resumable execution.
+- **Primary key contract:** `checkpoints` use `(thread_id, checkpoint_ns, checkpoint_id)` and `writes` use `(thread_id, checkpoint_ns, checkpoint_id, task_id, idx)`.
+- **Payload contract:** Checkpoint payloads store serialized state including channel values, channel versions, and version-seen metadata. Write records preserve ordered task-channel outputs required for deterministic resume.
+- **Compatibility rule:** The runtime SHALL treat these records as compatibility-sensitive state. Manual edits to payload blobs, composite keys, or namespace semantics are forbidden operational shortcuts.
+
+#### 3.1.2 Message Log Tables
+- **Tables:** `threads` and `messages`
+- **Thread identity:** `threads.id` remains the owner-local calendar day string `YYYY-MM-DD` for the primary session model.
+- **Message role contract:** Roles are constrained to the runtime's canonical message roles, and content-type metadata SHALL distinguish text, file, tool-call, and tool-result variants where applicable.
+- **Sensitive content contract:** `messages.content` SHALL support application-level encryption with metadata sufficient to determine ciphertext handling state without exposing plaintext.
+- **Primary access path:** ordered replay by `(thread_id, created_at)`
+
+#### 3.1.3 Semantic Memory Tables
+- **Tables:** `memories` and `memories_embeddings`
+- **Purpose:** Provide the storage substrate required by the RMM memory bank while leaving extraction, reranking, consolidation, and decay behavior to the middleware implementation.
+- **Encryption posture:** Sensitive memory content and memory metadata SHALL be encryptable at rest independently of transcript retention.
+- **Retrieval posture:** Embedding references, importance metadata, and recency fields SHALL remain attributable to a specific memory record so purge, re-embedding, and audit remain possible.
+
+#### 3.1.4 Audit and Correlation Tables
+- **Tables:** `audit_events` plus correlation-bearing identifiers embedded in runtime records
+- **Purpose:** Preserve reconstructable evidence for owner actions, policy decisions, tool calls, service calls, restores, rotations, failures, and retry activity.
+- **Append-only posture:** Audit records are authoritative historical evidence and SHALL prefer append semantics over mutative "current status" rewriting.
+- **Severity posture:** The logical severity vocabulary SHALL distinguish ordinary operation, warning, error, and security-significant events.
+
+#### 3.1.5 Skill Review and Provenance Tables
+- **Tables:** `skills`, `skill_analysis_reports`, and `skill_audit_log`
+- **Purpose:** Preserve staged-versus-active skill state, provenance, trust tier, analysis output, approval decisions, update events, and operator review evidence.
+- **Tier contract:** Skill trust SHALL remain materially encoded rather than being implied by directory location alone.
+
+#### 3.1.6 Proxy and Outbound Audit Tables
+- **Tables:** `proxy_logs` and runtime-managed allowlist state
+- **Purpose:** Preserve outbound request evidence including destination, method/protocol, decision outcome, duration, and error context.
+- **Correlation rule:** Outbound audit records SHALL remain joinable to the owning runtime request or session context.
+
+#### 3.1.7 SQLite Type and Migration Conventions
+- **UUID posture:** UUIDs are stored as `TEXT` in canonical string form.
+- **Boolean posture:** Boolean values are stored as integer `0/1`.
+- **Blob posture:** Ciphertext, checkpoint payloads, embeddings, and similar binary records SHALL use `BLOB`.
+- **Migration naming:** Forward-only migration files SHALL remain numerically ordered with descriptive suffixes, and schema lineage SHALL be recorded in `schema_versions`.
+
 ### 3.2 Filesystem Layout
 - **Purpose:** Provide deterministic local paths for configuration, runtime state, sandbox zones, backups, and active Skill material.
 - **Storage Shape:** Host-managed directories rooted under the platform-specific OpenKraken home, with explicit separation between mutable runtime state and read-mostly staged content.
@@ -505,6 +577,33 @@ paths:
 **Adapter ownership note:**
 - The Open Responses adapter may live as a separate repository or package from this repo.
 - OpenKraken still owns the integration contract, policy mediation, approval semantics, and mapping from response identifiers to resumable runtime state.
+
+#### 4.1.1 Request Semantics
+- `input` SHALL accept either a shorthand string or a structured input-item array.
+- `previous_response_id` SHALL map to resumable runtime state rather than being treated as a best-effort client hint.
+- `instructions` are request-scoped augmentations layered beneath the constitutional hierarchy and runtime policy model; they SHALL NOT override those higher-priority controls.
+- Tool declarations SHALL map to bounded runtime capabilities or approved externally hosted tool surfaces. Declaring a tool in-request does not bypass runtime policy or trust boundaries.
+
+#### 4.1.2 Streaming Event Model
+- Streaming SHALL use semantic SSE events rather than raw token-only deltas.
+- The canonical lifecycle includes response creation, output-item addition, content-part progression, tool-call progression, completion or failure, and terminal `[DONE]`.
+- OpenKraken-specific events SHALL remain additive and prefixed, for example `openkraken:*`, so standards clients can ignore unknown extensions safely.
+- Event ordering SHALL remain deterministic enough for adapters to replay or inspect stream progress meaningfully.
+
+#### 4.1.3 Error Response Model
+- The standards-facing adapter SHALL emit structured errors compatible with the Open Responses error envelope.
+- Error classes SHALL preserve at least invalid request, authentication or authorization failure, rate limiting, service unavailability, sandbox or policy failure, and checkpoint or runtime persistence failure.
+- OpenKraken-specific failures SHALL NOT be flattened into a meaningless generic error when a more precise standards-compatible error class exists.
+
+#### 4.1.4 Tool Declaration and Result Model
+- Core filesystem, terminal, browser, web-search, and connected-service capabilities SHALL surface as formal tool declarations rather than undocumented side channels.
+- Tool results SHALL re-enter the response lifecycle as structured result items or tool-result events.
+- Sandbox hints, checkpoint creation, review-state transitions, and similar OpenKraken-specific metadata SHALL remain extension metadata rather than redefining the meaning of standard items.
+
+#### 4.1.5 Adapter Model
+- Telegram, CLI, browser UI, scheduler triggers, and future mediated channels are adapter surfaces that normalize into either the owner-local runtime API or the standards-facing Open Responses adapter.
+- Telegram remains the primary first-wave non-local adapter and SHALL preserve the same audit, approval, and session semantics as local owner surfaces.
+- MCP-backed channels remain explicit follow-on adapters, not proof that the runtime has multiple authority models.
 
 ### 4.2 Runtime Control API
 - **Style:** HTTP API
@@ -1098,6 +1197,14 @@ Exit codes:
 - **Compatibility Strategy:** Endpoint names are stable within `/v1` once published. Dependency keys in readiness payloads may be extended additively. Metrics names follow exporter conventions and may grow additively but shall not silently repurpose an existing metric.
 - **Error model:** `application/problem+json` for JSON endpoints; plain-text exporter output for `/metrics`
 
+**Canonical operational endpoint set:**
+- `/health` for liveness
+- `/ready` or equivalent readiness surface for dependency health
+- `/metrics` for optional Prometheus-compatible export
+- `/version` for build/runtime inspection
+
+The endpoint contract SHALL distinguish process aliveness from work-readiness. A running process with failed migrations, missing vault material, or unavailable mandatory control boundaries is alive but not ready.
+
 ```yaml
 paths:
   /ready:
@@ -1224,6 +1331,11 @@ Brownfield note: the current CLI already implements the local JSON cache shape i
 5. Runtime validation uses constant-time comparison or equivalent non-leaky secret validation for root authentication material.
 6. The canonical owner token prefix remains `ok_` for shell/profile identification, and root token rotation invalidates all derived runtime sessions immediately.
 
+**Operational auth notes:**
+- CLI cache files SHALL remain owner-readable only and MUST store revocable session material, never the root owner secret.
+- Session expiry, revocation, logout, and root-secret rotation are all canonical invalidation paths.
+- Placeholder browser auth implementations in brownfield code are non-authoritative until they align with this session contract.
+
 ## 5. Implementation Guidelines
 ### 5.1 Project Structure
 ```text
@@ -1300,6 +1412,15 @@ Brownfield note: the current CLI already implements the local JSON cache shape i
 - `api`, `auth`, `credentials`, `platform`, `sandbox`, and `telemetry` own infrastructure and interface concerns.
 - `contracts` and `migrations` are first-class reviewed artifacts and SHALL evolve with their corresponding runtime behavior.
 
+**devenv method:**
+- Package-local `devenv` configuration MAY vary by language/runtime needs, but shared environment rules belong in common Nix-managed inputs rather than ad hoc shell scripts.
+- `devenv` scripts are short-running operator conveniences; `devenv` tasks represent dependency-aware workflows and test/bootstrap sequences.
+- `direnv` auto-activation is the preferred local ergonomics path, but the repo MUST remain operable through explicit `devenv shell` and `just` entrypoints when auto-activation is unavailable.
+
+**Cross-language coordination posture:**
+- Bun and Go packages are maintained in one monorepo because the runtime and gateway contracts evolve together.
+- Shared operational semantics such as versioning, release evidence, and CI acceptance gates are repo-global even when implementation toolchains differ.
+
 ### 5.2 Coding Standards
 - **Formatting / Linting:** TypeScript uses Biome as the canonical formatter and linter. Go uses `gofmt` and `go vet`. All OpenAPI, YAML, and SQL artifacts are treated as reviewable source and must remain deterministic under formatting.
 - **Testing Expectations:** Unit tests cover policy evaluation, credential boundary behavior, middleware ordering, config loading, provider routing, filesystem tool wrappers, and gateway domain decisions. Migration tests validate forward-only application on empty and brownfield databases. Contract tests validate the OpenAPI and Open Responses artifacts against runtime handlers or adapters. End-to-end tests cover chat turn, approval pause/resume, schedule execution, Telegram ingress, Open Responses adapter ingress, and outbound denial behavior.
@@ -1313,10 +1434,45 @@ Brownfield note: the current CLI already implements the local JSON cache shape i
 - Contract: native runtime API, Open Responses adapter, CUE config schema
 - End-to-end: owner interaction, approval suspension/resume, Telegram path, scheduled work path
 
+**Coverage and quality targets:**
+
+| Layer | Minimum | Target |
+| --- | --- | --- |
+| Domain and policy logic | 90% | 95% |
+| Application orchestration | 80% | 90% |
+| Infrastructure adapters | 70% | 80% |
+| Integration and end-to-end coverage | scenario-based | critical-path complete |
+
 **Performance requirements:**
 - Interactive overhead introduced by the runtime should remain materially below model latency.
 - Standard isolated tool invocation should remain fast enough that the sandbox/control path does not dominate a routine owner workflow.
 - Checkpoint, audit, and message persistence should not stall owner-facing streaming output under nominal single-owner load.
+
+**Performance baseline targets:**
+
+| Operation | Target P50 | Target P99 |
+| --- | --- | --- |
+| Sandbox invocation overhead | under 50ms | under 100ms |
+| Policy validation | under 5ms | under 15ms |
+| Memory retrieval (nominal Top-K profile) | under 20ms | under 50ms |
+| Checkpoint write | under 10ms | under 30ms |
+| Telegram ingress acknowledgment path | under 100ms | under 200ms |
+
+**Architecture layer definitions for code organization:**
+- **Domain-adjacent logic:** policy vocabulary, bounded action types, trust-tier semantics, and schedule or approval domain concepts.
+- **Application layer:** orchestration use cases coordinating auth, chat turns, approval pause/resume, scheduling, and integration dispatch.
+- **Infrastructure layer:** database adapters, vault implementations, sandbox integration, gateway transport, tracing exporters, and native service interactions.
+- **Interface layer:** HTTP handlers, Telegram/web adapters, CLI command bindings, and standards-facing adapter boundaries.
+
+**Database access posture:**
+- Database access SHALL remain repository- or service-mediated rather than scattering raw SQL through owner interfaces and adapters.
+- Sensitive-field encryption and decryption belong at the state-adapter boundary, not in arbitrary callers.
+- Migrations, repositories, and runtime state services SHALL share one canonical schema vocabulary.
+
+**Observability implementation posture:**
+- Langfuse/OpenTelemetry integration remains the canonical tracing direction.
+- Local audit capture always runs even when external telemetry export is disabled or unhealthy.
+- Export failures are observability failures, not runtime authorization outcomes.
 
 ### 5.3 Configuration Contract
 The runtime uses a layered configuration model that combines bootstrap environment variables, a root YAML configuration file, validated CUE schema, and persisted configuration documents.
@@ -1333,6 +1489,14 @@ The runtime uses a layered configuration model that combines bootstrap environme
 | `OPENKRAKEN_LANGFUSE_ENABLED` | No | `false` | Bootstrap override for tracing export enablement. |
 | `OPENKRAKEN_LANGFUSE_PUBLIC_KEY` | No | none | Optional tracing credential override for dev/bootstrap use. |
 | `OPENKRAKEN_LANGFUSE_SECRET_KEY` | No | none | Optional tracing credential override for dev/bootstrap use. |
+
+**Canonical vault-stored identifiers:**
+
+| Identifier | Purpose |
+| --- | --- |
+| `openkraken-master-key` | Root encryption material for message, memory, and backup subkeys |
+| `openkraken-egress-hmac-key` | Shared secret for gateway management/auth flows where required |
+| `openkraken-api-token` | Root owner authentication secret or seed material for session issuance |
 
 Brownfield note: the current loader in [config/index.ts](/home/oscar/GitHub/OpenKraken/packages/orchestrator/src/config/index.ts#L15) still consumes a narrower transitional shape including aliases such as `OPENKRAKEN_SANDBOX_TYPE`, `OPENKRAKEN_EGRESS_HOST`, and `OPENKRAKEN_EGRESS_PORT`. The target implementation SHALL converge these aliases onto the canonical contract above.
 
@@ -1458,6 +1622,17 @@ alerting:
 | Restart-required | `orchestrator.host`, `orchestrator.port`, sandbox zone paths, gateway bind ports | Persisted updates may be accepted, but they do not take effect until controlled restart |
 | Live-reloadable | allowlist entries, alerting thresholds, skill update cadence, telemetry export enablement | May be activated after validation and audit recording without full process restart |
 
+**Configuration source-of-truth and precedence:**
+1. Bootstrap environment variables required to locate the runtime home and root config
+2. Root YAML configuration file validated against the canonical CUE schema
+3. Persisted configuration documents stored in `config_documents`
+4. Runtime-generated effective configuration assembled after validation
+
+**Rejection rules:**
+- Unknown fields are rejected rather than ignored.
+- Invalid enums, structurally invalid payloads, and partial writes are rejected rather than coerced.
+- Security-sensitive defaults SHALL fail closed when required values are absent.
+
 ### 5.4 Migration and Schema Operations
 OpenKraken uses forward-only SQL migrations with checksum verification, transactionality, and integrity checks. The brownfield runner already implements this contract in [migrate.ts](/home/oscar/GitHub/OpenKraken/packages/orchestrator/scripts/db/migrate.ts#L57).
 
@@ -1501,6 +1676,15 @@ CREATE TABLE schema_versions (
 4. Refuse API bind if migration or integrity validation fails.
 5. Record the active schema version for operational review.
 
+**Migration file naming and review rules:**
+- Migration filenames SHALL use zero-padded numeric prefixes followed by a descriptive suffix.
+- Each migration SHALL state the intent of the change clearly enough to support brownfield review and recovery.
+- Checksum drift for an already-applied migration is a hard error, not a warning.
+
+**Migration testing expectations:**
+- New migrations SHALL be exercised against an empty database and against a realistic brownfield lineage.
+- Expand-migrate-contract steps SHALL be validated across at least one compatibility path where old rows already exist.
+
 ### 5.5 Middleware and Callback Semantics
 The runtime relies on deterministic middleware ordering because control flow, not prompting, enforces safety. The current repo contains a minimal composition framework in [framework.ts](/home/oscar/GitHub/OpenKraken/packages/orchestrator/src/middleware/framework.ts#L66), but the canonical ordering contract is broader than the brownfield implementation.
 
@@ -1515,6 +1699,19 @@ The runtime relies on deterministic middleware ordering because control flow, no
 | 5 | Operational | Summarization and context compression | Optimizes context after capability set is known. |
 | 6 | Approval | Human-in-the-loop gating | Pauses sensitive actions before execution leaves the runtime. |
 
+**Complete middleware inventory:**
+- Policy middleware for package, path, rate, and action validation
+- Safety middleware for PII and sensitive-output controls
+- Scheduler middleware for cron or delayed trigger injection
+- Web-search middleware for bounded retrieval capability
+- Browser middleware for isolated browser automation
+- RMM memory middleware for retrieval, consolidation, and reflective memory behavior
+- MCP or service-connector middleware where mediated channels/tools are enabled
+- Skill-loader middleware for approved skill exposure and provenance context
+- Sub-agent middleware for bounded delegation capability
+- Summarization middleware for context compression
+- Human-in-the-loop middleware for indefinite approval suspension until explicit owner decision
+
 **Callback rules:**
 - Callbacks are observational only and SHALL NOT alter agent control flow.
 - Local audit capture runs before external telemetry export.
@@ -1527,6 +1724,15 @@ The runtime relies on deterministic middleware ordering because control flow, no
 3. Telemetry/tracing emission
 4. Optional export-oriented post-processing
 5. Best-effort error reporting for observability failures
+
+**Canonical callback event families:**
+- model start, end, and error
+- chain or graph start, end, and error
+- tool start, end, and error
+- agent action and finish
+- schedule trigger
+- approval requested, approved, rejected, resumed
+- gateway allow, deny, and failure
 
 **Minimum sanitization rules:**
 
@@ -1583,6 +1789,11 @@ The deployment modules are materially ahead of the orchestrator entry point in [
 - CI is Nix-first and multi-platform.
 - Release candidates SHALL validate runtime API artifacts, CUE schema, migrations, and package builds together.
 - SBOM generation belongs in the release path, not as an afterthought client-side script.
+
+**Flake and development-surface contract:**
+- `flake.nix` is authoritative for build outputs, NixOS and Darwin modules, and release-facing checks.
+- `devenv` and `process-compose` remain developer ergonomics surfaces and SHALL NOT become the canonical production service definition.
+- Optional hosted binary-cache or incremental-build systems such as Garnix MAY accelerate builds, but they do not replace the flake as the source of truth.
 
 **Egress gateway resilience contract:**
 
@@ -1697,7 +1908,25 @@ Platform vault
 - Backup schedule default: `0 3 * * *`
 - Verification schedule default: `0 4 * * 0`
 
+**Backup verification result handling:**
+
+| Result | Severity | Required Action |
+| --- | --- | --- |
+| Success | INFO | Record locally; no urgent alert required |
+| Integrity failure | CRITICAL | Alert Owner immediately and mark latest backup set invalid |
+| Decryption failure | CRITICAL | Alert Owner immediately and block confidence in encrypted-state recovery |
+| Timeout or interrupted verification | ERROR | Record and retry on next scheduled verification window |
+
 Brownfield note: the fallback chain is already implemented in [vault.ts](/home/oscar/GitHub/OpenKraken/packages/orchestrator/src/credentials/vault.ts#L37), but automated backup verification, full key rotation workflows, and complete restore tooling remain target-state obligations rather than finished runtime behavior.
+
+**Egress gateway alert posture:**
+- Gateway failure emits a critical alert through the configured urgent channel.
+- Gateway recovery emits a lower-severity recovery event.
+- Repeated restart or health-flap patterns remain separately visible rather than collapsing into one generic outage message.
+
+**Fallback credential document shape:**
+- The age-encrypted fallback file SHALL map logical credential identifiers to encrypted values.
+- System credentials, integration credentials, and owner auth material MAY share one encrypted fallback document so long as access remains owner-restricted and audit posture is preserved.
 
 ### 5.8 Platform Path Resolution Contract
 The runtime owns all canonical path resolution. Owner interfaces, scripts, and adapters SHALL consume resolved paths instead of hardcoding platform-specific absolute locations.
@@ -1770,6 +1999,10 @@ OpenKraken is security-first infrastructure. The canonical TechSpec therefore re
 - **Denial of service:** mitigated through readiness semantics, bounded queues, service restart posture, and degrade-versus-fail distinctions.
 - **Elevation of privilege:** mitigated through isolated execution, policy-first middleware ordering, tool-level bounds, and no agent authority over its own constitution or credentials.
 
+**Threat-maintenance rule:**
+- New channels, providers, service connectors, or adjacent integration units SHALL be evaluated against the same spoofing, tampering, repudiation, information-disclosure, denial-of-service, and privilege-escalation categories before they are treated as canonical runtime scope.
+- The threat model is therefore a living implementation contract, not a one-time appendix.
+
 **Sandboxing guarantees:**
 - The Agent does not receive host filesystem access outside bounded mounts or zones.
 - Outbound traffic is mediated by the egress boundary rather than inherited from the host.
@@ -1801,6 +2034,13 @@ Build and verification remain part of the technical implementation contract beca
 - Uploaded SBOM artifacts are release evidence, not the source of truth for dependency pinning; manifests and flake inputs remain authoritative.
 - Regulatory-facing build evidence should remain sufficient for 2026-era asks such as CRA-oriented software inventory, PCI DSS supply-chain visibility, and similar procurement or compliance requests where a machine-readable bill of materials is expected.
 
+**Build verification layers:**
+1. Manifest and lockfile consistency
+2. CUE config-schema validation
+3. Contract artifact validation for runtime API and standards adapter surfaces
+4. Package build verification across Bun and Go outputs
+5. Release-evidence generation, including SBOM where enabled
+
 Brownfield note: the current workflow already invokes `nix run .#sbom` in [ci.yml](/home/oscar/GitHub/OpenKraken/.github/workflows/ci.yml#L60), but [flake.nix](/home/oscar/GitHub/OpenKraken/flake.nix#L1) does not currently expose an `sbom` app or package. That is an active implementation drift to resolve, not a reason to drop the SBOM contract from the specification.
 
 ### 5.11 Documentation and Artifact Drift Prevention
@@ -1815,3 +2055,8 @@ The canonical docs are part of the implementation surface for this project.
 **Review discipline:**
 - Brownfield drift SHALL be called out explicitly in the spec rather than silently normalized away.
 - Issue-backed planning SHALL preserve external integration units and active commitments, even when implementation is staged across multiple repositories.
+
+**Drift-prevention layers:**
+1. **PR and review layer:** contract changes are not complete unless the owning canonical doc changes in the same diff.
+2. **CI validation layer:** formal artifacts such as OpenAPI, CUE schema, build checks, and migration lineage remain machine-checkable wherever possible.
+3. **Periodic maintenance layer:** long-lived brownfield drift called out in docs must either be resolved or explicitly re-accepted rather than left to rot as accidental contradictions.
