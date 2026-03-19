@@ -4,8 +4,6 @@
 - v2.2.0 - Re-expanded the PRD inside the framework structure so the old success criteria, persona posture, capability continuity, named integration scope, and anti-pattern commitments are preserved rather than merely summarized.
 - v2.1.0 - Restored the missing success criteria, value/constitution model, explicit capability IDs, named integration scope, and anti-pattern commitments within the current framework structure.
 - v2.0.0 - Reframed the PRD to the current framework structure and restored strict product-layer boundaries.
-- v1.1.0 - Consolidated the earlier planning narrative around owner control, constitutional safety, and interface scope.
-- v1.0.0 - Established the initial planning artifact and moved core product documentation under `docs/`.
 - ... [Older history truncated, refer to git logs]
 
 ## 1. Executive Summary & Target Archetype
@@ -19,6 +17,10 @@
 OpenKraken is not meant to feel like a research demo or a "safe mode" wrapper around an unsafe agent. The product promise is stronger and narrower: it should feel like a capable personal operator that happens to be architecturally hard to misuse. The Owner should not have to trade away usefulness to obtain trust.
 
 The project also preserves a specific emotional and operational posture. The Owner is expected to feel cautious confidence rather than blind trust: they should be able to inspect boundaries, verify outcomes, and understand why the Agent could or could not perform an action. That owner-facing clarity is itself part of the product requirement.
+
+The product also preserves four operating values as owner-visible commitments: helpfulness, honesty, harmlessness, and transparency. The system must stay useful for real work without hiding uncertainty, relaxing safety boundaries, or making its behavior opaque to the Owner.
+
+OpenKraken also preserves a stable four-part constitutional model that remains intelligible to the Owner: an immutable identity layer, a normative safety layer, a factual operating-environment layer, and owner-authored standing directives. Higher-priority constitutional layers override lower-priority ones, and later implementation details SHALL preserve that user-facing precedence model.
 
 ## 2. Ubiquitous Language (Glossary)
 | Term | Definition | Do Not Use |
@@ -61,19 +63,6 @@ The Agent is not a co-equal user of the system. It is a bounded subsystem. It do
 
 Connected Services include both first-class named channels and broader mediated integrations. Named early scope includes Telegram, Slack, Discord, email, and calendar-class services. Additional services may arrive later, but they must still behave as explicit, owner-authorized edges of the system rather than as trusted internal components.
 
-### 3.4 Operating Values
-- **Helpfulness:** The Agent should complete real owner-authorized work rather than degrade into a permanently apologetic chat surface.
-- **Honesty:** The Agent should state uncertainty, refusal reason, or missing context explicitly rather than fabricate confidence.
-- **Harmlessness:** The system shall not facilitate clearly harmful or disallowed actions even when the Owner frames them indirectly.
-- **Transparency:** The Owner should be able to understand what the Agent did, why it did it, and what constrained it.
-
-These values are product-visible commitments, not implementation trivia. "Helpful" does not mean maximally permissive, and "harmless" does not mean pathologically inert. The intended balance is a system that remains capable because boundaries are explicit and enforceable, not because the Agent is allowed to improvise outside them.
-
-### 3.5 Constitutional Framework
-- **Constitution Hierarchy:** `SOUL.md` defines immutable core identity and allegiance; `SAFETY.md` defines normative boundaries; `CAPABILITIES.md` defines the factual operating environment; `DIRECTIVES.md` defines owner-authored standing instructions. Higher-priority documents override lower-priority ones.
-- **Product Meaning:** The constitution is part of the product contract, not merely an implementation prompt. OpenKraken is expected to preserve this hierarchy as the Owner-visible model of how agent behavior is shaped and bounded.
-- **Continuity Rule:** The constitution SHALL remain intelligible to the Owner as a four-part model. Even if later implementations alter prompt assembly details, the user-facing semantics of these four documents and their precedence SHALL remain stable unless the PRD itself changes.
-
 ## 4. Functional Capabilities
 The following capability inventory preserves the legacy capability identifiers so that downstream architecture, TechSpec, issue planning, and external workstreams can continue to refer to stable product commitments. Missing numeric ranges are intentional continuity gaps rather than omitted requirements.
 
@@ -84,14 +73,14 @@ The following capability inventory preserves the legacy capability identifiers s
 - **Rationale:** A personal agent runtime must be operable directly by its Owner without requiring another service or interface layer.
 - **Priority:** P0
 - **Capability ID:** CAP-080
-- **Capability:** The System shall provide a Command Line Interface for configuration management, diagnostics, automation, and direct interaction, with token-based owner authentication and feature parity expectations relative to the browser interface.
+- **Capability:** The System shall provide a Command Line Interface for configuration management, diagnostics, automation, and direct interaction, with secure owner authentication and feature parity expectations relative to the browser interface.
 - **Rationale:** The Owner needs a scriptable and inspection-friendly surface for development, debugging, and operational control.
 - **Priority:** P0
 - **Capability ID:** CAP-081
 - **Capability:** The System shall provide a browser-based interface for conversation, system visibility, policy/configuration workflows, and dashboard-style review of system state.
 - **Rationale:** The Owner needs a persistent visual surface for monitoring and day-to-day operation, not only command-driven access.
 - **Priority:** P1
-- **Capability ID:** CAP-052
+- **Capability ID:** CAP-053
 - **Capability:** The System shall support Telegram as the primary real-time bidirectional asynchronous interaction channel for the first non-local implementation line.
 - **Rationale:** The product needs one explicit off-machine owner channel that preserves the single-owner interaction model.
 - **Priority:** P1
@@ -137,6 +126,7 @@ The following capability inventory preserves the legacy capability identifiers s
 - **Capability:** The System shall inject Agent identity at runtime rather than as agent-readable files.
 - **Rationale:** Identity material must not become exfiltratable content inside the execution environment.
 - **Priority:** P0
+- **Capability ID:** CAP-015
 - **Capability:** The System shall require explicit Owner approval before high-risk actions proceed when policy calls for human review.
 - **Rationale:** Some work should be possible, but only with a deliberate owner checkpoint instead of blanket refusal or silent execution.
 
@@ -154,6 +144,7 @@ The following capability inventory preserves the legacy capability identifiers s
 - **Capability:** The System shall support Telegram as a first-class integration channel, providing real-time bidirectional interaction semantics under the same owner, audit, and policy model as the local interfaces.
 - **Rationale:** Telegram is the primary first-wave non-local channel and must be treated as an explicit product capability rather than incidental adapter behavior.
 - **Priority:** P1
+- **Capability ID:** CAP-054
 - **Capability:** The System shall let the Owner review, rotate, revoke, and re-authorize service access over time.
 - **Rationale:** Long-lived personal systems need ongoing secret hygiene and reversible integration management.
 
@@ -189,6 +180,7 @@ The following capability inventory preserves the legacy capability identifiers s
 - **Capability:** The System shall expose operational evidence both through local reviewable storage and through exportable formats for external monitoring chosen by the Owner.
 - **Rationale:** Local review remains primary, but owners may still want integration with broader observability tooling.
 - **Priority:** P0
+- **Capability ID:** CAP-064
 - **Capability:** The System shall present health, recent activity, and error state in a way the Owner can review locally.
 - **Rationale:** A security-first runtime that cannot be observed or debugged is not operationally trustworthy.
 - **Priority:** P1
@@ -203,11 +195,11 @@ The following capability inventory preserves the legacy capability identifiers s
 - **Rationale:** Personal workflows differ; extensibility is necessary, but it must not bypass the product's safety model.
 - **Priority:** P1
 - **Capability ID:** CAP-021
-- **Capability:** The System shall ingest Skill dependencies from locked specifications rather than relying on unconstrained runtime dependency resolution.
+- **Capability:** The System shall ingest Skill dependencies from reviewable and reproducible dependency declarations rather than relying on unconstrained runtime dependency resolution.
 - **Rationale:** Skills must remain reproducible and reviewable as packages, not ad hoc code drops.
 - **Priority:** P1
 - **Capability ID:** CAP-022
-- **Capability:** The System shall prevent Skills from invoking native package managers at runtime.
+- **Capability:** The System shall prevent Skills from self-installing arbitrary runtime dependencies during use.
 - **Rationale:** Supply-chain integrity is incompatible with arbitrary live package installation.
 - **Priority:** P1
 - **Capability ID:** CAP-023
@@ -218,6 +210,7 @@ The following capability inventory preserves the legacy capability identifiers s
 - **Capability:** The System shall enforce a tiered trust model for Skills, classifying them as `System`, `Owner`, or `Community` Skills and applying different review and execution constraints to each class.
 - **Rationale:** Not every extension deserves the same level of trust, and downstream policy, UI, persistence, and adjacent skill workstreams need stable tier names rather than generic trust language.
 - **Priority:** P2
+- **Capability ID:** CAP-025
 - **Capability:** The System shall help the Owner understand what a Skill can do before it becomes active.
 - **Rationale:** Extension safety depends on informed activation, not blind installation.
 
@@ -249,6 +242,7 @@ The following capability inventory preserves the legacy capability identifiers s
 - **Capability:** The System shall normalize paths and equivalent capability semantics across supported host environments so platform differences do not change what the product means.
 - **Rationale:** Cross-platform support is a product promise, not just an implementation note.
 - **Priority:** P2
+- **Capability ID:** CAP-072
 - **Capability:** The System shall make installation, upgrade, backup, and recovery manageable by one technically capable owner.
 - **Rationale:** Operational complexity directly erodes the value of a personal runtime.
 
@@ -258,7 +252,7 @@ The following capability inventory preserves the legacy capability identifiers s
 - **Security & Privacy:** Safety boundaries must default to deny rather than assume trust; credentials must remain inaccessible to the Agent as raw values; outbound actions must be attributable and reviewable; the product must not depend on prompt obedience as its primary safety control.
 - **Operability:** A single technically capable Owner must be able to install, configure, observe, back up, and recover the system without enterprise-only tooling or multi-person operations.
 - **Domain-specific Constraints:** The first version remains single-owner and single-instance; command and browser interfaces must be accessible by keyboard and screen reader; the runtime must remain useful even when some external services are temporarily unavailable.
-- **Prohibited Patterns:** Prompt-based safety as the primary control model, credentials in agent-accessible config or environment files, implicit localhost trust, agent-modifiable identity or governing constraints, flat permission models, unaudited durable memory writes, uncontrolled outbound access, runtime package-manager installs for capability acquisition, and file-materialized constitutional identity inside the execution environment are all explicitly disallowed.
+- **Prohibited Patterns:** Prompt-based safety as the primary control model, credentials in agent-accessible operating context, implicit localhost trust, agent-modifiable identity or governing constraints, flat permission models, unaudited durable memory writes, uncontrolled outbound access, runtime self-installation of new capabilities, and mutable agent-visible constitutional identity are all explicitly disallowed.
 
 The prohibition list is normative because these are the exact failure classes the product exists to avoid. OpenKraken is not allowed to "temporarily" violate them for convenience. If a future capability appears to require any of these patterns, that is evidence that the capability needs to be redesigned or re-scoped.
 
@@ -349,4 +343,3 @@ classDiagram
 - Preserve the single-tenant, owner-operated product stance as a non-negotiable direction.
 - Existing project preferences to honor in later layers, without treating them as product requirements: Bun for the orchestration runtime, OS-native isolation, SQLite-based durable state, LangChain/LangGraph-style agent orchestration, OpenTelemetry-compatible observability, and Nix-based packaging/deployment.
 - Existing repo direction suggests the first owner-facing surfaces should remain a command-line interface and a browser-based interface, with additional external channels added under explicit owner control.
-- Several important capabilities are being built as adjacent integration units outside this repo and must remain visible in downstream docs as explicit integration workstreams rather than being normalized away: the Open Responses adapter, AgentSkills.io-compatible skill tooling, the core filesystem tools bundle, and the RMM memory bank line.

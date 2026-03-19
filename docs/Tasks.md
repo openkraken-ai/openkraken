@@ -4,13 +4,12 @@
 - v2.1.0 - Restored one-to-one issue-backed Epic 2 tickets, reinstated RMM and secondary-provider planning, and restored full deferred ticket bodies with Gherkin.
 - v2.0.0 - Rebuilt the Epic 2 plan against the current PRD, Architecture, and TechSpec; preserved legacy GitHub issue continuity; separated active work from deferred follow-ons.
 - v1.1.0 - Legacy Epic 2 decomposition revised after infrastructure review and effort re-estimation.
-- v1.0.0 - Initial Epic 2 task breakdown before framework-aligned restructuring.
-- Older history truncated, refer to git logs.
+- ... [Older history truncated, refer to git logs]
 
 ## 1. Executive Summary & Active Critical Path
 - **Total Active Story Points:** 69
-- **Critical Path:** `CORE-B001 -> CORE-B002 -> CORE-B005 -> CORE-B006 -> CORE-B007 -> CORE-B008 -> CORE-B010 -> CORE-B011 -> CORE-B013 -> CORE-B019 -> CORE-B017`
-- **Planning Assumptions:** Epic 1 infrastructure remains completed brownfield baseline and is not replanned here. Legacy GitHub issue continuity is preserved through explicit `Legacy Issue ID` mapping for every open Epic 2 issue. Telegram remains the primary non-local interaction channel for Epic 2. User-confirmed continuity assumptions that shall remain active in this plan, even where upstream docs need later backfill, are: RMM middleware as a real Epic 2 commitment, multi-provider readiness through LangChain connectors for Anthropic, OpenAI, and Google, and full deferred ticket preservation for `CORE-018` through `CORE-023`.
+- **Critical Path:** `CORE-B001 -> {CORE-B002, CORE-B003, CORE-B004, CORE-B005} -> CORE-B006 -> CORE-B007 -> CORE-B008 -> CORE-B010 -> {CORE-B015, CORE-B016, CORE-B018, CORE-B019} -> CORE-B017`
+- **Planning Assumptions:** Epic 1 infrastructure remains completed brownfield baseline and is not replanned here. Legacy GitHub issue continuity is preserved through explicit `Legacy Issue ID` mapping for every open Epic 2 issue. Telegram remains the primary non-local interaction channel for Epic 2. User-confirmed upstream continuity retained in this plan is: RMM middleware as a real Epic 2 commitment, multi-provider readiness through LangChain connectors for Anthropic, OpenAI, and Google, and full deferred ticket preservation for `CORE-018` through `CORE-023`. Risk-heavy adjacent integrations remain sequenced as issue-backed tickets rather than adding non-issue placeholder spikes.
 
 ## 2. Project Phasing & Iteration Strategy
 ### Current Active Scope

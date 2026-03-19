@@ -4,26 +4,16 @@
 - v2.10.0 - Re-expanded the TechSpec within the framework structure so the old implementation method, interface detail, data-model detail, configuration, testing, deployment, and security contracts remain canonical instead of surviving only as compressed summaries.
 - v2.9.0 - Restored the Open Responses primary interface posture, external adapter integration units, regulatory/SBOM discussion, drift-prevention rules, richer implementation contracts, and the remaining missing operational details without bringing back research-only appendices.
 - v2.8.0 - Restored missing canonical detail for RMM, constitution injection, day-bounded sessions, and the more explicit auth/recovery/service-resilience contracts that had been reduced too far.
-- v2.7.0 - Realigned interaction-channel posture with the revised architecture: restored the asynchronous channel boundary logically, while keeping Telegram primary and MCP-backed channels as delayed follow-on implementation scope.
-- v2.6.0 - Restored the explicit field-encryption contract and the compact build/CI/SBOM contract, including a brownfield note for the current `.#sbom` workflow drift.
-- v2.5.0 - Restored a compact canonical security threat model and failure posture so the four-document set retains the old TechSpec's security intent without bringing back the full narrative appendix.
-- v2.4.0 - Restored the remaining codebase-backed contracts for checkpoint schema lineage, owner auth lifecycle, config mutability, and platform path resolution without reverting to the old mixed-layer document.
-- v2.3.0 - Restored high-signal configuration, migration, deployment, middleware, and recovery contracts that were too aggressively reduced in the earlier structural rewrite.
-- v2.2.0 - Added the missing project-scale ADRs covering configuration precedence, auth, migrations, recovery, lifecycle, middleware, scheduling, service mediation, path abstraction, model strategy, and health semantics.
-- v2.1.0 - Expanded the ADR set for the four-document model and restored checkpoint persistence to the target state model.
-- v2.0.0 - Rebuilt the TechSpec around the revised PRD and Architecture with concrete contracts, ADRs, and a target state model.
-- v1.1.0 - Expanded stack notes, operational details, and implementation patterns in the previous document shape.
-- v1.0.0 - Established the initial technical specification artifact under `docs/`.
 - ... [Older history truncated, refer to git logs]
 
 ## 1. Stack Specification (Bill of Materials)
 - **Primary Language / Runtime:** Bun `1.3.10` for the Runtime Coordinator and CLI; TypeScript `5.9.3`; Go `1.26.1` for the Egress Gateway. Brownfield note: the repo currently compiles the gateway with `go 1.25.6`, so the Go toolchain upgrade is a follow-up delta rather than already-landed reality.
 - **Primary Frameworks / Libraries:** `langchain@1.2.34`, `@langchain/core@1.1.34`, `@langchain/anthropic@1.3.25`, `@langchain/langgraph@1.2.3`, `@langchain/mcp-adapters@1.1.3`, `@anthropic-ai/sandbox-runtime@0.0.42`, `grammy@1.41.1`, `zod@4.3.6`, `age-encryption@0.3.0`, `@opentui/core@0.1.88`, `@sveltejs/kit@2.55.0`, `svelte@5.54.0`, `vite@8.0.0`.
-- **Active Epic 2 Adjunct Packages:** `@skroyc/rmm-middleware@0.1.0` remains a required memory-middleware dependency for the Epic 2 line, but publication is pending and the current source of truth is the local package repository rather than the public registry. Secondary provider readiness also remains active scope through LangChain connector packages for OpenAI and Google-family model access; those connectors SHALL be exact-pinned when the dependency-alignment delta lands in repo manifests.
+- **Adjunct Integration Packages:** `@skroyc/rmm-middleware@0.1.0` remains a required memory-middleware dependency for the current memory contract, but publication is pending and the current source of truth is the local package repository rather than the public registry. Secondary provider readiness also remains part of the canonical provider boundary through LangChain connector packages for OpenAI and Google-family model access; those connectors SHALL be exact-pinned when the dependency-alignment delta lands in repo manifests.
 - **State Stores / Persistence:** SQLite `3.x` through `bun:sqlite` with WAL enabled as the authoritative application store; filesystem-backed sandbox zones for staged inputs, work artifacts, outputs, backups, and active Skills; platform-native credential vaults with age-encrypted fallback for headless or dev-only scenarios.
 - **Infrastructure / Tooling:** Nix Flakes on `nixpkgs/nixos-25.11`, `devenv` for local orchestration, `just` for cross-language build coordination, CUE for configuration validation, and repo-local build outputs under `bin/`.
 - **Testing / Quality Tooling:** `bun test`, `go test`, `tsc --noEmit`, `svelte-check`, `@biomejs/biome@2.4.8` as the target formatter/linter baseline, and OpenAPI contract validation as part of CI. Brownfield note: the repo currently pins Biome `2.3.13`.
-- **Version Pinning / Compatibility Policy:** Runtime and build dependencies SHALL be pinned exactly in manifests. Lockfiles SHALL be committed. Bun and Go patch upgrades may land without ADR changes when interface compatibility is preserved; minor or major upgrades for agent, sandbox, UI, or gateway packages require ADR review. The canonical Owner-facing runtime API SHALL remain at `/v1` until a breaking contract change is explicitly versioned and migrated.
+- **Version Pinning / Compatibility Policy:** Exact-pinned manifests and committed lockfiles are the contractual convergence target. Brownfield manifests that still use ranges or `latest` are transitional drift and SHALL converge during dependency-alignment work rather than being treated as the long-term policy. Bun and Go patch upgrades may land without ADR changes when interface compatibility is preserved; minor or major upgrades for agent, sandbox, UI, or gateway packages require decision-record review. The canonical Owner-facing runtime API SHALL remain at `/v1` until a breaking contract change is explicitly versioned and migrated.
 - **External Integration Units:** The following remain canonical integration targets even when their source repositories or publication lifecycle live outside this repo: the Open Responses compliance adapter, the AgentSkills.io-compatible skill intake/tooling line, the core filesystem tools bundle, and the RMM memory bank package. They SHALL be treated as explicit integration units rather than as undocumented future magic.
 - **Compliance / Regulatory Posture:** Production-bound build and release flows SHALL preserve machine-readable SBOM capability and enough dependency traceability to support CRA-oriented supply-chain evidence, PCI DSS-style inventory expectations, FDA-style software bill of materials requests where relevant, and similar 2026-era compliance asks. This is a contract for build evidence and traceability, not a claim of immediate certification.
 
@@ -54,7 +44,7 @@
 
 ### 1.6 Dependency Management Policy
 - **Exact pinning target state:** Manifests are expected to move to exact pins. Until brownfield manifests finish converging, lockfiles remain the immediate compatibility floor and exact pins remain the contractual target state.
-- **Reversibility threshold:** Runtime, sandbox, orchestration, and UI stack changes that are expensive to reverse SHALL remain ADR-governed.
+- **Reversibility threshold:** Runtime, sandbox, orchestration, and UI stack changes that are expensive to reverse SHALL remain governed by canonical decision records.
 - **Publication-gap rule:** Dependencies that are authoritative but not yet public, such as the RMM middleware package, SHALL still be named canonically with their source-of-truth location and integration contract.
 
 ## 2. Architecture Decision Records (ADRs)
@@ -88,139 +78,141 @@
 - **Decision:** Keep Nix as the canonical packaging and development substrate, `just` as the task entrypoint, and OpenAPI/SQL/CUE artifacts as first-class sources of truth inside the repo. Implementation must follow contract-first changes for runtime API, migration-first changes for state, and versioned documentation changes for all externally consumed contracts.
 - **Consequences:** The project stays tractable as it grows because contracts, schema, and packaging are reviewable separately from code. The cost is more up-front specification work and the need to keep docs, migrations, and manifests synchronized before implementation is considered complete.
 
-### ADR-006 Credential Vault Abstraction with Headless Fallback
+Historical decision-number continuity from the larger pre-framework TechSpec is preserved below as canonical policy records. Section `2` keeps only the five most expensive-to-reverse ADRs required by the current stage-3 skill shape; the remaining numbered decisions are still binding implementation policy, but they are no longer treated as first-class ADRs in this section.
+
+### Policy-006 Credential Vault Abstraction with Headless Fallback
 - **Status:** accepted
 - **Context:** The project requires platform-native credential handling on macOS and Linux, but also needs an explicit posture for headless hosts where secret-service may be absent. The runtime must preserve the architectural guarantee that the Agent never sees raw credential material and that SQLite stores references rather than secrets.
 - **Decision:** Define one `CredentialVault` abstraction owned by the Runtime Coordinator. The primary implementations are macOS Keychain and Linux secret-service. A secondary age-encrypted file fallback is allowed only for explicit headless or development scenarios and remains outside the Agent-visible execution context. The runtime SHALL record only credential references in SQLite and SHALL fail closed when required credential material cannot be resolved.
 - **Consequences:** Secret handling stays consistent across platforms and keeps the trust boundary explicit. The cost is extra platform integration and a more careful backup posture, because encrypted fallback material and its recovery path must be managed alongside the main database.
 
-### ADR-007 Resumable Execution via LangGraph-Compatible Checkpoint Persistence
+### Policy-007 Resumable Execution via LangGraph-Compatible Checkpoint Persistence
 - **Status:** accepted
 - **Context:** The approved architecture requires approval pause/resume, schedule-triggered execution, and restart recovery without reconstructing control state from chat transcripts alone. Brownfield repo reality already depends on LangGraph packages and partial persistence, but the target-state schema must make resumable execution explicit rather than implicit.
 - **Decision:** Persist execution checkpoints in SQLite using a LangGraph-compatible checkpoint model. Approval waits, interrupted tool executions, and schedule-triggered runs SHALL resume from checkpointed execution state when available. Message history remains the human-review log, while checkpoint tables remain the machine-resumption source of truth.
 - **Consequences:** Recovery behavior becomes deterministic and testable, and approval or schedule resumption does not rely on prompt reconstruction. The cost is added schema and migration complexity plus compatibility work whenever LangGraph checkpoint contracts change.
 
-### ADR-008 Typed Configuration Validation with CUE
+### Policy-008 Typed Configuration Validation with CUE
 - **Status:** accepted
 - **Context:** OpenKraken has a large number of security-sensitive runtime settings spanning sandboxing, credentials, observability, scheduling, and skill policy. Runtime-only validation is too late for many deployment and packaging failures, while hand-maintained duplicate schemas would drift.
 - **Decision:** Use CUE as the canonical schema language for runtime configuration. Nix checks SHALL validate shipped configuration artifacts against the CUE schema, and runtime startup SHALL reject invalid configuration before opening the control API. Example configs and generated defaults SHALL conform to the same schema lineage.
 - **Consequences:** The project gains one strongly typed source of truth for configuration and catches invalid deployments earlier. The cost is an additional toolchain dependency and the need to keep CUE schema evolution synchronized with runtime config loading.
 
-### ADR-009 OpenTelemetry-Native Observability with Langfuse
+### Policy-009 OpenTelemetry-Native Observability with Langfuse
 - **Status:** accepted
 - **Context:** The project requires local auditability, execution tracing, and optional external telemetry export without inventing a custom observability stack. Project-level commitments already name Langfuse v4 and OpenTelemetry as the observability foundation.
 - **Decision:** Keep the local audit store as the authoritative review surface and emit OpenTelemetry-compatible spans and metrics from the Runtime Coordinator, gateway, and owner-facing flows. Use Langfuse v4 as the primary LangChain/LangGraph tracing integration rather than bespoke callback plumbing. External collectors remain optional consumers, not the system of record.
 - **Consequences:** Execution traces, model calls, tool dispatch, approvals, and gateway decisions can be correlated with less implementation overhead. The cost is another credentialed integration and the need to scrub sensitive material before export beyond the local trust boundary.
 
-### ADR-010 Thin Owner Interfaces on OpenTUI and SvelteKit
+### Policy-010 Thin Owner Interfaces on OpenTUI and SvelteKit
 - **Status:** accepted
 - **Context:** The architecture defines command-line and browser-based Owner Interfaces, and the brownfield repo already contains dedicated CLI and web UI applications. For a project of this size, the interface stack is expensive enough to reverse that it should be captured as an ADR rather than left implicit in package manifests.
 - **Decision:** Use OpenTUI for the Bun-native CLI/TUI and Svelte 5 plus SvelteKit for the browser interface. Both clients SHALL remain thin surfaces over the same runtime control API and SHALL NOT duplicate core orchestration, policy, or state-transition logic locally.
 - **Consequences:** The project keeps a clear single-source-of-truth runtime contract while still supporting two distinct owner experiences. The cost is interface-specific tooling churn and the need to maintain streaming, auth, and compatibility behavior consistently across both clients.
 
-### ADR-011 Skill Intake through Staging, Analysis, Approval, and Activation
+### Policy-011 Skill Intake through Staging, Analysis, Approval, and Activation
 - **Status:** accepted
 - **Context:** Skills are a core extensibility mechanism, but they also create one of the highest-risk ingestion paths in the system. The architecture already separates the Skill Catalog from execution, and the brownfield schema includes skill review and audit tables, so the lifecycle needs to be captured as a first-class implementation decision.
-- **Decision:** All imported Skills SHALL pass through a four-step lifecycle: staging, analysis, approval, and activation. Active skill manifests SHALL be digest-pinned and exposed to the Runtime Coordinator only after approval state is persisted. Updates SHALL re-enter the same review flow rather than mutating active skill content in place. Skill runtime dependencies SHALL be declared canonically through `metadata.x-openkraken.dependencies`, with Nix package requirements expressed there so packages can be provisioned before sandbox invocation rather than installed by native package managers at runtime. Skill trust tiers SHALL remain canonical and named: `system`, `owner`, and `community`.
+- **Decision:** All imported Skills SHALL pass through a four-step lifecycle: staging, analysis, approval, and activation. Active skill manifests SHALL be digest-pinned and exposed to the Runtime Coordinator only after approval state is persisted. Updates SHALL re-enter the same review flow rather than mutating active skill content in place. Skill runtime dependencies SHALL be declared canonically through `metadata.x-openkraken.dependencies`, with Nix package requirements expressed there so packages can be provisioned before sandbox invocation rather than installed by native package managers at runtime. Skill trust tiers SHALL remain canonical and named: `System`, `Owner`, and `Community`.
 - **Consequences:** Extensibility remains compatible with the project's deterministic-safety posture and produces auditable review evidence. The cost is slower skill adoption, more state transitions, extra UI/API surfaces for review and lifecycle management, and the need to preserve both one project-specific manifest contract for dependency declaration and one stable tier vocabulary across adjacent skill repositories.
 
-### ADR-012 Configuration Source of Truth and Precedence
+### Policy-012 Configuration Source of Truth and Precedence
 - **Status:** accepted
 - **Context:** The system now exposes configuration through shipped examples, environment variables, runtime config loading, and control-surface APIs for configuration documents. Without an explicit precedence model, operators and future implementation work will produce ambiguous runtime behavior and drift between packaging, startup, and live administration.
 - **Decision:** The canonical configuration source order is: immutable build defaults, then host environment, then the root config file, then validated persisted configuration documents loaded by the Runtime Coordinator. Environment variables are reserved for bootstrap concerns such as runtime mode, home directory, config file location, and emergency overrides. Persisted configuration documents may override operational policy and integration settings only after successful validation and version checks. Invalid configuration at any layer SHALL block startup or reject the update rather than falling back silently.
 - **Consequences:** Packaging, deployment, and operator workflows share one deterministic precedence model. The cost is stricter config discipline and the need to classify each setting as bootstrap-only, runtime-mutable, or restart-required.
 
-### ADR-013 Owner Authentication and Session Model
+### Policy-013 Owner Authentication and Session Model
 - **Status:** accepted
 - **Context:** The runtime API is loopback-bound, but the project explicitly assumes host environments where other local processes may exist. The previous TechSpec established a static token for local ownership and a browser session layered over the same local trust boundary, but the decision was lost when the TechSpec was reduced.
 - **Decision:** The CLI authenticates with an opaque bearer token derived from a vault-stored owner secret. The browser authenticates by presenting the same owner secret to the runtime once, after which the runtime issues an HttpOnly session cookie backed by `auth_sessions` records in SQLite. Session validation, expiry, revocation, and invalidation remain runtime responsibilities. OAuth, OIDC, and federated identity are explicitly out of scope for the single-owner deployment model.
 - **Consequences:** The owner interfaces share one security model without introducing external identity dependencies. The cost is that token lifecycle, session revocation, and local secret provisioning become first-class runtime behavior that must be testable and auditable.
 
-### ADR-014 Migration and Schema Evolution Strategy
+### Policy-014 Migration and Schema Evolution Strategy
 - **Status:** accepted
 - **Context:** SQLite is the authoritative state store and now carries sessions, approvals, schedules, skill state, audit evidence, and resumable checkpoints. The removed TechSpec contained the actual migration posture, but the current document reduced it to short notes. For this project, migration semantics are too expensive to leave implicit.
 - **Decision:** Database evolution SHALL be forward-only, ordered, checksum-verified, and executed inside SQLite transactions. Each successful migration SHALL record its version and checksum in `schema_versions`. Startup SHALL refuse to bind the runtime API until all pending migrations succeed and integrity checks pass. Breaking schema changes SHALL use expand-migrate-contract sequencing and include a compatibility note, data transition plan, and rollback posture based on restore, not reverse SQL.
 - **Consequences:** Brownfield upgrades become deterministic and safer to reason about. The cost is more up-front migration design and a refusal to tolerate ad hoc manual schema edits in production state.
 
-### ADR-015 Backup, Restore, and Key Recovery Posture
+### Policy-015 Backup, Restore, and Key Recovery Posture
 - **Status:** accepted
 - **Context:** Encrypted messages, memories, credential fallback material, and resumable state create a recovery model that is inseparable from the security model. The previous TechSpec correctly treated backup and key recovery as part of the canonical design, and that guidance should remain authoritative inside the four-document set.
 - **Decision:** A valid recovery set consists of the SQLite database backup, active configuration state, and the required recovery material for any encrypted records that cannot be reconstructed from live vault state alone. The canonical recovery material is a one-time recovery code derived from or representing the master encryption material and shown to the Owner during initialization and rotation workflows for offline storage. Backup creation SHALL verify database integrity before writing artifacts. Restore SHALL verify schema compatibility and attempt sample decryption before replacing active state. Loss of both vault material and recovery material for encrypted records is an unrecoverable condition that MUST be stated explicitly in operator-facing flows.
 - **Consequences:** Recovery procedures remain honest about the real failure modes of a security-first local system. The cost is more operator burden around recovery-code handling and stricter restore validation before bringing the runtime back online.
 
-### ADR-016 Service Lifecycle and Startup Ordering
+### Policy-016 Service Lifecycle and Startup Ordering
 - **Status:** accepted
 - **Context:** Runtime correctness depends on ordered initialization across config loading, database migration, credential resolution, gateway readiness, and API binding. The prior TechSpec also documented platform service management and graceful shutdown behavior, but the revised doc no longer captured that as a canonical decision.
 - **Decision:** The runtime lifecycle SHALL follow this order: config bootstrap, configuration validation, database open, migration execution, credential boundary initialization, sandbox and gateway dependency checks, then runtime API bind. Shutdown SHALL stop new ingress first, allow in-flight work to settle within a bounded timeout, persist resumable state where required, and only then release resources. Linux and macOS service managers may differ in implementation, but they SHALL preserve the same runtime lifecycle semantics.
 - **Consequences:** Health and recovery behavior become predictable across hosts and packaging forms. The cost is more rigid startup behavior and explicit degraded-mode handling instead of opportunistic partial startup.
 
-### ADR-017 Middleware Ordering and Callback Semantics
+### Policy-017 Middleware Ordering and Callback Semantics
 - **Status:** accepted
 - **Context:** Project guidance explicitly distinguishes middleware from callbacks, and the removed TechSpec captured a concrete ordering model. Because OpenKraken enforces safety by architectural control rather than prompt policy, middleware ordering is not an implementation detail; it is part of the runtime contract.
 - **Decision:** Middleware SHALL execute in deterministic tier order: policy and content-safety gates first, capability and context expansion second, operational cross-cutting behavior third, and approval gates before any sensitive action leaves the runtime. Callbacks SHALL remain observational, non-blocking, and unable to alter control flow. Callback failures SHALL not change the execution outcome, while middleware failures SHALL fail closed according to their boundary.
 - **Consequences:** Safety-sensitive behavior stays reviewable and does not drift as new capabilities are added. The cost is tighter composition rules and less freedom to insert middleware arbitrarily.
 
-### ADR-018 Scheduling Semantics and Missed-Run Recovery
+### Policy-018 Scheduling Semantics and Missed-Run Recovery
 - **Status:** accepted
 - **Context:** Scheduled and background work is a first-class product capability, but the current spec only models schedule state and API shapes. The system still needs an explicit decision for how recurring work behaves across downtime, overlap, approval requirements, and resumable execution.
 - **Decision:** Schedules SHALL be stored as explicit owner-managed definitions with timezone-aware execution rules. The Scheduler SHALL reconcile missed runs after restart using deterministic catch-up rules rather than silently dropping them. Each run SHALL be idempotent at the `(schedule_id, scheduled_for)` boundary and SHALL emit its own audit trail. If scheduled work hits an approval gate, the resulting pending state SHALL remain resumable rather than forcing the task to restart from scratch.
 - **Consequences:** Background automation remains trustworthy after restart or temporary downtime. The cost is more scheduler state, explicit catch-up logic, and careful operator communication about skipped, merged, or resumed runs.
 
-### ADR-019 Connected Service Mediation Boundary
+### Policy-019 Connected Service Mediation Boundary
 - **Status:** accepted
 - **Context:** The architecture already defines a Connected Service Gateway, but the current ADR set does not yet capture why service access must remain separate from the sandbox and from raw credential handling. This boundary is too central to the trust model to remain only an architectural label.
 - **Decision:** All interactions with external owner-authorized services SHALL pass through a mediation layer that resolves credential references, applies service-specific policy, records audit evidence, and returns normalized results to the Runtime Coordinator. The Agent SHALL never receive raw service credentials, and sandboxed local execution SHALL not bypass the service mediation boundary for integrations that require owner-authorized secrets.
 - **Consequences:** External-service access remains attributable, reviewable, and policy-aware. The cost is more adapter work and a stricter separation between local capability execution and credential-mediated integrations.
 
-### ADR-020 Platform Path Abstraction and Directory Resolution
+### Policy-020 Platform Path Abstraction and Directory Resolution
 - **Status:** accepted
 - **Context:** The repo already contains cross-platform path-resolution code, and project guidance explicitly distinguishes platform abstraction from platform-specific configuration. Without an ADR, path handling will tend to leak into clients, tools, and deployment code in inconsistent ways.
 - **Decision:** The Runtime Coordinator owns canonical directory resolution for configuration, state, sandbox zones, backups, logs, and skills. Owner interfaces, tools, and adapters SHALL consume resolved paths through runtime services rather than hardcoding platform-specific locations. Linux and macOS may differ in root directories and service-manager conventions, but the logical directory model SHALL remain stable.
 - **Consequences:** Cross-platform behavior stays coherent and easier to test. The cost is a dedicated abstraction layer and the need to reject shortcuts in clients or scripts that try to bypass it.
 
-### ADR-021 Model Provider Strategy and Fallback Rules
+### Policy-021 Model Provider Strategy and Fallback Rules
 - **Status:** accepted
 - **Context:** The previous TechSpec recorded multi-provider support through LangChain-native abstractions, but the current reduced spec only pins the primary Anthropic integration packages. Provider strategy is still important because it affects configuration shape, credential handling, observability, and future failover behavior.
 - **Decision:** The runtime SHALL use LangChain-native provider abstractions as the integration boundary for model calls. Anthropic remains the primary pinned baseline for the current stack, while secondary providers may be enabled through explicit exact-pinned additions and owner-supplied credentials. Provider fallback, if configured, SHALL occur through runtime policy and model routing rather than ad hoc client behavior. Provider-specific features may be used only when their absence does not invalidate the canonical runtime control contract.
 - **Consequences:** The project preserves future provider flexibility without committing the owner interfaces or runtime API to vendor-specific semantics. The cost is extra configuration and testing complexity whenever new providers are turned on.
 
-### ADR-022 Operational Health Surface and Degradation Semantics
+### Policy-022 Operational Health Surface and Degradation Semantics
 - **Status:** accepted
 - **Context:** The current runtime API exposes `/health` and `/status`, while the previous TechSpec also defined readiness, metrics, and version-reporting surfaces. For a security-sensitive personal runtime, health semantics are not only observability detail; they govern startup, recovery, and operator trust.
 - **Decision:** The operational health surface SHALL distinguish liveness from readiness. Liveness answers whether the process is alive enough to respond; readiness answers whether core dependencies such as database state, credential boundary, sandbox capability, and egress control are healthy enough for real work. Metrics and version-reporting surfaces are canonical optional operational endpoints and may be exposed when enabled, but they SHALL NOT replace local audit state as the source of truth. Degraded dependencies SHALL be surfaced explicitly instead of being flattened into generic success.
 - **Consequences:** Operators and service managers can make better restart and recovery decisions, and the runtime can fail closed without becoming opaque. The cost is a richer dependency-health model and more explicit endpoint contracts.
 
-### ADR-023 Native Service Management via NixOS and Darwin Modules
+### Policy-023 Native Service Management via NixOS and Darwin Modules
 - **Status:** accepted
 - **Context:** The brownfield repo already includes NixOS and Darwin service modules, and their platform-specific behavior is not interchangeable. The previous TechSpec captured more of this deployment shape than the current document, but for a project this large the production service-management contract is expensive to reverse and should remain explicit.
-- **Decision:** Production deployment SHALL use native Nix-managed service definitions: systemd units on Linux through the NixOS module and launchd agents on macOS through the Darwin module. `devenv`, `process-compose`, and package-local scripts remain development surfaces only. Service definitions SHALL provision required directories, environment variables, resource limits, restart policy, and companion gateway service wiring while preserving the canonical runtime lifecycle defined in ADR-016.
+- **Decision:** Production deployment SHALL use native Nix-managed service definitions: systemd units on Linux through the NixOS module and launchd agents on macOS through the Darwin module. `devenv`, `process-compose`, and package-local scripts remain development surfaces only. Service definitions SHALL provision required directories, environment variables, resource limits, restart policy, and companion gateway service wiring while preserving the canonical runtime lifecycle defined in Policy-016.
 - **Consequences:** Production behavior stays reproducible and platform-native without relying on a lowest-common-denominator service wrapper. The cost is dual platform maintenance and the need to document security and operability differences explicitly.
 
-### ADR-024 Reflective Memory Management Middleware Integration
+### Policy-024 Reflective Memory Management Middleware Integration
 - **Status:** accepted
 - **Context:** RMM remains an active Epic 2 commitment and a live GitHub issue, even though it was accidentally normalized away during the reduction pass. The memory strategy is not generic "durable context"; it specifically depends on the `@skroyc/rmm-middleware` package and its reflective retrieval model. The package is not yet published, but the local package source and README are authoritative enough to preserve the contract now.
 - **Decision:** The runtime SHALL integrate `@skroyc/rmm-middleware@0.1.0` as the canonical memory middleware for the Epic 2 line. Prospective Reflection organizes dialogue into topic-based memories for future retrieval. Retrospective Reflection refines retrieval using citation-derived reward signals and a learnable reranker. Default runtime configuration SHALL preserve configurable Top-K retrieval and Top-M reranking, with the benchmark-aligned defaults remaining `Top-K=20` and `Top-M=5` unless the Owner overrides them.
 - **Consequences:** OpenKraken preserves the intended memory architecture instead of collapsing into generic transcript persistence. The cost is an extra package-integration dependency, more state surfaces for embeddings and reranker data, and a temporary publication gap until the package is public.
 
-### ADR-025 Constitution Injection and Day-Bounded Session Model
+### Policy-025 Constitution Injection and Day-Bounded Session Model
 - **Status:** accepted
 - **Context:** The previous Architecture and TechSpec explicitly treated constitution injection and day-bounded sessions as first-class design constraints. Those commitments were weakened during the reduction pass, but they still govern how the runtime constructs identity, isolates working context, and recovers across restarts.
 - **Decision:** The Agent SHALL receive the constitutional inputs (`SOUL.md`, `SAFETY.md`, `CAPABILITIES.md`, and owner-authored directives) through runtime prompt assembly rather than as mutable sandbox files. Session identity SHALL remain day-bounded: one owner-local calendar day corresponds to one primary thread/session identifier formatted as `YYYY-MM-DD`, and workspace-reset behavior is keyed to that boundary. Previous sessions remain available for audit, recovery, and memory retrieval, but the new day starts with a clean working context.
 - **Consequences:** Identity and safety instructions remain hard to exfiltrate through file access, and session lifecycle semantics stay predictable for memory, backup, and owner review. The cost is stricter thread/session modeling and the need to handle timezone-aware day rollover explicitly.
 
-### ADR-026 Open Responses as the Primary Standards-Facing Interface Contract
+### Policy-026 Open Responses as the Primary Standards-Facing Interface Contract
 - **Status:** accepted
 - **Context:** OpenKraken maintains a native owner-local control API for CLI and browser surfaces, but the product also has a standards-facing interoperability commitment. The Open Responses adapter is being developed as a separate unit of work and must remain visible in the canonical spec so it is not normalized away in future rewrites.
 - **Decision:** OpenKraken SHALL treat Open Responses as its primary standards-facing external interface contract. Compliance may be realized through a dedicated adapter component or companion package, but that adapter remains part of the canonical system contract and SHALL front the same underlying runtime boundaries. OpenKraken-specific response items or streaming events SHALL use prefixed extensions so that standards clients can ignore them safely.
 - **Consequences:** The system remains client-agnostic and interoperable without forcing the owner-local API to become the only externally meaningful surface. The cost is maintaining two related but distinct contracts: a native owner control API and a standards-facing response adapter.
 
-### ADR-027 External Integration Units and Ownership Boundaries
+### Policy-027 External Integration Units and Ownership Boundaries
 - **Status:** accepted
 - **Context:** Several important capabilities are being built as adjacent units outside this repo, including the Open Responses adapter, AgentSkills.io-aligned skill usage, the core filesystem tools line, and the RMM memory bank. Prior reduction passes blurred or erased these boundaries.
 - **Decision:** The canonical spec SHALL name these units explicitly and treat them as integration workstreams with stable contracts, not as undocumented future ideas. OpenKraken owns the integration boundaries, trust model, persistence model, and owner-facing semantics. Adjacent repositories or packages may own the concrete implementation of those units.
 - **Consequences:** The docs can remain accurate without pretending every capability is implemented inside this repo. The cost is a more explicit integration matrix and the need to preserve ownership boundaries in Tasks and TechSpec.
 
-### ADR-028 Documentation-Implementation Drift Prevention
+### Policy-028 Documentation-Implementation Drift Prevention
 - **Status:** accepted
 - **Context:** This repo is large enough that drift between docs, manifests, migrations, APIs, and task planning is a material engineering risk. Earlier rewrites already demonstrated that structurally correct reduction can still erase binding project intent if drift-prevention rules are not explicit.
 - **Decision:** Documentation drift prevention is part of the technical implementation contract. Changes to runtime API, state schema, config schema, auth/session behavior, service-management assumptions, or active Epic scope SHALL update the affected canonical docs in the same change set. CI SHALL validate formal artifacts where possible, and brownfield discrepancies SHALL be called out explicitly rather than hidden.
@@ -232,7 +224,7 @@
 - **Storage Shape:** One SQLite database file named `openkraken.db` with forward-only SQL migrations. Existing brownfield tables (`schema_versions`, `threads`, `messages`, `memories`, `memories_embeddings`, `audit_events`, `proxy_logs`, `skills`, `skill_analysis_reports`, `skill_audit_log`) remain valid lineage. The target schema expands that baseline with `auth_sessions`, `execution_checkpoints`, `approvals`, `schedules`, `schedule_runs`, `config_documents`, and `connected_service_bindings`.
 - **Constraints / Invariants:** Raw credentials SHALL NOT be stored in SQLite. Tokens SHALL be stored as hashes, not cleartext. `threads.id` for the primary owner session model SHALL remain the owner-local date string `YYYY-MM-DD`. `messages.content` SHALL be encrypted at rest when marked sensitive. `execution_checkpoints.checkpoint_key` SHALL be unique per active execution thread namespace. `approvals.status` SHALL be one of `pending`, `approved`, `rejected`, or `expired`. `schedule_runs` SHALL be idempotent per `(schedule_id, scheduled_for)`. `config_documents.document_type` SHALL be unique per active scope. Audit tables SHALL be append-oriented. Soft deletion is preferred over destructive mutation for audit-sensitive records.
 - **Indexes / Access Paths:** `threads(updated_at)` for session resume lists; `messages(thread_id, created_at)` for ordered replay; `execution_checkpoints(thread_id, created_at)` for recovery lookup; `execution_checkpoints(checkpoint_namespace, checkpoint_key)` unique lookup for resumptions; `memories_embeddings(memory_id, model)` plus vector access sidecar strategy for retrieval; `audit_events(timestamp, event_type)` for recent review; `proxy_logs(timestamp)` for network audit; `approvals(status, created_at)` for pending approval inbox; `schedules(enabled, next_run_at)` for trigger scanning; `schedule_runs(schedule_id, scheduled_for)` unique index for dedupe; `skills(name)` unique lookup; `connected_service_bindings(service_type, enabled)` for gateway routing.
-- **Migration Notes:** Migrations are forward-only and checksum-verified in `schema_versions`. Existing tables are upgraded in place through expand-migrate-contract sequencing. Breaking schema changes require a data migration plan, rollback posture, and compatibility note in the owning ADR. Startup SHALL refuse to serve the runtime API until migrations complete successfully.
+- **Migration Notes:** Migrations are forward-only and checksum-verified in `schema_versions`. Existing tables are upgraded in place through expand-migrate-contract sequencing. Breaking schema changes require a data migration plan, rollback posture, and compatibility note in the owning decision record. Startup SHALL refuse to serve the runtime API until migrations complete successfully.
 
 ```mermaid
 erDiagram
@@ -1139,7 +1131,7 @@ components:
           format: date-time
 ```
 
-**Input adapter contract:**
+**Channel and adapter boundary contract:**
 - Telegram is the primary non-local owner adapter and SHALL translate channel payloads into the runtime's canonical interaction shape.
 - MCP-mediated channels remain follow-on scope and SHALL map into the same runtime interaction path when they arrive.
 - The Open Responses adapter is standards-facing rather than owner-primary, but it still terminates in the same runtime orchestration boundary.

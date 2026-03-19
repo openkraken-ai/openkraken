@@ -4,9 +4,6 @@
 - v2.3.0 - Re-expanded the architecture inside the framework shape so the old rationale, layered model, middleware inventory, cross-cutting concerns, and trust-boundary language remain canonical instead of compressed summaries.
 - v2.2.0 - Restored the missing problem-context rationale, standards positioning, layered model, middleware inventory, named flows, and richer cross-cutting architecture content.
 - v2.1.0 - Restored the missing architectural philosophy detail and explicit entity/trust-boundary guidance that had been reduced too aggressively.
-- v2.0.0 - Realigned the architecture to the current framework structure and the revised PRD, with stricter logical boundaries.
-- v1.1.0 - Expanded runtime containers, isolation boundaries, and execution flows in the previous architecture format.
-- v1.0.0 - Established the initial architecture artifact and moved core planning documents under `docs/`.
 - ... [Older history truncated, refer to git logs]
 
 ## 1. Architectural Strategy & Archetype Alignment
@@ -29,9 +26,9 @@
 ### 1.2 Scope Definition and Interaction Boundaries
 - **Local owner surfaces remain mandatory:** Command-line and browser-based operation are the baseline interaction surfaces for configuration, review, and direct work.
 - **Asynchronous owner interaction remains in scope:** The architecture allows owner-approved external interaction channels, but they must normalize into the same runtime control path rather than creating sidecar orchestration logic.
-- **Primary asynchronous channel:** Telegram is the primary non-local owner channel for the first-wave implementation.
-- **Follow-on mediated channels:** Broader messaging and service channels may arrive through MCP-mediated paths later, but they inherit the same audit, approval, and policy boundaries.
-- **Separate integration workstreams:** External units such as the Open Responses compliance adapter, AgentSkills.io-compatible skill intake, core filesystem tool bundle, and the RMM memory bank remain valid architectural commitments even when their source repositories or package publication live outside this repo.
+- **Primary asynchronous channel posture:** One primary non-local owner channel is intentionally prioritized for the first-wave implementation.
+- **Follow-on mediated channels:** Broader messaging and service channels may arrive through mediated adapter paths later, but they inherit the same audit, approval, and policy boundaries.
+- **Separate integration workstreams:** External standards, skill-ecosystem, filesystem-capability, and memory-system units remain valid architectural commitments even when their source repositories or package publication live outside this repo.
 - **Layer model:** The system still follows the five-layer conceptual model of Platform Manager, Host, Sandbox, Middleware Stack, and Runtime Coordinator; the container model below refines that layered view into explicit logical boundaries.
 
 **Primary capabilities represented by this architecture:**
@@ -82,39 +79,11 @@
 - In current architecture language, `Runtime Coordinator` is the orchestration core and `Egress Gateway` is the outbound-policy component.
 
 ### 1.5 Standards Positioning and Competitive Posture
-- **Primary standards direction:** OpenKraken treats Open Responses as the primary interoperable external interface direction for standards-facing integration, while preserving a distinct owner-local control API for native CLI and browser operation.
+- **Primary standards direction:** OpenKraken treats a standards-based response protocol as the primary interoperable external interface direction for standards-facing integration, while preserving a distinct owner-local control API for native CLI and browser operation.
 - **Why it matters architecturally:** A standards-based response protocol keeps the runtime client-agnostic, makes external adapters less proprietary, and allows OpenKraken-specific extensions to be isolated behind explicit prefixed extension points instead of leaking custom behavior into every client.
 - **Competitive posture:** OpenKraken differentiates by combining standards-based interoperability with deterministic local enforcement. The goal is not only to be compatible with emerging client ecosystems, but to offer a stricter trust boundary model than agent runtimes that treat shell access, memory writes, or secret handling as soft conventions.
 
 ## 2. System Containers
-### Layer Mapping Reference
-- **Platform Manager:** Host provisioning, native service generation, and path/service definition ownership.
-- **Host:** Native credential facilities, clocks, filesystems, and service managers.
-- **Sandbox:** The isolated execution substrate for bounded local work.
-- **Middleware Stack:** Ordered policy, capability, approval, memory, and operational extensions shaping agent execution.
-- **Runtime Coordinator:** The central orchestration boundary that assembles context and mediates all other containers.
-
-**Middleware classes in scope:**
-- **Policy middleware:** Validates and constrains work before capability expansion.
-- **Safety middleware:** Scrubs or blocks sensitive content and unsafe output.
-- **Memory middleware:** Injects and consolidates durable context without giving the Agent raw memory authority.
-- **Skill middleware:** Surfaces approved skills and trust metadata.
-- **Scheduler middleware:** Injects scheduled execution context into the normal runtime path.
-- **Human-in-the-loop middleware:** Suspends execution indefinitely until explicit owner decision is available.
-- **Browser, web-search, and sub-agent middleware:** Valid capability classes that remain part of the architectural inventory even when some stay deferred in implementation planning.
-
-### Architectural Middleware Inventory
-- **Policy middleware:** Foundational enforcement for package, path, rate, and action-policy validation.
-- **Safety middleware:** Content-level scrubbing and blocking for sensitive or disallowed output.
-- **Scheduler middleware:** Detects scheduled triggers and injects scheduled context into the normal runtime path.
-- **Web-search middleware:** Exposes bounded retrieval capabilities through the same policy and outbound controls as other work.
-- **Browser middleware:** Exposes browser automation while preserving session isolation and outbound mediation.
-- **Memory middleware:** Owns extraction, retrieval, consolidation, and memory injection, keeping durable context outside direct agent mutation.
-- **Skill middleware:** Exposes approved skills, provenance, and trust metadata.
-- **Sub-agent middleware:** Represents bounded delegation as a capability class rather than hidden internal privilege; delegation remains limited to one level so subordinate agents cannot spawn further subordinate agents.
-- **Human-in-the-loop middleware:** Suspends execution indefinitely until explicit owner decision is available and resumes from persisted continuation state; Telegram-native approval controls may be the first non-local approval surface when that channel is active.
-- **Summarization middleware:** Compresses older working context to preserve utility under context-window limits.
-
 ### Owner Interfaces
 - **Logical Type:** local client boundary
 - **Responsibility:** Provide the command-line and browser-based surfaces through which the Owner starts conversations, reviews system state, answers approval requests, and inspects audit evidence.
@@ -245,7 +214,7 @@ Rel(skill_catalog, audit, "Emit review events to")
 ```
 
 ## 4. Critical Execution Flows
-### 4.1 Interactive Conversation via Local Interfaces or Telegram
+### 4.1 Interactive Conversation via Local or Approved Asynchronous Interfaces
 - **Maps to PRD capability:** Owner Interaction (P0), Durable Context and Continuity (P0)
 ```mermaid
 sequenceDiagram
@@ -274,7 +243,7 @@ sequenceDiagram
     UI-->>Owner: Render response
 
     Note over Runtime,Model: If a bounded capability is required, control passes to Flow 4.2.
-    Note over UI,Runtime: Telegram and future approved asynchronous channels enter the same flow after normalization by the External Interaction Gateway.
+    Note over UI,Runtime: The primary approved asynchronous channel and future approved channels enter the same flow after normalization by the External Interaction Gateway.
 ```
 
 ### 4.2 Guarded Terminal and Browser Capability Invocation
@@ -372,10 +341,11 @@ sequenceDiagram
 ### 5.3 Error Handling and Degradation
 - **Failure Handling and Degradation:** The architecture fails closed on policy uncertainty, approval ambiguity, credential retrieval failure, and outbound-control failure. Capability failures degrade only the affected action, not the entire runtime, and resumable state allows recovery after restarts. If a mandatory control boundary is unhealthy, the runtime remains alive but not ready for unsafe work.
 - **Retry posture:** Transient external failures may retry within bounded policy, but retries never erase audit evidence or convert ambiguous state into silent success.
+- **Execution-control classes:** Policy, safety, memory, skill, scheduler, retrieval, browser, delegation, summarization, and approval remain first-class middleware categories. Delegation remains limited to one level, and approval suspension remains indefinite until explicit owner decision.
 
 ### 5.4 Skill Ingestion and Trusting Process
 - **Skill Ingestion and Trusting Process:** Skill intake is a separate architectural path from ordinary capability execution. Skills are staged, classified, reviewed, approved, and only then surfaced through bounded runtime capability exposure. The runtime must preserve tiered trust rather than collapsing all extensions into one undifferentiated tool surface.
-- **Ownership boundary:** AgentSkills.io-aligned skill behavior may be implemented partly outside this repo, but OpenKraken owns the trust classification, activation boundary, and audit semantics.
+- **Ownership boundary:** Adjacent skill-ecosystem work may be implemented partly outside this repo, but OpenKraken owns the trust classification, activation boundary, and audit semantics.
 
 ### 5.5 Service Lifecycle Management
 - **Service Lifecycle Management:** Startup order matters: configuration, state, credential boundary, sandbox/egress checks, then owner-facing bind. Shutdown likewise prioritizes quiescing ingress, settling work, persisting resumable state, and only then releasing dependencies.
@@ -403,5 +373,5 @@ sequenceDiagram
 
 ### Technical Debt
 - **Risk:** The current architecture depends on several separate external workstreams landing cleanly.
-- **Why it matters:** Core filesystem tools, AgentSkills.io-compatible skill workflows, Open Responses compliance, and the RMM memory bank each exist as separate units of work, so integration timing can create drift between target architecture and repo reality.
+- **Why it matters:** External standards adapters, skill-ecosystem workflows, filesystem capability bundles, and memory-system integrations each exist as separate units of work, so integration timing can create drift between target architecture and repo reality.
 - **Mitigation or follow-up:** TechSpec and Tasks should keep these units explicit as integration contracts rather than smearing their responsibilities across unrelated runtime tickets.
