@@ -1,9 +1,9 @@
 # Engineering Execution Plan
 
 ## 0. Version History & Changelog
+- v2.1.3 - Restored explicit deferred implementation targets for Vercel Agent Browser and LangChain's `MultiServerMCPClient` so adjacent integration units are not normalized away in planning.
 - v2.1.2 - Corrected the active critical-path summary so it reflects the actual ticket dependency graph instead of skipping required middleware and surface prerequisites.
 - v2.1.1 - Restored the exact constitution-prompt assembly contract and the skill-security analysis gate in the Epic 2 ticket acceptance criteria.
-- v2.1.0 - Restored one-to-one issue-backed Epic 2 tickets, reinstated RMM and secondary-provider planning, and restored full deferred ticket bodies with Gherkin.
 - ... [Older history truncated, refer to git logs]
 
 ## 1. Executive Summary & Active Critical Path
@@ -459,6 +459,7 @@ And retrieval policy and rate controls apply before results reach the agent
 Given browser middleware is enabled in a future Epic 2 follow-on increment
 When the agent invokes a browser capability
 Then browser sessions are isolated per runtime context
+And Vercel Agent Browser is integrated through its CLI or daemon model rather than replaced with an ad hoc generic browser wrapper
 And network and filesystem activity remain bounded by the same runtime controls used elsewhere
 And rendered page results are returned through a structured capability interface
 And browser failures or policy violations fail closed
@@ -475,6 +476,7 @@ And browser failures or policy violations fail closed
 Given MCP server configuration exists in a future Epic 2 follow-on increment
 When the MCP adapter initializes
 Then server connections are established through the approved runtime mediation boundary
+And LangChain's official `MultiServerMCPClient` from `@langchain/mcp-adapters` is used as the direct MCP connector unless a later approved delta replaces it
 And MCP tools are exposed with explicit metadata and health visibility
 And connection failures or tool errors are surfaced without bypassing policy or audit
 And the adapter does not create a separate orchestration path outside the runtime

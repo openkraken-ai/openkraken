@@ -1,15 +1,15 @@
 # Technical Specification
 
 ## 0. Version History & Changelog
+- v2.10.4 - Restored the named external toolsets and integration units that remain distinct technical commitments: Vercel Skills CLI, Vercel Agent Browser, Anthropic Sandbox Runtime, BunSqliteSaver, MultiServerMCPClient, substrate isolation names, and the Vertex AI Memory Bank reference lineage.
 - v2.10.3 - Clarified the runtime-to-gateway signing contract and normalized skill-tier vocabulary so the canonical names remain stable across product, technical, and planning layers.
 - v2.10.2 - Restored the missing physical-layer contracts for proxy and audit schema fidelity, Telegram webhook OpenAPI, granular HITL and alerting config, service hardening, browser daemon isolation, hard resource ceilings, and context-window token accounting.
-- v2.10.1 - Restored the missing OpenKraken-specific IPC, serialization, extension-event, prompt-assembly, skill-analysis, and config-shape contracts that were too proprietary to omit.
 - ... [Older history truncated, refer to git logs]
 
 ## 1. Stack Specification (Bill of Materials)
 - **Primary Language / Runtime:** Bun `1.3.10` for the Runtime Coordinator and CLI; TypeScript `5.9.3`; Go `1.26.1` for the Egress Gateway. Brownfield note: the repo currently compiles the gateway with `go 1.25.6`, so the Go toolchain upgrade is a follow-up delta rather than already-landed reality.
 - **Primary Frameworks / Libraries:** `langchain@1.2.34`, `@langchain/core@1.1.34`, `@langchain/anthropic@1.3.25`, `@langchain/langgraph@1.2.3`, `@langchain/mcp-adapters@1.1.3`, `@anthropic-ai/sandbox-runtime@0.0.42`, `grammy@1.41.1`, `zod@4.3.6`, `age-encryption@0.3.0`, `@opentui/core@0.1.88`, `@sveltejs/kit@2.55.0`, `svelte@5.54.0`, `vite@8.0.0`.
-- **Adjunct Integration Packages:** `@skroyc/rmm-middleware@0.1.0` remains a required memory-middleware dependency for the current memory contract, but publication is pending and the current source of truth is the local package repository rather than the public registry. Secondary provider readiness also remains part of the canonical provider boundary through LangChain connector packages for OpenAI and Google-family model access; those connectors SHALL be exact-pinned when the dependency-alignment delta lands in repo manifests.
+- **Adjunct Integration Packages:** `@skroyc/rmm-middleware@0.1.0` remains a required memory-middleware dependency for the current memory contract, but publication is pending and the current source of truth is the local package repository rather than the public registry. `@skroyc/bun-sqlite-checkpointer` remains the canonical Bun-native LangGraph checkpointer integration, with `BunSqliteSaver` as the named runtime entrypoint used by OpenKraken for SQLite-backed resumability. Secondary provider readiness also remains part of the canonical provider boundary through LangChain connector packages for OpenAI and Google-family model access; those connectors SHALL be exact-pinned when the dependency-alignment delta lands in repo manifests.
 - **State Stores / Persistence:** SQLite `3.x` through `bun:sqlite` with WAL enabled as the authoritative application store; filesystem-backed sandbox zones for staged inputs, work artifacts, outputs, backups, and active Skills; platform-native credential vaults with age-encrypted fallback for headless or dev-only scenarios.
 - **Infrastructure / Tooling:** Nix Flakes on `nixpkgs/nixos-25.11`, `devenv` for local orchestration, `just` for cross-language build coordination, CUE for configuration validation, and repo-local build outputs under `bin/`.
 - **Testing / Quality Tooling:** `bun test`, `go test`, `tsc --noEmit`, `svelte-check`, `@biomejs/biome@2.4.8` as the target formatter/linter baseline, and OpenAPI contract validation as part of CI. Brownfield note: the repo currently pins Biome `2.3.13`.
@@ -25,12 +25,16 @@
 ### 1.2 Agent-Orchestration and Middleware Stack
 - **LangChain / LangGraph role:** LangChain provides model, tool, middleware, and callback abstractions; LangGraph provides resumable execution and checkpoint semantics.
 - **RMM role:** Reflective Memory Management is not generic "future memory"; it is the intended middleware-backed memory-bank contract for the active Epic 2 line.
+- **Checkpointer role:** `@skroyc/bun-sqlite-checkpointer` and its `BunSqliteSaver` entrypoint remain the canonical Bun-native checkpointer integration for LangGraph-compatible persistence in this project.
 - **Connector readiness:** Secondary provider readiness for OpenAI- and Google-family access remains in scope through LangChain-native connectors even where manifests have not yet been updated to exact pins.
 
 ### 1.3 Protocol and Integration Libraries
 - **Standards-facing protocol:** Open Responses is the primary standards-facing contract through a dedicated adapter/unit.
 - **Owner-local control protocol:** Native runtime control remains loopback HTTP with SSE for streaming.
 - **Channel and service posture:** Telegram remains the first non-local interaction channel. MCP-backed channels and services remain a follow-on mediated path, not a separate orchestration architecture.
+- **MCP connector posture:** The current direct MCP integration target is LangChain's official `MultiServerMCPClient` from `@langchain/mcp-adapters`, not a custom OpenKraken MCP client.
+- **Community skill acquisition posture:** AgentSkills.io defines the skill format and usage model, while Vercel Skills CLI remains the canonical community-skill gathering tool that OpenKraken wraps internally so community skills still pass through OpenKraken's staging, analysis, approval, and activation process.
+- **Browser tooling posture:** Vercel Agent Browser remains the named browser automation toolset, exposed through its CLI and daemon pattern and not replaced by a generic “browser tool” label.
 
 ### 1.4 Persistence and Storage Method
 - **Relational persistence:** SQLite with WAL remains the single authoritative store for non-secret runtime data.
@@ -69,8 +73,8 @@
 ### ADR-004 Isolated Execution with Fail-Closed Outbound Control
 - **Status:** accepted
 - **Context:** The architecture separates the Capability Sandbox from the Egress Control Boundary and requires fail-closed behavior for execution, outbound access, and approval uncertainty. The repo already includes a sandbox wrapper and a distinct gateway package, but the implementations are still partial.
-- **Decision:** Use `@anthropic-ai/sandbox-runtime@0.0.42` as the primary isolation runtime and keep a separately managed Egress Gateway for outbound allowlisting and network audit events. All isolated execution requests SHALL pass through policy evaluation before dispatch. Outbound failures SHALL deny the action rather than bypass the control boundary.
-- **Consequences:** The implementation preserves the approved defense-in-depth model and makes outbound activity independently observable. It also creates a hard dependency between local execution and gateway health, so runtime health checks, startup ordering, and recovery behavior must be explicit.
+- **Decision:** Use Anthropic Sandbox Runtime via `@anthropic-ai/sandbox-runtime@0.0.42` as the primary isolation runtime and keep a separately managed Egress Gateway for outbound allowlisting and network audit events. In the current implementation line, the sandbox runtime is the layer that physically materializes `bubblewrap` on Linux and `sandbox-exec` / Seatbelt on macOS. All isolated execution requests SHALL pass through policy evaluation before dispatch. Outbound failures SHALL deny the action rather than bypass the control boundary.
+- **Consequences:** The implementation preserves the approved defense-in-depth model and makes outbound activity independently observable. It also creates a hard dependency between local execution and gateway health, so runtime health checks, startup ordering, and recovery behavior must be explicit. The substrate names `bubblewrap`, `sandbox-exec`, and `Seatbelt` remain explicit because they are part of the current implementation reality and are expected to take on broader importance in future execution-boundary work.
 
 ### ADR-005 Nix-Managed Monorepo Delivery with Contract-First Development
 - **Status:** accepted
@@ -89,8 +93,8 @@ Historical decision-number continuity from the larger pre-framework TechSpec is 
 ### Policy-007 Resumable Execution via LangGraph-Compatible Checkpoint Persistence
 - **Status:** accepted
 - **Context:** The approved architecture requires approval pause/resume, schedule-triggered execution, and restart recovery without reconstructing control state from chat transcripts alone. Brownfield repo reality already depends on LangGraph packages and partial persistence, but the target-state schema must make resumable execution explicit rather than implicit.
-- **Decision:** Persist execution checkpoints in SQLite using a LangGraph-compatible checkpoint model. Approval waits, interrupted tool executions, and schedule-triggered runs SHALL resume from checkpointed execution state when available. Message history remains the human-review log, while checkpoint tables remain the machine-resumption source of truth.
-- **Consequences:** Recovery behavior becomes deterministic and testable, and approval or schedule resumption does not rely on prompt reconstruction. The cost is added schema and migration complexity plus compatibility work whenever LangGraph checkpoint contracts change.
+- **Decision:** Persist execution checkpoints in SQLite using a LangGraph-compatible checkpoint model through `@skroyc/bun-sqlite-checkpointer`. `BunSqliteSaver` is the canonical Bun-native runtime entrypoint for this integration and SHALL remain the named compatibility anchor for OpenKraken's resumability path. Approval waits, interrupted tool executions, and schedule-triggered runs SHALL resume from checkpointed execution state when available. Message history remains the human-review log, while checkpoint tables remain the machine-resumption source of truth.
+- **Consequences:** Recovery behavior becomes deterministic and testable, and approval or schedule resumption does not rely on prompt reconstruction. The cost is added schema and migration complexity plus compatibility work whenever LangGraph checkpoint contracts change or the Bun-native saver evolves.
 
 ### Policy-008 Typed Configuration Validation with CUE
 - **Status:** accepted
@@ -113,8 +117,8 @@ Historical decision-number continuity from the larger pre-framework TechSpec is 
 ### Policy-011 Skill Intake through Staging, Analysis, Approval, and Activation
 - **Status:** accepted
 - **Context:** Skills are a core extensibility mechanism, but they also create one of the highest-risk ingestion paths in the system. The architecture already separates the Skill Catalog from execution, and the brownfield schema includes skill review and audit tables, so the lifecycle needs to be captured as a first-class implementation decision.
-- **Decision:** All imported Skills SHALL pass through a four-step lifecycle: staging, analysis, approval, and activation. Active skill manifests SHALL be digest-pinned and exposed to the Runtime Coordinator only after approval state is persisted. Updates SHALL re-enter the same review flow rather than mutating active skill content in place. Skill runtime dependencies SHALL be declared canonically through `metadata.x-openkraken.dependencies`, with Nix package requirements expressed there so packages can be provisioned before sandbox invocation rather than installed by native package managers at runtime. Skill trust tiers SHALL remain canonical and named: `System`, `Owner`, and `Community`. The analysis step SHALL include automated LLM-based security review before owner approval. The default analysis model is `Claude Haiku 4.5`, though deployments may override it with an explicitly configured equivalent. Instruction-only skills SHALL be scanned for prompt-injection and hidden-instruction patterns. Executable skills SHALL also be scanned for unauthorized network behavior, credential-access attempts, file path traversal, and encoded or obfuscated payloads. Analysis failure or inconclusive results SHALL fail closed into manual-owner review rather than implicit approval.
-- **Consequences:** Extensibility remains compatible with the project's deterministic-safety posture and produces auditable review evidence. The cost is slower skill adoption, more state transitions, extra UI/API surfaces for review and lifecycle management, and the need to preserve both one project-specific manifest contract for dependency declaration and one stable tier vocabulary across adjacent skill repositories.
+- **Decision:** All imported Skills SHALL pass through a four-step lifecycle: staging, analysis, approval, and activation. Active skill manifests SHALL be digest-pinned and exposed to the Runtime Coordinator only after approval state is persisted. Updates SHALL re-enter the same review flow rather than mutating active skill content in place. Skill runtime dependencies SHALL be declared canonically through `metadata.x-openkraken.dependencies`, with Nix package requirements expressed there so packages can be provisioned before sandbox invocation rather than installed by native package managers at runtime. Skill trust tiers SHALL remain canonical and named: `System`, `Owner`, and `Community`. AgentSkills.io remains the format and usage-lineage commitment for skills themselves. Vercel Skills CLI remains a distinct, canonical community-skill gathering mechanism that OpenKraken integrates internally so externally sourced skills still pass through OpenKraken's analysis and approval process instead of bypassing it. The analysis step SHALL include automated LLM-based security review before owner approval. The default analysis model is `Claude Haiku 4.5`, though deployments may override it with an explicitly configured equivalent. Instruction-only skills SHALL be scanned for prompt-injection and hidden-instruction patterns. Executable skills SHALL also be scanned for unauthorized network behavior, credential-access attempts, file path traversal, and encoded or obfuscated payloads. Analysis failure or inconclusive results SHALL fail closed into manual-owner review rather than implicit approval.
+- **Consequences:** Extensibility remains compatible with the project's deterministic-safety posture and produces auditable review evidence. The cost is slower skill adoption, more state transitions, extra UI/API surfaces for review and lifecycle management, and the need to preserve three distinct contracts at once: the AgentSkills.io skill format, the Vercel Skills CLI acquisition path, and the OpenKraken-specific review-and-activation boundary.
 
 ### Policy-012 Configuration Source of Truth and Precedence
 - **Status:** accepted
@@ -191,7 +195,7 @@ Historical decision-number continuity from the larger pre-framework TechSpec is 
 ### Policy-024 Reflective Memory Management Middleware Integration
 - **Status:** accepted
 - **Context:** RMM remains an active Epic 2 commitment and a live GitHub issue, even though it was accidentally normalized away during the reduction pass. The memory strategy is not generic "durable context"; it specifically depends on the `@skroyc/rmm-middleware` package and its reflective retrieval model. The package is not yet published, but the local package source and README are authoritative enough to preserve the contract now.
-- **Decision:** The runtime SHALL integrate `@skroyc/rmm-middleware@0.1.0` as the canonical memory middleware for the Epic 2 line. Prospective Reflection organizes dialogue into topic-based memories for future retrieval. Retrospective Reflection refines retrieval using citation-derived reward signals and a learnable reranker. Default runtime configuration SHALL preserve configurable Top-K retrieval and Top-M reranking, with the benchmark-aligned defaults remaining `Top-K=20` and `Top-M=5` unless the Owner overrides them.
+- **Decision:** The runtime SHALL integrate `@skroyc/rmm-middleware@0.1.0` as the canonical memory middleware for the Epic 2 line. Prospective Reflection organizes dialogue into topic-based memories for future retrieval. Retrospective Reflection refines retrieval using citation-derived reward signals and a learnable reranker. The middleware remains analogous to Google Vertex AI Memory Bank as a reference lineage, but that analogy is explanatory rather than a compatibility requirement. Default runtime configuration SHALL preserve configurable Top-K retrieval and Top-M reranking, with the benchmark-aligned defaults remaining `Top-K=20` and `Top-M=5` unless the Owner overrides them.
 - **Consequences:** OpenKraken preserves the intended memory architecture instead of collapsing into generic transcript persistence. The cost is an extra package-integration dependency, more state surfaces for embeddings and reranker data, and a temporary publication gap until the package is public.
 
 ### Policy-025 Constitution Injection and Day-Bounded Session Model
@@ -552,7 +556,7 @@ erDiagram
 
 ### 3.4 RMM Memory Compatibility Contract
 - **Purpose:** Preserve the active RMM memory commitment as a canonical technical contract instead of letting it disappear behind generic "memory" language.
-- **Storage Shape:** The runtime-owned `memories` and `memories_embeddings` tables provide durable storage for topic-based memory entries, retrieval metadata, and embedding references. Additional reranker weights, gradients, or probe state owned by RMM MAY live in dedicated adjunct stores so long as they remain bound to the same audit and backup posture.
+- **Storage Shape:** The runtime-owned `memories` and `memories_embeddings` tables provide durable storage for topic-based memory entries, retrieval metadata, and embedding references. Additional reranker weights, gradients, or probe state owned by RMM MAY live in dedicated adjunct stores so long as they remain bound to the same audit and backup posture. The design remains intentionally analogous to Google Vertex AI Memory Bank as a reference lineage for how reflective memory can be structured without making Google-specific implementation choices normative.
 - **Constraints / Invariants:** The Runtime Coordinator owns storage, encryption, and audit boundaries; RMM owns extraction, consolidation, retrieval, reranking, and decay logic. Prospective Reflection runs after session completion or compaction boundaries. Retrospective Reflection operates during model-turn retrieval and post-response feedback handling. Configurable retrieval width and rerank width SHALL remain exposed, with `Top-K=20` and `Top-M=5` preserved as the default profile.
 - **Indexes / Access Paths:** Memory retrieval requires ordered access by `thread_id`, recency, and embedding-model namespace. Embedding references MUST remain attributable to the memory entries they were derived from so that re-embedding or purge operations remain possible.
 - **Migration Notes:** Any future change to RMM-owned storage surfaces SHALL preserve the ability to purge, re-embed, and audit memory entries independently of chat transcript retention.
@@ -2046,7 +2050,8 @@ The runtime relies on deterministic middleware ordering because control flow, no
 - Human-in-the-loop middleware for indefinite approval suspension until explicit owner decision
 
 **Browser middleware physical mechanism:**
-- Browser automation SHALL run through a dedicated Playwright-compatible CDP daemon exposed over a per-session Unix socket rather than embedding a long-lived browser directly in the Runtime Coordinator process.
+- Browser automation SHALL run through Vercel Agent Browser as the named browser toolset for the current implementation line.
+- Vercel Agent Browser SHALL be integrated through its CLI/daemon model, with a dedicated Playwright-compatible CDP daemon exposed over a per-session Unix socket rather than embedding a long-lived browser directly in the Runtime Coordinator process.
 - The daemon SHALL use ephemeral browser profiles by default, with optional import/export of storage state only through explicit runtime-controlled flows.
 - Socket paths SHALL be unique per session and cleaned up during session teardown.
 - This daemonized boundary is the safety contract that keeps browser state, network mediation, and crash handling out of the main runtime memory space.
@@ -2129,6 +2134,11 @@ The deployment modules are materially ahead of the orchestrator entry point in [
 - The canonical sandbox-facing proxy ports are HTTP `3128` and SOCKS5 `1080`.
 - These ports are the physical bindings expected by sandbox profiles, browser middleware, and the chained egress posture.
 - Brownfield note: the current sandbox helper in [sandbox/index.ts](../packages/orchestrator/src/sandbox/index.ts#L37) still defaults the HTTP proxy port to `8080`; that is transition-state drift and SHALL converge to the canonical `3128` contract.
+
+**Current sandbox substrate names:**
+- Anthropic Sandbox Runtime is the current named isolation runtime for OpenKraken.
+- In the current implementation line it relies on `bubblewrap` on Linux and `sandbox-exec` / Seatbelt on macOS.
+- These substrate names remain canonical because they explain the present isolation behavior and are expected to take on a broader future role beyond the sandbox runtime wrapper itself.
 
 **CI/CD and release contract:**
 - CI is Nix-first and multi-platform.
