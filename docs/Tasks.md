@@ -30,6 +30,27 @@
 ### Archived or Already Completed Scope
 - Epic 1 already delivered the platform path abstraction, SQLite migration baseline, sandbox zone model, credential-provider fallback chain, service modules, and the initial CLI and Web UI shells that this Epic 2 plan builds on.
 - Completed Epic 1 work is authoritative brownfield context and SHALL NOT be copied back into the active backlog unless a specific regression or new delta is opened.
+- Epic 1 brownfield inventory remains part of this plan because Epic 2 tickets are integration-heavy and must stay auditable against what already exists in-repo.
+
+**Epic 1 Brownfield Inventory (authoritative baseline for Epic 2 planning):**
+
+| Component | Current Repo Location | Brownfield Status | Planning Impact |
+| --- | --- | --- | --- |
+| Configuration system | `packages/orchestrator/src/config/index.ts` | Partial, basic loading exists | Config/bootstrap tickets are integration and expansion work, not blank-slate design |
+| Credential vault | `packages/orchestrator/src/credentials/vault.ts` | Present with fallback-chain behavior | Auth and secret-management tickets build on an existing abstraction |
+| Sandbox integration | `packages/orchestrator/src/sandbox/index.ts` | Framework present, tool integration incomplete | Execution tickets are boundary wiring plus capability integration |
+| Platform path resolver | `packages/orchestrator/src/platform/resolver.ts` | Cross-platform resolver exists | Path semantics are a baseline, not new Epic 2 scope |
+| Database schema lineage | `packages/orchestrator/migrations/*.sql` | Base tables and schema lineage exist | Checkpoint and state tickets extend brownfield state instead of inventing all persistence from scratch |
+| CUE schema | `nix/schema/config.cue` | Validation baseline exists | Runtime config enforcement integrates an existing schema source of truth |
+| Service modules | `nix/nixos-modules/openkraken.nix`, `nix/darwin-modules/openkraken.nix` | Platform service-management baseline exists | Lifecycle tickets integrate with existing deployment posture |
+| CLI shell | `apps/cli/src` | Initial shell exists | CLI tickets are surface completion, auth wiring, and feature fill-in |
+| Web UI shell | `apps/web-ui/src` | Initial shell exists | Web tickets are not-from-zero; they complete the owner surface over the canonical runtime contract |
+
+**Brownfield gaps still driving Epic 2 scope:**
+- Missing or incomplete dependency alignment for the intended LangChain, provider, Telegram, and RMM lines
+- Incomplete orchestrator bootstrap and runtime entry flow
+- Incomplete tool registry and middleware composition over the brownfield scaffolding
+- Placeholder or partial owner-surface auth and interaction flows
 
 ## 3. Build Order (Mermaid)
 ```mermaid

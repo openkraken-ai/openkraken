@@ -215,8 +215,8 @@ The following capability inventory preserves the legacy capability identifiers s
 - **Rationale:** The Owner should gain extensibility without turning the host into a mutable tool staging area.
 - **Priority:** P1
 - **Capability ID:** CAP-024
-- **Capability:** The System shall distinguish between more-trusted and less-trusted Skills and apply different review or execution constraints accordingly.
-- **Rationale:** Not every extension deserves the same level of trust, and the product should make that distinction first-class.
+- **Capability:** The System shall enforce a tiered trust model for Skills, classifying them as `System`, `Owner`, or `Community` Skills and applying different review and execution constraints to each class.
+- **Rationale:** Not every extension deserves the same level of trust, and downstream policy, UI, persistence, and adjacent skill workstreams need stable tier names rather than generic trust language.
 - **Priority:** P2
 - **Capability:** The System shall help the Owner understand what a Skill can do before it becomes active.
 - **Rationale:** Extension safety depends on informed activation, not blind installation.
