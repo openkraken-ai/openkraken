@@ -121,8 +121,8 @@
 ### ADR-011 Skill Intake through Staging, Analysis, Approval, and Activation
 - **Status:** accepted
 - **Context:** Skills are a core extensibility mechanism, but they also create one of the highest-risk ingestion paths in the system. The architecture already separates the Skill Catalog from execution, and the brownfield schema includes skill review and audit tables, so the lifecycle needs to be captured as a first-class implementation decision.
-- **Decision:** All imported Skills SHALL pass through a four-step lifecycle: staging, analysis, approval, and activation. Active skill manifests SHALL be digest-pinned and exposed to the Runtime Coordinator only after approval state is persisted. Updates SHALL re-enter the same review flow rather than mutating active skill content in place. Skill runtime dependencies SHALL be declared canonically through `metadata.x-openkraken.dependencies`, with Nix package requirements expressed there so packages can be provisioned before sandbox invocation rather than installed by native package managers at runtime.
-- **Consequences:** Extensibility remains compatible with the project's deterministic-safety posture and produces auditable review evidence. The cost is slower skill adoption, more state transitions, extra UI/API surfaces for review and lifecycle management, and the need to preserve one project-specific manifest contract for dependency declaration across adjacent skill repositories.
+- **Decision:** All imported Skills SHALL pass through a four-step lifecycle: staging, analysis, approval, and activation. Active skill manifests SHALL be digest-pinned and exposed to the Runtime Coordinator only after approval state is persisted. Updates SHALL re-enter the same review flow rather than mutating active skill content in place. Skill runtime dependencies SHALL be declared canonically through `metadata.x-openkraken.dependencies`, with Nix package requirements expressed there so packages can be provisioned before sandbox invocation rather than installed by native package managers at runtime. Skill trust tiers SHALL remain canonical and named: `system`, `owner`, and `community`.
+- **Consequences:** Extensibility remains compatible with the project's deterministic-safety posture and produces auditable review evidence. The cost is slower skill adoption, more state transitions, extra UI/API surfaces for review and lifecycle management, and the need to preserve both one project-specific manifest contract for dependency declaration and one stable tier vocabulary across adjacent skill repositories.
 
 ### ADR-012 Configuration Source of Truth and Precedence
 - **Status:** accepted
@@ -145,8 +145,8 @@
 ### ADR-015 Backup, Restore, and Key Recovery Posture
 - **Status:** accepted
 - **Context:** Encrypted messages, memories, credential fallback material, and resumable state create a recovery model that is inseparable from the security model. The previous TechSpec correctly treated backup and key recovery as part of the canonical design, and that guidance should remain authoritative inside the four-document set.
-- **Decision:** A valid recovery set consists of the SQLite database backup, active configuration state, and the required recovery material for any encrypted records that cannot be reconstructed from live vault state alone. Backup creation SHALL verify database integrity before writing artifacts. Restore SHALL verify schema compatibility and attempt sample decryption before replacing active state. Loss of both vault material and recovery material for encrypted records is an unrecoverable condition that MUST be stated explicitly in operator-facing flows.
-- **Consequences:** Recovery procedures remain honest about the real failure modes of a security-first local system. The cost is more operator burden around recovery material handling and stricter restore validation before bringing the runtime back online.
+- **Decision:** A valid recovery set consists of the SQLite database backup, active configuration state, and the required recovery material for any encrypted records that cannot be reconstructed from live vault state alone. The canonical recovery material is a one-time recovery code derived from or representing the master encryption material and shown to the Owner during initialization and rotation workflows for offline storage. Backup creation SHALL verify database integrity before writing artifacts. Restore SHALL verify schema compatibility and attempt sample decryption before replacing active state. Loss of both vault material and recovery material for encrypted records is an unrecoverable condition that MUST be stated explicitly in operator-facing flows.
+- **Consequences:** Recovery procedures remain honest about the real failure modes of a security-first local system. The cost is more operator burden around recovery-code handling and stricter restore validation before bringing the runtime back online.
 
 ### ADR-016 Service Lifecycle and Startup Ordering
 - **Status:** accepted
@@ -445,7 +445,7 @@ erDiagram
 #### 3.1.5 Skill Review and Provenance Tables
 - **Tables:** `skills`, `skill_analysis_reports`, and `skill_audit_log`
 - **Purpose:** Preserve staged-versus-active skill state, provenance, trust tier, analysis output, approval decisions, update events, and operator review evidence.
-- **Tier contract:** Skill trust SHALL remain materially encoded rather than being implied by directory location alone.
+- **Tier contract:** Skill trust SHALL remain materially encoded rather than being implied by directory location alone. The canonical tier vocabulary is `system`, `owner`, and `community`.
 
 #### 3.1.6 Proxy and Outbound Audit Tables
 - **Tables:** `proxy_logs` and runtime-managed allowlist state
@@ -1847,7 +1847,7 @@ Brownfield note: the current repo already carries encrypted-field markers in [00
 | --- | --- | --- |
 | SQLite database snapshot | Yes | Must pass integrity checks before being considered valid |
 | Active configuration state | Yes | Includes root config and effective persisted config documents |
-| Recovery material for encrypted data | Yes | Required whenever encrypted records cannot be decrypted from current live vault state |
+| Recovery code / equivalent recovery material for encrypted data | Yes | Required whenever encrypted records cannot be decrypted from current live vault state; the canonical operator-facing form is a one-time recovery code shown during init or key rotation |
 
 **Disaster recovery matrix:**
 
@@ -1855,10 +1855,10 @@ Brownfield note: the current repo already carries encrypted-field markers in [00
 | --- | --- | --- |
 | Orchestrator crash | Restart service and resume from WAL plus checkpointer state | None under healthy storage |
 | Database corruption | Restore validated backup, then restart under canonical startup sequence | Since last valid backup |
-| Vault reset or OS reinstall | Restore recovery material, then restore database and configuration | None if recovery material is intact |
-| Complete host loss | Fresh install, restore config, restore recovery material, restore database | Since last valid backup |
-| Recovery material lost while vault remains intact | System continues, but operator should rotate material immediately | None if vault remains intact |
-| Vault and recovery material both lost | Encrypted records become unrecoverable | Encrypted message and memory payloads |
+| Vault reset or OS reinstall | Restore recovery code or equivalent recovery material, then restore database and configuration | None if recovery material is intact |
+| Complete host loss | Fresh install, restore config, restore recovery code or equivalent recovery material, restore database | Since last valid backup |
+| Recovery code lost while vault remains intact | System continues, but operator should rotate material immediately | None if vault remains intact |
+| Vault and recovery code both lost | Encrypted records become unrecoverable | Encrypted message and memory payloads |
 
 **Restore validation steps:**
 1. Stop the active runtime.
@@ -1889,6 +1889,11 @@ Platform vault
 2. Issue revocable runtime sessions from that secret for CLI and browser use instead of persisting the root secret in client-local state.
 3. Persist only expiring session material in the CLI cache file defined in Section 4.4.
 4. Rotation of the owner authentication secret SHALL invalidate outstanding derived sessions and require re-authentication.
+
+**Recovery-code operator contract:**
+1. Initialization SHALL display a one-time recovery code representing or derived from the master encryption material for offline storage.
+2. Master-key rotation SHALL display a replacement recovery code and invalidate reliance on the prior one for newly encrypted records.
+3. The recovery code itself SHALL NOT be stored in ordinary runtime state, logs, or agent-visible files.
 
 **Master key rotation contract:**
 1. Generate a replacement master key.

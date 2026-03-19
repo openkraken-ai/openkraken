@@ -111,8 +111,8 @@
 - **Browser middleware:** Exposes browser automation while preserving session isolation and outbound mediation.
 - **Memory middleware:** Owns extraction, retrieval, consolidation, and memory injection, keeping durable context outside direct agent mutation.
 - **Skill middleware:** Exposes approved skills, provenance, and trust metadata.
-- **Sub-agent middleware:** Represents bounded delegation as a capability class rather than hidden internal privilege; delegation depth remains intentionally constrained.
-- **Human-in-the-loop middleware:** Suspends execution until explicit owner decision is available and resumes from persisted continuation state.
+- **Sub-agent middleware:** Represents bounded delegation as a capability class rather than hidden internal privilege; delegation remains limited to one level so subordinate agents cannot spawn further subordinate agents.
+- **Human-in-the-loop middleware:** Suspends execution indefinitely until explicit owner decision is available and resumes from persisted continuation state; Telegram-native approval controls may be the first non-local approval surface when that channel is active.
 - **Summarization middleware:** Compresses older working context to preserve utility under context-window limits.
 
 ### Owner Interfaces
