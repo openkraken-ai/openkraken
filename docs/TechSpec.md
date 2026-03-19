@@ -1,9 +1,9 @@
 # Technical Specification
 
 ## 0. Version History & Changelog
+- v2.10.2 - Restored the missing physical-layer contracts for proxy and audit schema fidelity, Telegram webhook OpenAPI, granular HITL and alerting config, service hardening, browser daemon isolation, hard resource ceilings, and context-window token accounting.
 - v2.10.1 - Restored the missing OpenKraken-specific IPC, serialization, extension-event, prompt-assembly, skill-analysis, and config-shape contracts that were too proprietary to omit.
 - v2.10.0 - Re-expanded the TechSpec within the framework structure so the old implementation method, interface detail, data-model detail, configuration, testing, deployment, and security contracts remain canonical instead of surviving only as compressed summaries.
-- v2.9.0 - Restored the Open Responses primary interface posture, external adapter integration units, regulatory/SBOM discussion, drift-prevention rules, richer implementation contracts, and the remaining missing operational details without bringing back research-only appendices.
 - ... [Older history truncated, refer to git logs]
 
 ## 1. Stack Specification (Bill of Materials)
@@ -221,9 +221,9 @@ Historical decision-number continuity from the larger pre-framework TechSpec is 
 ## 3. State & Data Modeling
 ### 3.1 Runtime Control Database
 - **Purpose:** Persist the Runtime Coordinator's authoritative application state: sessions, resumable execution checkpoints, messages, memory, approvals, schedules, skill review state, audit evidence, and service-binding metadata.
-- **Storage Shape:** One SQLite database file named `openkraken.db` with forward-only SQL migrations. Existing brownfield tables (`schema_versions`, `threads`, `messages`, `memories`, `memories_embeddings`, `audit_events`, `proxy_logs`, `skills`, `skill_analysis_reports`, `skill_audit_log`) remain valid lineage. The target schema expands that baseline with `auth_sessions`, `execution_checkpoints`, `approvals`, `schedules`, `schedule_runs`, `config_documents`, and `connected_service_bindings`.
-- **Constraints / Invariants:** Raw credentials SHALL NOT be stored in SQLite. Tokens SHALL be stored as hashes, not cleartext. `threads.id` for the primary owner session model SHALL remain the owner-local date string `YYYY-MM-DD`. `messages.content` SHALL be encrypted at rest when marked sensitive. `execution_checkpoints.checkpoint_key` SHALL be unique per active execution thread namespace. `approvals.status` SHALL be one of `pending`, `approved`, `rejected`, or `expired`. `schedule_runs` SHALL be idempotent per `(schedule_id, scheduled_for)`. `config_documents.document_type` SHALL be unique per active scope. Audit tables SHALL be append-oriented. Soft deletion is preferred over destructive mutation for audit-sensitive records.
-- **Indexes / Access Paths:** `threads(updated_at)` for session resume lists; `messages(thread_id, created_at)` for ordered replay; `execution_checkpoints(thread_id, created_at)` for recovery lookup; `execution_checkpoints(checkpoint_namespace, checkpoint_key)` unique lookup for resumptions; `memories_embeddings(memory_id, model)` plus vector access sidecar strategy for retrieval; `audit_events(timestamp, event_type)` for recent review; `proxy_logs(timestamp)` for network audit; `approvals(status, created_at)` for pending approval inbox; `schedules(enabled, next_run_at)` for trigger scanning; `schedule_runs(schedule_id, scheduled_for)` unique index for dedupe; `skills(name)` unique lookup; `connected_service_bindings(service_type, enabled)` for gateway routing.
+- **Storage Shape:** One SQLite database file named `openkraken.db` with forward-only SQL migrations. Existing brownfield tables (`schema_versions`, `threads`, `messages`, `memories`, `memories_embeddings`, `audit_events`, `proxy_logs`, `skills`, `skill_analysis_reports`, `skill_audit_log`) remain valid lineage. The target schema expands that baseline with `auth_sessions`, `execution_checkpoints`, `approvals`, `schedules`, `schedule_runs`, `config_documents`, `connected_service_bindings`, a first-class `correlations` table for trace lineage, and high-fidelity outbound-audit tables `proxy_requests` plus `allowlist_domains`.
+- **Constraints / Invariants:** Raw credentials SHALL NOT be stored in SQLite. Tokens SHALL be stored as hashes, not cleartext. `threads.id` for the primary owner session model SHALL remain the owner-local date string `YYYY-MM-DD`. `messages.content` SHALL be encrypted at rest when marked sensitive. `messages.token_count` SHALL be persisted as the runtime's canonical context-window accounting field rather than recalculated on every replay. `execution_checkpoints.checkpoint_key` SHALL be unique per active execution thread namespace. `approvals.status` SHALL be one of `pending`, `approved`, `rejected`, or `expired`. `schedule_runs` SHALL be idempotent per `(schedule_id, scheduled_for)`. `config_documents.document_type` SHALL be unique per active scope. `correlations.depth` SHALL increase monotonically within a trace tree. `allowlist_domains.active` SHALL be the canonical gate for live allowlist materialization. Audit tables SHALL be append-oriented. Soft deletion is preferred over destructive mutation for audit-sensitive records.
+- **Indexes / Access Paths:** `threads(updated_at)` for session resume lists; `messages(thread_id, created_at)` for ordered replay; `execution_checkpoints(thread_id, created_at)` for recovery lookup; `execution_checkpoints(checkpoint_namespace, checkpoint_key)` unique lookup for resumptions; `memories_embeddings(memory_id, model)` plus vector access sidecar strategy for retrieval; `audit_events(timestamp, event_type)` for recent review; `correlations(trace_id, depth)` for request-tree reconstruction; `proxy_requests(timestamp)` for network audit; `proxy_requests(request_id)` for join-back to runtime actions; `proxy_requests(disposition, destination_domain)` for allowlist and denial review; `allowlist_domains(domain, active)` for live policy materialization; `approvals(status, created_at)` for pending approval inbox; `schedules(enabled, next_run_at)` for trigger scanning; `schedule_runs(schedule_id, scheduled_for)` unique index for dedupe; `skills(name)` unique lookup; `connected_service_bindings(service_type, enabled)` for gateway routing.
 - **Migration Notes:** Migrations are forward-only and checksum-verified in `schema_versions`. Existing tables are upgraded in place through expand-migrate-contract sequencing. Breaking schema changes require a data migration plan, rollback posture, and compatibility note in the owning decision record. Startup SHALL refuse to serve the runtime API until migrations complete successfully.
 
 ```mermaid
@@ -262,6 +262,7 @@ erDiagram
         blob content
         integer encrypted
         blob metadata
+        integer token_count
         text created_at
     }
 
@@ -358,14 +359,40 @@ erDiagram
         text timestamp
     }
 
-    proxy_logs {
+    correlations {
         text id PK
-        text url
-        text method
-        integer response_status
+        text parent_id FK
+        text trace_id
+        integer depth
+        text created_at
+    }
+
+    proxy_requests {
+        text id PK
+        text request_id FK
+        text source_process
+        text destination_domain
+        integer destination_port
+        text request_method
+        text disposition
+        text applied_rule
+        integer bytes_in
+        integer bytes_out
         integer duration_ms
-        text error
+        blob tls_info
+        integer status_code
+        blob error_info
         text timestamp
+    }
+
+    allowlist_domains {
+        text id PK
+        text domain
+        text tier
+        text added_by
+        text added_at
+        text expires_at
+        integer active
     }
 
     skills {
@@ -407,6 +434,8 @@ erDiagram
     schedules ||--o{ schedule_runs : executes
     skills ||--o{ skill_analysis_reports : reviewed_by
     skills ||--o{ skill_audit_log : tracked_by
+    audit_events ||--o{ correlations : traced_in
+    proxy_requests ||--o{ allowlist_domains : matched_by
 ```
 
 #### 3.1.1 Checkpoint and Resumable Execution Tables
@@ -439,6 +468,7 @@ interface CheckpointMetadata {
 - **Thread identity:** `threads.id` remains the owner-local calendar day string `YYYY-MM-DD` for the primary session model.
 - **Message role contract:** Roles are constrained to the runtime's canonical message roles, and content-type metadata SHALL distinguish text, file, tool-call, and tool-result variants where applicable.
 - **Sensitive content contract:** `messages.content` SHALL support application-level encryption with metadata sufficient to determine ciphertext handling state without exposing plaintext.
+- **Context accounting contract:** `messages.token_count` SHALL persist the runtime-estimated token footprint for each message so summarization and truncation middleware can make deterministic context-window decisions without repeatedly re-tokenizing historical rows.
 - **Primary access path:** ordered replay by `(thread_id, created_at)`
 - **Encrypted payload wrapper:** The canonical serialized encryption wrapper for encrypted message and memory fields is:
 
@@ -459,10 +489,11 @@ This wrapper shape is part of the compatibility contract. Implementations may va
 - **Retrieval posture:** Embedding references, importance metadata, and recency fields SHALL remain attributable to a specific memory record so purge, re-embedding, and audit remain possible.
 
 #### 3.1.4 Audit and Correlation Tables
-- **Tables:** `audit_events` plus correlation-bearing identifiers embedded in runtime records
+- **Tables:** `audit_events` and `correlations`
 - **Purpose:** Preserve reconstructable evidence for owner actions, policy decisions, tool calls, service calls, restores, rotations, failures, and retry activity.
 - **Append-only posture:** Audit records are authoritative historical evidence and SHALL prefer append semantics over mutative "current status" rewriting.
 - **Severity posture:** The logical severity vocabulary SHALL distinguish ordinary operation, warning, error, and security-significant events.
+- **Correlation contract:** `correlations` SHALL persist distributed-trace lineage through `id`, `parent_id`, `trace_id`, and `depth` so audit playback can reconstruct nested runtime, gateway, and adapter actions without inferring tree structure from timestamps alone.
 
 #### 3.1.5 Skill Review and Provenance Tables
 - **Tables:** `skills`, `skill_analysis_reports`, and `skill_audit_log`
@@ -470,9 +501,11 @@ This wrapper shape is part of the compatibility contract. Implementations may va
 - **Tier contract:** Skill trust SHALL remain materially encoded rather than being implied by directory location alone. The canonical tier vocabulary is `system`, `owner`, and `community`.
 
 #### 3.1.6 Proxy and Outbound Audit Tables
-- **Tables:** `proxy_logs` and runtime-managed allowlist state
-- **Purpose:** Preserve outbound request evidence including destination, method/protocol, decision outcome, duration, and error context.
-- **Correlation rule:** Outbound audit records SHALL remain joinable to the owning runtime request or session context.
+- **Tables:** `proxy_requests` and `allowlist_domains`, with `proxy_logs` treated as the brownfield predecessor lineage.
+- **Purpose:** Preserve outbound request evidence including destination, method or protocol, rule match, byte counts, TLS handshake context, decision outcome, duration, and error context.
+- **Correlation rule:** Outbound audit records SHALL remain joinable to the owning runtime request or session context through `request_id`.
+- **Allowlist fidelity rule:** `allowlist_domains` SHALL persist the tier, provenance, activation state, and expiry of the rule that justified or denied network access.
+- **Schema fidelity rule:** `proxy_requests.bytes_out`, `proxy_requests.tls_info`, `proxy_requests.applied_rule`, `proxy_requests.destination_domain`, and `proxy_requests.destination_port` are canonical audit fields and SHALL NOT be collapsed into a generic URL log if exfiltration review is to remain meaningful.
 
 #### 3.1.7 SQLite Type and Migration Conventions
 - **UUID posture:** UUIDs are stored as `TEXT` in canonical string form.
@@ -1421,7 +1454,7 @@ cliTokenCache:
       - runtime-side revocation
 ```
 
-Brownfield note: the current CLI already implements the local JSON cache shape in [auth.ts](/home/oscar/GitHub/OpenKraken/apps/cli/src/lib/auth.ts#L10). The current Web UI route in [auth/+server.ts](/home/oscar/GitHub/OpenKraken/apps/web-ui/src/routes/api/auth/+server.ts#L13) still uses a placeholder `session` cookie and mock token issuance, so it MUST NOT be treated as the final canonical auth implementation.
+Brownfield note: the current CLI already implements the local JSON cache shape in [auth.ts](../apps/cli/src/lib/auth.ts#L10). The current Web UI route in [auth/+server.ts](../apps/web-ui/src/routes/api/auth/+server.ts#L13) still uses a placeholder `session` cookie and mock token issuance, so it MUST NOT be treated as the final canonical auth implementation.
 
 **Session issuance and rotation contract:**
 1. `openkraken init` provisions one owner authentication secret and stores it in the system credential class.
@@ -1435,6 +1468,98 @@ Brownfield note: the current CLI already implements the local JSON cache shape i
 - CLI cache files SHALL remain owner-readable only and MUST store revocable session material, never the root owner secret.
 - Session expiry, revocation, logout, and root-secret rotation are all canonical invalidation paths.
 - Placeholder browser auth implementations in brownfield code are non-authoritative until they align with this session contract.
+
+### 4.6 Webhook and External Adapter Contracts
+- **Style:** HTTP API
+- **Authentication / Authorization:** Telegram webhook ingress uses Telegram's secret-token mechanism through `X-Telegram-Bot-Api-Secret-Token`; this is header comparison validated before any runtime invocation and is distinct from the runtime-to-gateway HMAC IPC contract.
+- **Compatibility Strategy:** Adapter endpoints MAY add optional metadata fields within a version, but webhook authentication semantics, delivery status codes, and the normalized update envelope require a versioned migration if changed incompatibly.
+- **Error model:** RFC 9457 Problem Details for runtime-generated failures; `401` for invalid webhook secret; `400` for structurally invalid updates.
+
+```yaml
+openapi: 3.1.0
+info:
+  title: OpenKraken Webhook and External Adapter API
+  version: 1.0.0
+paths:
+  /webhook/telegram:
+    post:
+      operationId: telegramWebhook
+      summary: Receive a Telegram Bot API update and normalize it into the runtime interaction path
+      security:
+        - telegramWebhookSecret: []
+      parameters:
+        - in: header
+          name: X-Telegram-Bot-Api-Secret-Token
+          required: true
+          schema:
+            type: string
+          description: Secret token configured in Telegram and matched exactly against the runtime-owned channel secret.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Telegram Bot API Update object
+      responses:
+        "200":
+          description: Update accepted and normalized for runtime processing
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accepted]
+                properties:
+                  accepted:
+                    type: boolean
+                    const: true
+                  threadId:
+                    type: string
+                    description: Day-bounded runtime thread identifier if routing succeeded.
+        "400":
+          description: Invalid Telegram update payload
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "401":
+          description: Missing or invalid Telegram secret token
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "500":
+          description: Runtime processing failure after successful webhook verification
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+components:
+  securitySchemes:
+    telegramWebhookSecret:
+      type: apiKey
+      in: header
+      name: X-Telegram-Bot-Api-Secret-Token
+  schemas:
+    Problem:
+      type: object
+      required: [type, title, status]
+      properties:
+        type:
+          type: string
+          format: uri-reference
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+```
+
+**Telegram webhook validation contract:**
+- The adapter SHALL reject the request before normalization if `X-Telegram-Bot-Api-Secret-Token` is absent or does not exactly match the configured `channels.telegram.secretToken`.
+- The validation mechanism is grammY-compatible secret-token verification, not request-body HMAC signing.
+- Successful validation authenticates Telegram as the channel source, but owner authorization still depends on configured chat or identity allowlisting inside the runtime.
 
 ## 5. Implementation Guidelines
 ### 5.1 Project Structure
@@ -1558,6 +1683,16 @@ Brownfield note: the current CLI already implements the local JSON cache shape i
 | Checkpoint write | under 10ms | under 30ms |
 | Telegram ingress acknowledgment path | under 100ms | under 200ms |
 
+**Hard resource ceilings:**
+
+| Resource | Ceiling | Contract |
+| --- | --- | --- |
+| Orchestrator RSS | under 500 MB under nominal single-owner load | Crossing the ceiling is a capacity bug, not an invitation to silently raise defaults. |
+| Primary SQLite database size | under 10 GB before archival or operator action is required | Alerting SHALL fire before the warning threshold is crossed. |
+| Gateway queued outbound requests | 100 maximum | Additional outbound-capable work SHALL fail closed or wait for recovery rather than bypass the gateway. |
+| Gateway queued-request wait time | 60 seconds maximum | Requests exceeding the ceiling surface service-unavailable failure. |
+| Telegram ingress connection backlog | bounded by service-manager defaults plus webhook retry behavior | The runtime SHALL acknowledge or reject quickly rather than hold webhook sockets open for long-running model work. |
+
 **Architecture layer definitions for code organization:**
 - **Domain-adjacent logic:** policy vocabulary, bounded action types, trust-tier semantics, and schedule or approval domain concepts.
 - **Application layer:** orchestration use cases coordinating auth, chat turns, approval pause/resume, scheduling, and integration dispatch.
@@ -1598,7 +1733,7 @@ The runtime uses a layered configuration model that combines bootstrap environme
 | `openkraken-egress-hmac-key` | Shared secret for gateway management/auth flows where required |
 | `openkraken-api-token` | Root owner authentication secret or seed material for session issuance |
 
-Brownfield note: the current loader in [config/index.ts](/home/oscar/GitHub/OpenKraken/packages/orchestrator/src/config/index.ts#L15) still consumes a narrower transitional shape including aliases such as `OPENKRAKEN_SANDBOX_TYPE`, `OPENKRAKEN_EGRESS_HOST`, and `OPENKRAKEN_EGRESS_PORT`. The target implementation SHALL converge these aliases onto the canonical contract above.
+Brownfield note: the current loader in [config/index.ts](../packages/orchestrator/src/config/index.ts#L15) still consumes a narrower transitional shape including aliases such as `OPENKRAKEN_SANDBOX_TYPE`, `OPENKRAKEN_EGRESS_HOST`, and `OPENKRAKEN_EGRESS_PORT`. The target implementation SHALL converge these aliases onto the canonical contract above.
 
 **Canonical CUE schema excerpt:**
 
@@ -1634,7 +1769,10 @@ Brownfield note: the current loader in [config/index.ts](/home/oscar/GitHub/Open
 }
 
 #MiddlewareConfig: {
-  humanInTheLoop: bool
+  humanInTheLoop: {
+    enabled: bool
+    operations: [...string]
+  }
   memory: bool
   skillLoader: bool
 }
@@ -1645,9 +1783,33 @@ Brownfield note: the current loader in [config/index.ts](/home/oscar/GitHub/Open
   directory: string
   executionTimeoutSeconds: int
 }
+
+#AlertingConfig: {
+  enabled: bool
+  evaluationIntervalSeconds: int
+  suppressionMinutes: int
+  channels: {
+    telegram: #TelegramChannelConfig
+    email?: #EmailChannelConfig
+  }
+  conditions: {
+    databaseSize: {
+      enabled: bool
+      warnThresholdGb: int
+    }
+    databaseIntegrity: {
+      enabled: bool
+    }
+    llmProviderErrors: {
+      enabled: bool
+      windowMinutes: int
+      threshold: int
+    }
+  }
+}
 ```
 
-The authoritative schema file remains [`nix/schema/config.cue`](/home/oscar/GitHub/OpenKraken/nix/schema/config.cue), but the top-level shape and the unique OpenKraken keys above are part of the canonical contract and SHALL NOT be guessed or renamed by downstream implementations.
+The authoritative schema file remains [`nix/schema/config.cue`](../nix/schema/config.cue), but the top-level shape and the unique OpenKraken keys above are part of the canonical contract and SHALL NOT be guessed or renamed by downstream implementations.
 
 **Canonical root configuration document:**
 
@@ -1708,7 +1870,12 @@ channels:
     connectionTimeoutSeconds: 30
 
 middleware:
-  humanInTheLoop: true
+  humanInTheLoop:
+    enabled: true
+    operations:
+      - "file:create"
+      - "terminal:exec"
+      - "skill:install"
   memory: true
   skillLoader: true
 
@@ -1750,10 +1917,20 @@ alerting:
       severity: ["CRITICAL", "ERROR", "WARN", "INFO"]
       digest: true
       digestIntervalMinutes: 60
+  conditions:
+    databaseSize:
+      enabled: true
+      warnThresholdGb: 8
+    databaseIntegrity:
+      enabled: true
+    llmProviderErrors:
+      enabled: true
+      windowMinutes: 5
+      threshold: 5
 ```
 
 **Validation points:**
-1. Build-time validation via `cue vet` against [config.cue](/home/oscar/GitHub/OpenKraken/nix/schema/config.cue#L1).
+1. Build-time validation via `cue vet` against [config.cue](../nix/schema/config.cue#L1).
 2. Startup validation before database migration or API bind.
 3. Runtime update validation before `config_documents` writes become active.
 4. Unknown fields, invalid enums, and structurally invalid documents SHALL be rejected rather than coerced.
@@ -1762,6 +1939,12 @@ alerting:
 - `channels.telegram` is the primary non-local owner interaction channel for the first implementation line.
 - `channels.mcp` represents the follow-on path for broader mediated channel and service interaction, but it is not required for Epic 1 completeness.
 - Additional asynchronous channels SHALL reuse the same runtime auth, audit, and policy boundaries rather than introducing a parallel orchestration path.
+
+**Granular policy configuration posture:**
+- `middleware.humanInTheLoop.operations` is the canonical owner-controlled approval list for sensitive capabilities. A flat boolean is insufficient for the long-term contract because the Owner must decide which operation families require interruption.
+- `alerting.conditions.databaseSize`, `alerting.conditions.databaseIntegrity`, and `alerting.conditions.llmProviderErrors` are canonical named condition groups and SHALL remain addressable configuration keys rather than being hidden behind generic alert toggles.
+
+Brownfield note: the current CUE schema and example config in [`nix/schema/config.cue`](../nix/schema/config.cue#L1) and [`nix/schema/example.config.yaml`](../nix/schema/example.config.yaml#L1) still expose a narrower transitional shape. The canonical target-state config contract above is the source of truth for future convergence.
 
 **Mutability classes:**
 
@@ -1783,7 +1966,7 @@ alerting:
 - Security-sensitive defaults SHALL fail closed when required values are absent.
 
 ### 5.4 Migration and Schema Operations
-OpenKraken uses forward-only SQL migrations with checksum verification, transactionality, and integrity checks. The brownfield runner already implements this contract in [migrate.ts](/home/oscar/GitHub/OpenKraken/packages/orchestrator/scripts/db/migrate.ts#L57).
+OpenKraken uses forward-only SQL migrations with checksum verification, transactionality, and integrity checks. The brownfield runner already implements this contract in [migrate.ts](../packages/orchestrator/scripts/db/migrate.ts#L57).
 
 **Migration file contract:**
 
@@ -1835,7 +2018,7 @@ CREATE TABLE schema_versions (
 - Expand-migrate-contract steps SHALL be validated across at least one compatibility path where old rows already exist.
 
 ### 5.5 Middleware and Callback Semantics
-The runtime relies on deterministic middleware ordering because control flow, not prompting, enforces safety. The current repo contains a minimal composition framework in [framework.ts](/home/oscar/GitHub/OpenKraken/packages/orchestrator/src/middleware/framework.ts#L66), but the canonical ordering contract is broader than the brownfield implementation.
+The runtime relies on deterministic middleware ordering because control flow, not prompting, enforces safety. The current repo contains a minimal composition framework in [framework.ts](../packages/orchestrator/src/middleware/framework.ts#L66), but the canonical ordering contract is broader than the brownfield implementation.
 
 **Middleware tier order:**
 
@@ -1860,6 +2043,12 @@ The runtime relies on deterministic middleware ordering because control flow, no
 - Sub-agent middleware for bounded delegation capability
 - Summarization middleware for context compression
 - Human-in-the-loop middleware for indefinite approval suspension until explicit owner decision
+
+**Browser middleware physical mechanism:**
+- Browser automation SHALL run through a dedicated Playwright-compatible CDP daemon exposed over a per-session Unix socket rather than embedding a long-lived browser directly in the Runtime Coordinator process.
+- The daemon SHALL use ephemeral browser profiles by default, with optional import/export of storage state only through explicit runtime-controlled flows.
+- Socket paths SHALL be unique per session and cleaned up during session teardown.
+- This daemonized boundary is the safety contract that keeps browser state, network mediation, and crash handling out of the main runtime memory space.
 
 **Callback rules:**
 - Callbacks are observational only and SHALL NOT alter agent control flow.
@@ -1922,17 +2111,23 @@ OpenKraken distinguishes between development orchestration and production servic
 **Linux production contract:**
 - Service names: `openkraken-orchestrator` and `openkraken-egress-gateway`
 - Environment variables: `OPENKRAKEN_HOME`, `OPENKRAKEN_CONFIG`, `ORCHESTRATOR_PORT`, `EGRESS_GATEWAY_PORT`, `EGRESS_SOCKET_PATH`
-- Directory provisioning and permissions are managed by the NixOS module in [openkraken.nix](/home/oscar/GitHub/OpenKraken/nix/nixos-modules/openkraken.nix#L31)
+- Directory provisioning and permissions are managed by the NixOS module in [openkraken.nix](../nix/nixos-modules/openkraken.nix#L31)
 - Restart policy, resource limits, and temp/runtime directories are declared in systemd service config
+- Canonical hardening flags include `NoNewPrivileges=true`, `PrivateTmp=true`, `ProtectSystem=strict`, and `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`; additional systemd hardening such as device restrictions, read-only paths, and privilege locks MAY layer on top without weakening these minimums.
 
 **macOS production contract:**
 - Launchd labels: `com.openkraken.orchestrator` and `com.openkraken.egress-gateway`
 - Environment variables mirror Linux at the logical layer even when paths differ
-- Directory provisioning and agent definitions are managed by the Darwin module in [openkraken.nix](/home/oscar/GitHub/OpenKraken/nix/darwin-modules/openkraken.nix#L17)
+- Directory provisioning and agent definitions are managed by the Darwin module in [openkraken.nix](../nix/darwin-modules/openkraken.nix#L17)
 - launchd resource limits replace Linux cgroup-style quotas where the platform lacks equivalent primitives
 
 **Brownfield note:**
-The deployment modules are materially ahead of the orchestrator entry point in [main.ts](/home/oscar/GitHub/OpenKraken/packages/orchestrator/src/main.ts#L10). The service-management contract therefore remains canonical target state even though runtime bootstrap is still incomplete.
+The deployment modules are materially ahead of the orchestrator entry point in [main.ts](../packages/orchestrator/src/main.ts#L10). The service-management contract therefore remains canonical target state even though runtime bootstrap is still incomplete.
+
+**Sandbox proxy-binding contract:**
+- The canonical sandbox-facing proxy ports are HTTP `3128` and SOCKS5 `1080`.
+- These ports are the physical bindings expected by sandbox profiles, browser middleware, and the chained egress posture.
+- Brownfield note: the current sandbox helper in [sandbox/index.ts](../packages/orchestrator/src/sandbox/index.ts#L37) still defaults the HTTP proxy port to `8080`; that is transition-state drift and SHALL converge to the canonical `3128` contract.
 
 **CI/CD and release contract:**
 - CI is Nix-first and multi-platform.
@@ -1955,6 +2150,11 @@ The deployment modules are materially ahead of the orchestrator entry point in [
 
 When the gateway is unhealthy, new outbound-capable sandbox work SHALL fail closed or enter a bounded waiting state rather than bypassing the egress boundary. Recovery and repeated failure events SHALL emit distinct audit evidence.
 The bounded waiting posture uses a maximum queue of `100` requests with a per-request wait ceiling of `60` seconds before surfacing `service_unavailable_error` to the runtime.
+
+**Go egress gateway concurrency contract:**
+- HTTP `CONNECT` tunneling SHALL use the `http.Hijacker.Hijack()` pattern so the gateway can switch to full-duplex raw TCP forwarding instead of request-buffering proxy behavior.
+- Allowlist state SHALL be guarded by a `sync.RWMutex`-protected map or an equivalent thread-safe hot-reload structure so live allowlist updates do not race request evaluation.
+- This concurrency contract is performance-sensitive and SHALL NOT be replaced by a simplistic buffering proxy that would degrade browser, MCP, or long-lived tool traffic.
 
 ### 5.7 Credential, Encryption, Backup, and Recovery Notes
 The credential and recovery model is part of the product's safety contract, not just an operational convenience.
@@ -1988,7 +2188,7 @@ Master Key (vault-stored)
 - `messages.encrypted` and related schema markers indicate ciphertext handling state and SHALL remain queryable without disclosing plaintext.
 - Filesystem encryption such as FileVault or LUKS is defense-in-depth, not a substitute for the application-level contract above.
 
-Brownfield note: the current repo already carries encrypted-field markers in [001_initial_schema.sql](/home/oscar/GitHub/OpenKraken/packages/orchestrator/migrations/001_initial_schema.sql#L25) and [002_add_encrypted_fields.sql](/home/oscar/GitHub/OpenKraken/packages/orchestrator/migrations/002_add_encrypted_fields.sql#L1), but the full encrypt/decrypt pipeline is still target-state work rather than completed implementation.
+Brownfield note: the current repo already carries encrypted-field markers in [001_initial_schema.sql](../packages/orchestrator/migrations/001_initial_schema.sql#L25) and [002_add_encrypted_fields.sql](../packages/orchestrator/migrations/002_add_encrypted_fields.sql#L1), but the full encrypt/decrypt pipeline is still target-state work rather than completed implementation.
 
 **Backup set contract:**
 
@@ -2071,7 +2271,7 @@ Platform vault
 | Decryption failure | CRITICAL | Alert Owner immediately and block confidence in encrypted-state recovery |
 | Timeout or interrupted verification | ERROR | Record and retry on next scheduled verification window |
 
-Brownfield note: the fallback chain is already implemented in [vault.ts](/home/oscar/GitHub/OpenKraken/packages/orchestrator/src/credentials/vault.ts#L37), but automated backup verification, full key rotation workflows, and complete restore tooling remain target-state obligations rather than finished runtime behavior.
+Brownfield note: the fallback chain is already implemented in [vault.ts](../packages/orchestrator/src/credentials/vault.ts#L37), but automated backup verification, full key rotation workflows, and complete restore tooling remain target-state obligations rather than finished runtime behavior.
 
 **Egress gateway alert posture:**
 - Gateway failure emits a critical alert through the configured urgent channel.
@@ -2176,7 +2376,7 @@ Build and verification remain part of the technical implementation contract beca
 | Nix checks | Must validate shipped configuration artifacts against the CUE schema before release acceptance |
 
 **CI contract:**
-1. Run on both Linux and macOS through the matrix defined in [ci.yml](/home/oscar/GitHub/OpenKraken/.github/workflows/ci.yml#L1).
+1. Run on both Linux and macOS through the matrix defined in [ci.yml](../.github/workflows/ci.yml#L1).
 2. Install Nix with flakes enabled.
 3. Build the orchestrator and gateway through flake package outputs, not ad hoc shell scripts.
 4. Run `devenv test --no-cached` as the development-environment integration check.
@@ -2195,7 +2395,7 @@ Build and verification remain part of the technical implementation contract beca
 4. Package build verification across Bun and Go outputs
 5. Release-evidence generation, including SBOM where enabled
 
-Brownfield note: the current workflow already invokes `nix run .#sbom` in [ci.yml](/home/oscar/GitHub/OpenKraken/.github/workflows/ci.yml#L60), but [flake.nix](/home/oscar/GitHub/OpenKraken/flake.nix#L1) does not currently expose an `sbom` app or package. That is an active implementation drift to resolve, not a reason to drop the SBOM contract from the specification.
+Brownfield note: the current workflow already invokes `nix run .#sbom` in [ci.yml](../.github/workflows/ci.yml#L60), but [flake.nix](../flake.nix#L1) does not currently expose an `sbom` app or package. That is an active implementation drift to resolve, not a reason to drop the SBOM contract from the specification.
 
 ### 5.11 Documentation and Artifact Drift Prevention
 The canonical docs are part of the implementation surface for this project.
