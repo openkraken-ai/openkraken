@@ -1,9 +1,9 @@
 # Technical Specification
 
 ## 0. Version History & Changelog
+- v2.10.3 - Clarified the runtime-to-gateway signing contract and normalized skill-tier vocabulary so the canonical names remain stable across product, technical, and planning layers.
 - v2.10.2 - Restored the missing physical-layer contracts for proxy and audit schema fidelity, Telegram webhook OpenAPI, granular HITL and alerting config, service hardening, browser daemon isolation, hard resource ceilings, and context-window token accounting.
 - v2.10.1 - Restored the missing OpenKraken-specific IPC, serialization, extension-event, prompt-assembly, skill-analysis, and config-shape contracts that were too proprietary to omit.
-- v2.10.0 - Re-expanded the TechSpec within the framework structure so the old implementation method, interface detail, data-model detail, configuration, testing, deployment, and security contracts remain canonical instead of surviving only as compressed summaries.
 - ... [Older history truncated, refer to git logs]
 
 ## 1. Stack Specification (Bill of Materials)
@@ -498,7 +498,7 @@ This wrapper shape is part of the compatibility contract. Implementations may va
 #### 3.1.5 Skill Review and Provenance Tables
 - **Tables:** `skills`, `skill_analysis_reports`, and `skill_audit_log`
 - **Purpose:** Preserve staged-versus-active skill state, provenance, trust tier, analysis output, approval decisions, update events, and operator review evidence.
-- **Tier contract:** Skill trust SHALL remain materially encoded rather than being implied by directory location alone. The canonical tier vocabulary is `system`, `owner`, and `community`.
+- **Tier contract:** Skill trust SHALL remain materially encoded rather than being implied by directory location alone. The canonical tier names across docs, policy, UI, and adjacent skill workstreams are `System`, `Owner`, and `Community`. Where storage or machine-facing payloads need normalized enum values, they SHALL serialize one-to-one as `system`, `owner`, and `community` rather than inventing alternate labels.
 
 #### 3.1.6 Proxy and Outbound Audit Tables
 - **Tables:** `proxy_requests` and `allowlist_domains`, with `proxy_logs` treated as the brownfield predecessor lineage.
@@ -1268,8 +1268,9 @@ components:
 #### 4.2.1 Runtime-to-Gateway IPC Authentication Contract
 - The Runtime Coordinator and Egress Gateway SHALL communicate over same-host IPC with two complementary controls: restricted transport access and signed application requests.
 - The Unix socket file SHALL remain owned by the service account boundary and permissioned as `0660`.
-- Management requests SHALL include a timestamp header and an HMAC-SHA256 signature header calculated from the request material with the vault-backed secret identified as `openkraken-egress-hmac-key`.
-- The gateway SHALL reject requests whose timestamp falls outside the accepted replay window and SHALL reject requests whose signature does not validate against the canonical request-signing input.
+- Management requests SHALL include `X-OpenKraken-Timestamp` and `X-OpenKraken-Signature` headers. `X-OpenKraken-Signature` SHALL be an HMAC-SHA256 digest calculated with the vault-backed secret identified as `openkraken-egress-hmac-key`.
+- The canonical request-signing input SHALL be the newline-delimited string `METHOD + \"\\n\" + PATH_AND_QUERY + \"\\n\" + SHA256(BODY_BYTES) + \"\\n\" + X-OpenKraken-Timestamp`. Empty bodies SHALL use the SHA-256 of the empty byte string.
+- The gateway SHALL reject requests whose timestamp falls outside a maximum accepted replay window of `300` seconds and SHALL reject requests whose signature does not validate against the canonical request-signing input.
 - Filesystem permissions alone are not a sufficient authorization check for gateway management operations.
 
 **Channel and adapter boundary contract:**
