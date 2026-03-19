@@ -1,378 +1,354 @@
-# Product Requirements Document: OpenKraken (Codename)
+# Product Requirements Document
 
-## 1. Executive Summary
+## 0. Version History & Changelog
+- v2.2.2 - Clarified the distinct Telegram capability scopes so owner interaction and service-integration planning do not collapse into one ambiguous requirement.
+- v2.2.1 - Restored the hard release-quality success thresholds so QA and acceptance decisions keep the original OpenKraken-specific behavioral bars.
+- v2.2.0 - Re-expanded the PRD inside the framework structure so the old success criteria, persona posture, capability continuity, named integration scope, and anti-pattern commitments are preserved rather than merely summarized.
+- v2.1.0 - Restored the missing success criteria, value/constitution model, explicit capability IDs, named integration scope, and anti-pattern commitments within the current framework structure.
+- ... [Older history truncated, refer to git logs]
 
-### The Vision
+## 1. Executive Summary & Target Archetype
+- **Target Archetype:** Owner-operated personal agent runtime
+- **Vision:** A single person can run a genuinely useful AI agent on their own infrastructure without trusting the model to behave safely; the system remains helpful because its boundaries are deterministic, inspectable, and owner-controlled.
+- **Problem:** Personal AI agents are often either powerful but unsafe, or safe only because they refuse useful work. Existing offerings commonly mix secret handling, unrestricted execution, weak auditability, and vague safety promises, forcing security-conscious owners to choose between capability and trust.
+- **Jobs to Be Done:** Help me delegate real work to an AI agent without surrendering control; let me connect the agent to my files, tools, and services under explicit rules; let me audit, pause, approve, and recover the agent's actions as the sole operator of the system.
+- **Success Metrics:** The Owner can provision credentials for integrations without those credentials appearing in logs, files, or agent-visible traffic; the Agent cannot reach unapproved files or network destinations regardless of prompt framing; every meaningful action is observable and reconstructable; the runtime remains continuously available enough for scheduled work and fast owner interaction; and the system feels like a capable assistant that happens to be unbreakable rather than an unbreakable runtime that refuses useful work.
+- **Cross-Platform Consistency Criteria:** Supported platforms shall preserve equivalent capability semantics for path validation, egress policy enforcement, credential handling, owner interfaces, and session recovery, with platform-specific differences limited to the underlying host mechanism rather than the product behavior experienced by the Owner.
 
-OpenKraken represents a paradigm shift in personal AI agent runtimes—a deterministic, security-first platform where the agent operates not as a privileged user with shell access, but as a strictly managed subsystem with bounded, auditable capabilities. In this future state, individuals operate their own AI assistants with complete confidence that architectural enforcement prevents rule violations regardless of how the agent is prompted or what inputs it receives. The agent exists within security boundaries that are architecturally enforced at the OS kernel level with defense-in-depth, credentials never materialize outside protected runtime memory, and every action is observable and reversible. The Owner maintains complete sovereignty over their instance while the agent provides genuine assistance within unbreakable constraints.
+The qualitative product posture above is backed by explicit release-quality thresholds:
+- **Helpfulness threshold:** The Agent completes at least `80%` of non-policy-violating Owner requests within the configured capability scope, with meaningful progress communicated when full completion requires Owner intervention.
+- **Honesty threshold:** `Zero confirmed hallucinations` are accepted in Owner-audited sessions; uncertainty must be stated explicitly instead of masked by plausible synthesis.
+- **Harmlessness threshold:** `Zero policy violations that result in actual harm` are accepted for release.
+- **Transparency threshold:** The Owner can audit `100%` of meaningful Agent decisions and actions through the product's review surfaces and durable evidence model.
 
-### The Problem
+OpenKraken is not meant to feel like a research demo or a "safe mode" wrapper around an unsafe agent. The product promise is stronger and narrower: it should feel like a capable personal operator that happens to be architecturally hard to misuse. The Owner should not have to trade away usefulness to obtain trust.
 
-Current personal AI agent implementations suffer from fundamental architectural failures that render them unsuitable for security-conscious deployment. The prevailing "probabilistic safety" model trusts the AI to follow rules through clever prompting—a model that fails consistently when agents encounter adversarial inputs, novel bypass techniques, or simply when training data gaps lead to unexpected behavior. Specific failure modes include: credentials stored in plaintext or exposed through environment variables, localhost trust assumptions that expose 1,800+ instances on Shodan, unaudited memory writes that leak sensitive data, uncontrolled network egress enabling data exfiltration, custom security implementations with exploitable gaps, and flat permission models that grant agents excessive access by default. Users who require personal AI assistance must currently choose between capable but insecure implementations and secure implementations that lack genuine agent functionality.
+The project also preserves a specific emotional and operational posture. The Owner is expected to feel cautious confidence rather than blind trust: they should be able to inspect boundaries, verify outcomes, and understand why the Agent could or could not perform an action. That owner-facing clarity is itself part of the product requirement.
 
-### Success Metrics
+The product also preserves four operating values as owner-visible commitments: helpfulness, honesty, harmlessness, and transparency. The system must stay useful for real work without hiding uncertainty, relaxing safety boundaries, or making its behavior opaque to the Owner.
 
-OpenKraken will be considered successful when the following qualitative conditions are met: the Owner can provision credentials for any integration without those credentials ever appearing in logs, filesystem, or network captures accessible to the agent; the agent cannot access any network destination or file path that the Owner has not explicitly allowed, regardless of how the agent frames its requests; every agent action—including tool invocations, network calls, and file operations—is logged with sufficient detail for complete audit and reproduction; the Orchestrator operates as a persistent background service that automatically starts on system boot, maintains continuous availability for scheduled tasks, and responds instantly to Owner interactions; and the agent demonstrates genuine helpfulness within its security constraints rather than refusing all actions that require external capability. The system must feel to the Owner like a capable assistant that happens to be unbreakable, rather than an unbreakable system that happens to be unhelpful.
+OpenKraken also preserves a stable four-part constitutional model that remains intelligible to the Owner: an immutable identity layer, a normative safety layer, a factual operating-environment layer, and owner-authored standing directives. Higher-priority constitutional layers override lower-priority ones, and later implementation details SHALL preserve that user-facing precedence model.
 
-**Cross-Platform Consistency Criteria:** The System shall deliver identical capability semantics across supported platforms with the following measurable criteria: path allowlist validation must produce identical results regardless of platform filesystem conventions; network egress policies must enforce identical domain restrictions across platforms using platform-native isolation mechanisms; credential vault operations must provide equivalent security properties with identical semantics; and CLI commands must produce functionally equivalent behavior across platforms with platform-specific formatting only where semantically required. Cross-platform consistency shall be validated through automated test suites that execute identical capability requests on both platforms and verify equivalent outcomes.
-
----
-
-## 2. Ubiquitous Language
-
-The following terms constitute the Ubiquitous Language of OpenKraken. All documentation, specification, and implementation must use these terms consistently. Synonyms listed under "Do Not Use" are prohibited unless explicitly redefined in a later section of this document.
-
+## 2. Ubiquitous Language (Glossary)
 | Term | Definition | Do Not Use |
-|------|------------|------------|
-| **Owner** | The single human who provisions, configures, and operates a OpenKraken instance. The Owner has full system access and is the only human in the loop. There is no concept of multiple users, administrators, or tenants. | User, Client, Customer, Administrator, Operator |
-| **Agent** | The AI-driven runtime subsystem operating inside the sandbox. The Agent is a managed capability provider, not a peer to the Owner. It has no awareness of platform internals, no access to credentials, and no ability to modify its own constraints. The Agent operates within a bounded filesystem environment with logical zones but no visibility into host paths or actual filesystem location. | Assistant, Bot, Worker, Subagent, Chatbot |
-| **Orchestrator** | The orchestration layer that manages agent execution lifecycle, session management, and tool dispatch. The Orchestrator mediates all communication between the Owner, external integrations, and the Agent. This component was previously referred to as "Gateway" in earlier documentation. | Controller, Server, API Layer, Gateway (deprecated) |
-| **Egress Gateway** | The network boundary component enforcing domain allowlisting for all outbound connections. Implemented as a separate process with independent lifecycle. Enforces strict allowlist-only network policy for all sandbox egress. | Firewall, Proxy, Outbound Gateway, Egress Proxy (deprecated) |
-| **Sandbox** | The isolation environment where the Agent executes. The Agent operates within a bounded filesystem with logical zones for different operation types. The Sandbox uses platform-native mechanisms to enforce resource and capability boundaries. The Agent has no awareness of the Sandbox's existence or which mechanism enforces its boundaries. | Container, VM, Isolation Layer, Jail, Bubblewrap |
-| **Credential** | Any secret value that authorizes access to external services, including API keys, OAuth tokens, passwords, and private keys. Credentials must be stored in OS-level vaults and never exposed to the Agent or written to persistent storage beyond runtime memory. | Secret, API Key, Token, Password, Auth Value |
-| **Skill** | A packaged capability that extends the Agent's functionality. Skills are authored by the Owner or sourced from trusted repositories and executed within the Sandbox with controlled permissions. | Plugin, Extension, Tool, Module, Addon |
-| **Middleware** | An extension point that intercepts, modifies, or responds to Agent operations as part of the Agent lifecycle. Middleware is strongly coupled to the Agent's execution flow, enabling context injection, policy enforcement, memory management, and observability. Middleware operates synchronously during Agent execution, transforming inputs and outputs at defined points in the call chain. | Hook, Filter, Interceptor, Handler, Callback |
-| **Checkpointer** | The persistent state store that preserves Agent state across Orchestrator restarts. Checkpointers ensure session continuity and durable execution tracking. | Session Store, State Store, Persistence Layer |
-
----
+| --- | --- | --- |
+| Owner | The single human who provisions, configures, supervises, and uses one OpenKraken instance. | User, customer, tenant, admin |
+| Agent | The managed AI subsystem that performs work for the Owner within enforced boundaries. | Bot, chatbot, worker, assistant |
+| Policy | An owner-defined rule that constrains what the Agent may access, invoke, or send. | Preference, hint, suggestion |
+| Skill | A packaged extension that gives the Agent additional bounded capabilities. | Plugin, addon, module |
+| Interaction Channel | Any surface through which the Owner and the Agent exchange requests or responses. | Endpoint, transport, adapter |
+| Connected Service | Any external system the Owner authorizes OpenKraken to interact with on their behalf. | Vendor, provider, dependency |
+| Credential | A secret value that authorizes access to a Connected Service. | Secret, token, password, key |
+| Session | A bounded working context in which conversations, actions, and state evolve together. | Thread, chat, run |
+| Memory Record | Durable context retained from prior work so future sessions can recover relevant facts. | Note, cache, scratchpad |
+| Audit Record | A durable record of an Agent action, decision, approval, refusal, or failure. | Log line, trace event, debug output |
+| Scheduled Task | A task the Owner configures to run without a live interactive conversation. | Cron job, automation script |
+| Approval Gate | An explicit owner review point that must be satisfied before a sensitive action proceeds. | Pop-up, confirmation dialog, interrupt |
 
 ## 3. Actors & Personas
+### 3.1 Primary Actor
+- **Role:** Owner
+- **Context:** A technically capable individual operating a single personal instance on hardware or hosting they control.
+- **Goals:** Delegate meaningful work to an AI agent; maintain sovereignty over credentials, data, and policy; understand what the Agent did and why; keep the system operable without enterprise overhead.
+- **Frictions:** Existing agents overreach, hide behavior, blur trust boundaries, expose secrets, or become unusably timid when safety is bolted on after the fact.
 
-### The Sovereign Owner
+The Owner is the entire user base for this version of OpenKraken. They are not looking for shared workspaces, delegated administration, team RBAC, or hosted convenience. They want one instance they fully control, can reason about, and can recover themselves. Telegram may be the first non-local interaction path, but the Owner remains the only human authority across all channels.
 
-The Owner persona represents the entire user base of OpenKraken—individuals who value both AI capability and security sovereignty. This persona has invested significant effort in understanding how traditional agent implementations fail and specifically seeks a solution that does not rely on hoping the AI will behave. The Owner is technically sophisticated enough to configure CLI tools, understand credential vault integration, and evaluate security claims, yet prioritizes outcomes over implementation details. The Owner's primary emotional state is cautious confidence: they want to trust their AI assistant but have learned from experience that trust must be architecturally enforced. The Owner values transparency into Agent behavior, deterministic guarantees over probabilistic assurances, and the ability to audit every decision after the fact. The Owner may deploy the system on personal devices or VPS infrastructure—the system provides identical capabilities regardless of deployment location, with Telegram serving as the primary interaction channel. The Owner does not expect to manage multiple users, share instances, or deploy to multi-tenant cloud infrastructure—this is explicitly not the product for those use cases.
+### 3.2 Secondary Actor
+- **Role:** Agent
+- **Context:** A managed subsystem asked to reason, use tools, interact with services, and continue work across sessions without becoming an authority over its own constraints.
+- **Goals:** Complete Owner-authorized tasks, stay within policy, explain limitations clearly, and hand control back when approval is required.
+- **Frictions:** Limited access by design, incomplete context, temporary external failures, and the need to remain useful without bypassing constraints.
 
-### The Managed Agent
+The Agent is not a co-equal user of the system. It is a bounded subsystem. It does not own credentials, cannot redefine its constitutional inputs, and does not get to decide that a constraint is optional because a task feels urgent. Its usefulness comes from operating well inside that envelope, not from being treated as a privileged shell user.
 
-The Agent is not a persona in the traditional sense but represents the behavioral envelope of the system. The Agent exists to provide genuine assistance within unbreakable constraints. The Agent's "personality" is defined by the SOUL.md document injected at runtime—helpful within boundaries, honest about limitations, and harmless by design. The Agent has no awareness of sandbox mechanisms, platform internals, or host filesystem paths, but operates within a bounded filesystem environment at /sandbox/ with awareness of logical zone structure for task execution. The Agent has no concept of credentials, no access to secrets, and no memory across sessions except through middleware-managed retrieval. The Agent is not a user of the system but a subsystem within it, optimized for precision and predictability rather than personality expression.
+### 3.3 Secondary Actor
+- **Role:** Connected Service
+- **Context:** External messaging, productivity, knowledge, or automation systems that exchange data with OpenKraken under Owner authorization.
+- **Goals:** Receive bounded requests, return predictable results, and support the Owner's workflows without becoming implicit trust anchors.
+- **Frictions:** Variable reliability, rate limits, changing interfaces, and the risk of becoming a path for exfiltration or prompt injection.
 
-### Value Principles
-
-The Agent's behavior is governed by four foundational values injected through constitutional documents at runtime. These values are not prompts the Agent "should follow" but architectural constraints that shape how the Agent interprets requests and generates responses.
-
-**Helpfulness (Primary):** The Agent shall genuinely assist the Owner within security constraints. Assistance is measured by task completion and useful information provision, not by compliance volume. The Agent may refuse requests that violate configured policies but must explain the refusal and, where possible, suggest alternative approaches within constraints. Success Indicator: The Agent completes at least 80% of non-policy-violating Owner requests within the configured capability scope, with meaningful progress communicated even when full completion requires Owner intervention.
-
-**Honesty (Mandatory):** The Agent shall be truthful in all interactions. When the Agent lacks information or certainty, it shall acknowledge this rather than fabricate responses. The Agent shall not obscure its limitations or the boundaries of its capabilities. Confidence levels shall accurately reflect actual certainty. Success Indicator: Zero confirmed hallucinations in Owner-audited sessions; when uncertain, the Agent explicitly states uncertainty rather than generating plausible-sounding but unverified information.
-
-**Harmlessness (Non-Negotiable):** The Agent shall never facilitate illegal, unethical, or dangerous activities regardless of Owner request framing. Harmlessness is enforced architecturally through policy constraints and capability boundaries, not through prompting alone. The Agent shall refuse requests that would cause harm even if technically capable of execution. Success Indicator: Zero policy violations that result in actual harm; all potentially harmful requests are blocked at the policy enforcement layer with clear explanation of why the request was declined.
-
-**Transparency (Foundational):** The Agent shall be clear about its capabilities and limitations. The Owner shall always understand what the Agent can and cannot do, why specific actions were taken, and what constraints shaped the response. Transparency extends to the observability layer, where all Agent operations are logged for Owner review. Success Indicator: Owner can audit 100% of Agent decisions through observability layer; Agent explanations enable Owners to understand decision rationale without requiring access to internal system prompts or architectural knowledge.
-
-### Constitutional Framework
-
-The constitution consists of a strict 4-part hierarchy injected at runtime: **`SOUL.md`** (immutable core identity and allegiance), **`SAFETY.md`** (normative judgment and boundaries), **`CAPABILITIES.md`** (factual environment and physical constraints), and **`DIRECTIVES.md`** (Owner-configured standing instructions). Higher-priority documents strictly override lower-priority ones.
-
-**Core Philosophies:** OpenKraken operates according to foundational philosophical principles that shape every architectural decision and implementation choice. These principles are documented in the Architecture documentation and include: Trust the Sandbox, Not the Model; Immutability by Default; Capability-Based Security; Supply Chain Integrity; Gated Egress; Middleware-Managed Memory; Single-Tenant by Design; Everything is Middleware; and Build on Proven Foundations. These philosophies represent non-negotiable constraints on implementation and should be referenced when evaluating proposed changes or extensions to the system.
-
----
+Connected Services include both first-class named channels and broader mediated integrations. Named early scope includes Telegram, Slack, Discord, email, and calendar-class services. Additional services may arrive later, but they must still behave as explicit, owner-authorized edges of the system rather than as trusted internal components.
 
 ## 4. Functional Capabilities
+The following capability inventory preserves the legacy capability identifiers so that downstream architecture, TechSpec, issue planning, and external workstreams can continue to refer to stable product commitments. Missing numeric ranges are intentional continuity gaps rather than omitted requirements.
 
-### Epic: Core Agent Runtime (P0)
+### Epic: Owner Interaction
+- **Priority:** P0
+- **Capability ID:** CAP-001
+- **Capability:** The System shall provide conversational interaction between the Owner and the Agent through both command and browser interfaces while maintaining conversation context across turns within a session.
+- **Rationale:** A personal agent runtime must be operable directly by its Owner without requiring another service or interface layer.
+- **Priority:** P0
+- **Capability ID:** CAP-080
+- **Capability:** The System shall provide a Command Line Interface for configuration management, diagnostics, automation, and direct interaction, with secure owner authentication and feature parity expectations relative to the browser interface.
+- **Rationale:** The Owner needs a scriptable and inspection-friendly surface for development, debugging, and operational control.
+- **Priority:** P0
+- **Capability ID:** CAP-081
+- **Capability:** The System shall provide a browser-based interface for conversation, system visibility, policy/configuration workflows, and dashboard-style review of system state.
+- **Rationale:** The Owner needs a persistent visual surface for monitoring and day-to-day operation, not only command-driven access.
+- **Priority:** P1
+- **Capability ID:** CAP-053
+- **Capability:** The System shall support Telegram as the primary real-time bidirectional asynchronous interaction channel for the first non-local implementation line.
+- **Rationale:** The product needs one explicit off-machine owner channel that preserves the single-owner interaction model.
+- **Priority:** P1
+- **Capability ID:** CAP-082
+- **Capability:** The command interface shall remain keyboard-navigable and screen-reader compatible.
+- **Rationale:** Accessibility is part of owner operability, not an optional polish item.
+- **Priority:** P1
+- **Capability ID:** CAP-083
+- **Capability:** The browser interface shall satisfy WCAG 2.1 AA-equivalent accessibility expectations for color contrast, keyboard navigation, focus management, and screen-reader compatibility.
+- **Rationale:** The primary browser surface must remain usable without excluding accessible interaction modes.
+- **Priority:** P1
+- **Capability ID:** CAP-050
+- **Capability:** The System shall support owner-approved asynchronous and mediated interaction paths beyond Telegram through integration adapters for services such as Slack, Discord, email, and calendar, with additional adapters allowed over time.
+- **Rationale:** Personal agents become more useful when they can reach the Owner through selected external channels without changing the single-owner model.
 
-**CAP-001:** The System shall provide conversational interaction between the Owner and the Agent through both CLI and Web UI interfaces, maintaining conversation context across turns within a session.
+### Epic: Constrained Work Execution
+- **Priority:** P0
+- **Capability ID:** CAP-002
+- **Capability:** The System shall execute terminal commands on behalf of the Agent within the bounded execution environment, with command invocations recorded before execution.
+- **Rationale:** The product must enable meaningful task completion rather than act as a read-only chat shell.
+- **Priority:** P0
+- **Capability ID:** CAP-003
+- **Capability:** The System shall perform file operations on behalf of the Agent, including read, write, list, and delete, subject to owner-defined path boundaries.
+- **Rationale:** Practical automation depends on bounded file manipulation, not only on language output.
+- **Priority:** P0
+- **Capability ID:** CAP-004
+- **Capability:** The System shall provide web and browser automation capabilities under the same bounded outbound-control model used for other external interactions.
+- **Rationale:** Useful agent work often includes information retrieval and browser-mediated workflows.
+- **Priority:** P0
+- **Capability ID:** CAP-010
+- **Capability:** The System shall isolate Agent execution so the Agent cannot access host resources, network destinations, or filesystem paths outside explicitly permitted boundaries regardless of input manipulation.
+- **Rationale:** Deterministic safety is the core product promise and must apply to every capability, not only the most dangerous ones.
+- **Priority:** P0
+- **Capability ID:** CAP-012
+- **Capability:** The System shall enforce allowlist-based outbound control, blocking all outbound connections to destinations not explicitly approved by the Owner.
+- **Rationale:** Uncontrolled egress turns otherwise bounded capabilities into exfiltration paths.
+- **Priority:** P0
+- **Capability ID:** CAP-014
+- **Capability:** The System shall validate all file paths against the Owner-defined allowlist before execution and operate the Agent within a bounded filesystem model with logical zones.
+- **Rationale:** Path control is a first-class safety boundary, not a convenience feature.
+- **Priority:** P0
+- **Capability ID:** CAP-013
+- **Capability:** The System shall inject Agent identity at runtime rather than as agent-readable files.
+- **Rationale:** Identity material must not become exfiltratable content inside the execution environment.
+- **Priority:** P0
+- **Capability ID:** CAP-015
+- **Capability:** The System shall require explicit Owner approval before high-risk actions proceed when policy calls for human review.
+- **Rationale:** Some work should be possible, but only with a deliberate owner checkpoint instead of blanket refusal or silent execution.
 
-**CAP-002:** The System shall execute terminal commands on behalf of the Agent within the Sandbox, with all command invocations logged to the Checkpointer before execution.
+### Epic: Credential-Mediated Integrations
+- **Priority:** P0
+- **Capability ID:** CAP-011
+- **Capability:** The System shall let the Owner provision credentials for Connected Services without exposing raw secret values to the Agent.
+- **Rationale:** Connected services are necessary for usefulness, but secret handling cannot depend on model obedience.
+- **Priority:** P1
+- **Capability ID:** CAP-051
+- **Capability:** The System shall let the Owner configure integrations through owner-facing interfaces while preserving credential-mediated access and explicit per-service authorization.
+- **Rationale:** The runtime should support real workflows across the services the Owner actually uses.
+- **Priority:** P1
+- **Capability ID:** CAP-052
+- **Capability:** The System shall support Telegram as a first-class integration channel, providing real-time bidirectional interaction semantics under the same owner, audit, and policy model as the local interfaces.
+- **Rationale:** Telegram is the primary first-wave non-local channel and must be treated as an explicit product capability rather than incidental adapter behavior.
+- **Priority:** P1
+- **Capability ID:** CAP-054
+- **Capability:** The System shall let the Owner review, rotate, revoke, and re-authorize service access over time.
+- **Rationale:** Long-lived personal systems need ongoing secret hygiene and reversible integration management.
 
-**CAP-003:** The System shall perform file operations on behalf of the Agent, including read, write, list, and delete operations, subject to path allowlisting enforced by the Orchestrator before Sandbox invocation.
+The Telegram capabilities are intentionally split. `CAP-053` covers Telegram as an owner interaction channel in the product experience. `CAP-052` covers Telegram as a credential-mediated external integration that must inherit the same authorization, audit, and lifecycle controls as other Connected Services.
 
-**CAP-004:** The System shall provide web automation capabilities including HTTP requests and browser interaction, with all outbound traffic routed through the Egress Gateway for policy enforcement.
+### Epic: Durable Context and Continuity
+- **Priority:** P0
+- **Capability ID:** CAP-005
+- **Capability:** The System shall preserve conversation state, intermediate reasoning, and execution context so useful work is not lost when the runtime stops or recovers.
+- **Rationale:** A personal agent runtime must behave like durable infrastructure, not a disposable chat tab.
+- **Priority:** P0
+- **Capability ID:** CAP-030
+- **Capability:** The System shall automatically extract and consolidate relevant context from prior sessions for later retrieval without requiring the Agent to self-manage long-term memory.
+- **Rationale:** The product should compound usefulness over time while keeping the Owner in control of what is retained.
+- **Priority:** P1
+- **Capability ID:** CAP-031
+- **Capability:** The System shall persist memory data in protected form so durable context cannot be trivially exfiltrated through ordinary agent-visible storage paths.
+- **Rationale:** Durable context must not become a new secret leakage channel.
+- **Priority:** P1
+- **Capability ID:** CAP-032
+- **Capability:** The System shall let the Owner inspect and selectively purge stored context, including memories and session history.
+- **Rationale:** Retention without owner control would undermine trust and make the system operationally brittle.
 
-**CAP-005:** The System shall maintain conversation state, intermediate reasoning, and execution context in the Checkpointer, ensuring continuity across Orchestrator restarts.
+### Epic: Auditability and Oversight
+- **Priority:** P0
+- **Capability ID:** CAP-060
+- **Capability:** The System shall provide comprehensive telemetry for Agent operations, including execution traces, timing information, and structured event logs.
+- **Rationale:** A deterministic runtime needs operational visibility as part of its core value.
+- **Priority:** P0
+- **Capability ID:** CAP-061
+- **Capability:** The System shall create durable Audit Records for Agent actions, tool use, approvals, failures, and policy decisions.
+- **Rationale:** The Owner must be able to reconstruct what happened without relying on the Agent's description after the fact.
+- **Priority:** P0
+- **Capability ID:** CAP-062
+- **Capability:** The System shall expose operational evidence both through local reviewable storage and through exportable formats for external monitoring chosen by the Owner.
+- **Rationale:** Local review remains primary, but owners may still want integration with broader observability tooling.
+- **Priority:** P0
+- **Capability ID:** CAP-064
+- **Capability:** The System shall present health, recent activity, and error state in a way the Owner can review locally.
+- **Rationale:** A security-first runtime that cannot be observed or debugged is not operationally trustworthy.
+- **Priority:** P1
+- **Capability ID:** CAP-063
+- **Capability:** The System shall retry transient failures in model and external-service interactions using bounded retry behavior while recording those retries for owner review.
+- **Rationale:** Reliability should improve without turning failures invisible or unauditable.
 
-**CAP-006:** The System shall operate as a persistent background service orchestrated by the platform layer, enabling scheduled task execution, webhook handling for Telegram integration, and real-time WebSocket communication for the Web UI. The Orchestrator maintains continuous operation to support cron-based scheduling and instant response to Owner interactions.
+### Epic: Skills and Extensibility
+- **Priority:** P1
+- **Capability ID:** CAP-020
+- **Capability:** The System shall let the Owner install or author Skills that extend the Agent's capabilities under explicit trust boundaries.
+- **Rationale:** Personal workflows differ; extensibility is necessary, but it must not bypass the product's safety model.
+- **Priority:** P1
+- **Capability ID:** CAP-021
+- **Capability:** The System shall ingest Skill dependencies from reviewable and reproducible dependency declarations rather than relying on unconstrained runtime dependency resolution.
+- **Rationale:** Skills must remain reproducible and reviewable as packages, not ad hoc code drops.
+- **Priority:** P1
+- **Capability ID:** CAP-022
+- **Capability:** The System shall prevent Skills from self-installing arbitrary runtime dependencies during use.
+- **Rationale:** Supply-chain integrity is incompatible with arbitrary live package installation.
+- **Priority:** P1
+- **Capability ID:** CAP-023
+- **Capability:** The System shall make approved Skills available on demand without requiring system mutation at the moment of use.
+- **Rationale:** The Owner should gain extensibility without turning the host into a mutable tool staging area.
+- **Priority:** P1
+- **Capability ID:** CAP-024
+- **Capability:** The System shall enforce a tiered trust model for Skills, classifying them as `System`, `Owner`, or `Community` Skills and applying different review and execution constraints to each class.
+- **Rationale:** Not every extension deserves the same level of trust, and downstream policy, UI, persistence, and adjacent skill workstreams need stable tier names rather than generic trust language.
+- **Priority:** P2
+- **Capability ID:** CAP-025
+- **Capability:** The System shall help the Owner understand what a Skill can do before it becomes active.
+- **Rationale:** Extension safety depends on informed activation, not blind installation.
 
-### Epic: Security Enforcement (P0)
+### Epic: Scheduled and Background Work
+- **Priority:** P1
+- **Capability ID:** CAP-040
+- **Capability:** The System shall let the Owner schedule recurring or delayed tasks that run without a live conversation.
+- **Rationale:** A useful personal agent should continue working when the Owner is away, not only in an interactive session.
+- **Priority:** P1
+- **Capability ID:** CAP-041
+- **Capability:** The System shall trigger scheduled work through the normal execution path with the same context and boundary model used for interactive work.
+- **Rationale:** Scheduled work must not become a side door around the core safety model.
+- **Priority:** P1
+- **Capability ID:** CAP-042
+- **Capability:** The System shall retain the result, status, and audit trail of each Scheduled Task for later review.
+- **Rationale:** Background automation only builds trust when its outcomes are visible and reconstructable.
 
-**CAP-010:** The System shall isolate Agent execution within an isolation environment, preventing the Agent from accessing host resources, network destinations, or filesystem paths outside explicitly permitted boundaries regardless of input manipulation.
-
-**CAP-011:** The System shall store all credentials in platform-native secure credential stores, never exposing credentials to the Agent or persisting them in configuration files or environment variables.
-
-**CAP-012:** The System shall enforce network egress through an allowlisting proxy, blocking all outbound connections to domains not explicitly approved by the Owner.
-
-**CAP-013:** The System shall inject Agent identity directly at runtime, never materializing identity documents as files accessible to the Agent.
-
-**CAP-014:** The System shall validate all file paths accessed by the Agent against an Owner-defined allowlist before execution, rejecting any path outside permitted zones. The Agent shall operate within a bounded filesystem environment with logical zones for different operation types, with no visibility into host paths or actual filesystem location.
-
-### Epic: Skill System (P0)
-
-**CAP-020:** The System shall allow the Owner to install Skills that extend Agent capabilities, with each Skill executing within its own permission boundaries.
-
-**CAP-021:** The System shall resolve Skill dependencies from locked specifications, converting standard lockfiles into isolated runtime environments during ingestion.
-
-**CAP-022:** The System shall prevent Skills from invoking native package managers at runtime, enforcing supply chain integrity through immutable, hash-verified dependency resolution.
-
-**CAP-023:** The System shall execute Skills on-demand without requiring pre-installation or system modification, with packages becoming available transparently when requested.
-
-**CAP-024:** The System shall enforce a Tiered Trust Model for Skills, categorizing Skills as System Skills (pre-approved capabilities), Owner Skills (Owner-uploaded with configurable permissions), or Community Skills (sourced from repositories with strict isolation). Skills in lower trust tiers shall be subject to stricter capability boundaries than those in higher tiers.
-
-### Epic: Memory Management (P0)
-
-**CAP-030:** The System shall automatically extract and consolidate relevant context from previous sessions for Agent retrieval, without requiring the Agent to initiate or manage memory operations.
-
-**CAP-031:** The System shall persist memory data in encrypted form within the Checkpointer, preventing memory exfiltration through filesystem access.
-
-**CAP-032:** The System shall provide the Owner with visibility into stored memories and the ability to purge specific memories, maintaining Owner sovereignty over Agent knowledge.
-
-### Epic: Scheduling (P1)
-
-**CAP-040:** The System shall support time-based task scheduling, executing Agent workflows at Owner-configured intervals without requiring interactive sessions.
-
-**CAP-041:** The System shall trigger scheduled tasks through host system timers, invoking the Agent through the normal execution path with full context injection.
-
-**CAP-042:** The System shall log scheduled task execution results to the Checkpointer, providing complete audit trail for Owner review.
-
-### Epic: Integration Framework (P1)
-
-**CAP-050:** The System shall provide integration adapters for the following first-class services: Slack for team communication and workflow automation; Discord for community interaction; email for message retrieval and sending; calendar for scheduling and event management; and Telegram for real-time bidirectional interaction as defined in CAP-052. Additional integrations may be configured by the Owner for services not listed here.
-
-**CAP-051:** The System shall expose CLI and Web UI interfaces for Owner configuration of integrations, with credential provisioning through vault integration.
-
-**CAP-052:** The System shall support Telegram as a first-class integration channel, providing real-time bidirectional messaging capabilities with appropriate security validation.
-
-### Epic: Observability (P1)
-
-**CAP-060:** The System shall provide comprehensive telemetry for all Agent operations, including execution traces, timing measurements, and structured event logs for debugging and audit purposes.
-
-**CAP-061:** The System shall provide structured logging of all Agent actions with sufficient detail for complete reproduction and security audit.
-
-**CAP-062:** The System shall expose observability data through both local storage for direct Owner access and standard export formats for integration with external monitoring systems. The Owner shall retain direct access to all observability data without dependency on external services.
-
-**CAP-063:** The System shall implement automatic retry with exponential backoff for transient failures in LLM calls and external API tool invocations. Permanent failures shall be logged with detailed error information and the Owner notified through configured channels. All retry operations shall be logged for audit purposes.
-
-### Epic: Owner Interfaces (P0)
-
-**CAP-080:** The System shall provide a Command Line Interface (CLI) for Owner interaction with feature parity to the Web UI. The CLI supports the following capability categories: configuration management (setting and viewing policies, credential provisioning, and integration setup); debugging and diagnostics (session inspection, observability data retrieval, and system health verification); and automation (scriptable interactions for workflow integration and scheduled task management). The CLI shall use token-based authentication where Owners authenticate once to receive time-limited tokens for subsequent operations. Both CLI and Web UI provide equal access to system capabilities, enabling Owners to choose their preferred interaction mode.
-
-**CAP-081:** The System shall provide a Web User Interface (Web UI) for Owner interaction with feature parity to the CLI. The Web UI features real-time conversation display with full observability integration, configuration panels for policy management and integration setup, and dashboard views for system status, scheduled tasks, and recent activity. Both CLI and Web UI provide equal access to system capabilities, enabling Owners to choose their preferred interaction mode.
-
-**CAP-082:** The System shall ensure the CLI interface is fully keyboard-navigable and compatible with screen readers for accessibility, with all functionality accessible without requiring mouse interaction and clear focus indicators for navigation state.
-
-**CAP-083:** The System shall ensure the Web UI satisfies WCAG 2.1 AA accessibility compliance requirements including sufficient color contrast ratios, keyboard navigation support, screen reader compatibility for all interactive elements, and focus management for dynamic content updates.
-
-### Epic: Cross-Platform Consistency (P2)
-
-**CAP-070:** The System shall provide identical Agent capability semantics across Linux and macOS platforms, with platform differences abstracted by the Orchestrator.
-
-**CAP-071:** The System shall normalize all filesystem paths to canonical format before Sandbox configuration, ensuring consistent behavior regardless of platform path conventions.
-
----
+### Epic: Deployment Portability
+- **Priority:** P1
+- **Capability ID:** CAP-006
+- **Capability:** The System shall operate as a persistent background service so scheduled work, external callbacks, and owner interactions do not depend on manually starting the runtime for each use.
+- **Rationale:** This is infrastructure, not a disposable one-shot script.
+- **Priority:** P1
+- **Capability ID:** CAP-070
+- **Capability:** The System shall support the single-owner deployment model across supported host environments with equivalent product semantics.
+- **Rationale:** The product promise should not materially change based on the Owner's operating environment.
+- **Priority:** P2
+- **Capability ID:** CAP-071
+- **Capability:** The System shall normalize paths and equivalent capability semantics across supported host environments so platform differences do not change what the product means.
+- **Rationale:** Cross-platform support is a product promise, not just an implementation note.
+- **Priority:** P2
+- **Capability ID:** CAP-072
+- **Capability:** The System shall make installation, upgrade, backup, and recovery manageable by one technically capable owner.
+- **Rationale:** Operational complexity directly erodes the value of a personal runtime.
 
 ## 5. Non-Functional Constraints
+- **Performance:** Interactive operations should feel immediate relative to model and external-service latency; routine diagnostics and configuration reads should return promptly; scheduled work should begin close to its configured time under normal conditions.
+- **Reliability:** Durable state must survive routine restarts and recoverable failures; degradation in one Connected Service must not take down the entire runtime; background tasks and interactive sessions must leave reviewable outcomes even on failure.
+- **Security & Privacy:** Safety boundaries must default to deny rather than assume trust; credentials must remain inaccessible to the Agent as raw values; outbound actions must be attributable and reviewable; the product must not depend on prompt obedience as its primary safety control.
+- **Operability:** A single technically capable Owner must be able to install, configure, observe, back up, and recover the system without enterprise-only tooling or multi-person operations.
+- **Domain-specific Constraints:** The first version remains single-owner and single-instance; command and browser interfaces must be accessible by keyboard and screen reader; the runtime must remain useful even when some external services are temporarily unavailable.
+- **Prohibited Patterns:** Prompt-based safety as the primary control model, credentials in agent-accessible operating context, implicit localhost trust, agent-modifiable identity or governing constraints, flat permission models, unaudited durable memory writes, uncontrolled outbound access, runtime self-installation of new capabilities, and mutable agent-visible constitutional identity are all explicitly disallowed.
 
-### Security Standards
-
-OpenKraken must satisfy the following security constraints: all credentials must be stored in platform-native secure vaults in production; environment variable fallback is permitted for development mode only when explicitly configured; the Agent must be unable to access any resource—network, filesystem, or memory—outside explicitly configured allowlists regardless of input framing; identity injection must occur at runtime with no file-based identity materialization; and the system must operate on a Zero Trust model with no implicit trust for any input, including Owner-provided configuration files or conversation content. The system must satisfy GDPR data sovereignty requirements for European Owners and align with SOC 2 principles for auditability and change control, though full SOC 2 certification is not required for this version.
-
-### Availability and Reliability
-
-The Agent must operate as a persistent background service that maintains continuous availability for scheduled tasks and incoming interactions; the Orchestrator shall restart automatically on system boot and recover gracefully from failures; scheduled tasks must execute within one minute of configured time under normal system conditions; the Checkpointer must support concurrent access for resilience; and the system must provide graceful degradation for external integration failures without cascading to Agent unavailability.
-
-### Performance Constraints
-
-Agent response latency must be dominated by model inference time, not system overhead; Sandbox invocation must complete within 100ms for standard tool calls; Checkpointer writes must not block Agent execution; and network gateway throughput must match or exceed underlying network capacity.
-
-### Accessibility Compliance
-
-The CLI interface must be navigable via standard keyboard shortcuts and screen reader compatible; the Web UI must satisfy WCAG 2.1 AA contrast and keyboard navigation requirements; and all observability output must be parseable by automated accessibility tools.
-
----
+The prohibition list is normative because these are the exact failure classes the product exists to avoid. OpenKraken is not allowed to "temporarily" violate them for convenience. If a future capability appears to require any of these patterns, that is evidence that the capability needs to be redesigned or re-scoped.
 
 ## 6. Boundary Analysis
-
 ### In Scope
-
-OpenKraken is scoped to deliver a deterministic, security-first personal AI agent runtime for single-tenant deployment on Linux and macOS. The core value proposition encompasses: architectural safety enforcement that makes rule violations architecturally infeasible regardless of prompt sophistication; credential isolation through OS-level vault integration with zero exposure to the Agent; capability-based security through strict allowlisting for filesystem access and network egress; persistent memory management that preserves context while maintaining Owner control; complete observability for debugging, audit, and optimization purposes; and flexible deployment to personal devices or VPS infrastructure with identical capabilities. The system serves one Owner per instance with full system access—no user isolation, no shared hosting, no multi-tenant scenarios are in scope for this version.
+- A single-owner personal AI agent runtime
+- Deterministic control over what the Agent may access, invoke, or transmit
+- Local command and browser-based interfaces for operation and oversight
+- Owner-approved external interaction channels and Connected Services, including Telegram as the first non-local channel and Slack, Discord, email, and calendar-class services as named mediated integration scope
+- Durable sessions, Memory Records, Scheduled Tasks, and Audit Records
+- Skill-based extensibility with trust-aware review and activation controls
 
 ### Out of Scope
+- Multi-user collaboration, shared instances, or tenant isolation
+- A hosted multi-tenant SaaS offering
+- Agent self-modification of its governing rules or safety boundaries
+- Unrestricted file access, unrestricted outbound access, or implicit trust in any channel
+- Direct WhatsApp integration without a mediated bridge
+- Voice-first experiences, consumer social features, or native mobile applications
+- A general-purpose container, cluster, or infrastructure orchestration platform
+- An open marketplace where unreviewed extensions execute with broad trust by default
 
-The following capabilities, while potentially valuable, are explicitly excluded from this version to maintain focus and security posture. Direct WhatsApp integration is out of scope; Owners requiring WhatsApp must use a protocol bridge. Native mobile notifications are out of scope; the system provides browser-based and Telegram notifications only. Voice interfaces are out of scope; the system provides text-based interaction exclusively. Multi-user support is out of scope; the system serves one Owner and cannot be shared across users. Multi-tenant cloud deployment is out of scope; the system targets single-tenant deployment on personal devices or VPS infrastructure exclusively.
+Direct WhatsApp support remains excluded because it would require a distinct mediation bridge and trust story not yet accepted into the product scope. Additional channels are allowed only when they fit the same owner-authorized, auditable, and bounded interaction model.
 
-### Anti-Patterns to Avoid
-
-OpenKraken explicitly rejects several patterns common in agent frameworks. The system does not use prompt-based safety that relies on the Agent following instructions correctly. The system does not store credentials in environment variables, configuration files, or any location accessible to the Agent. The system does not trust localhost network connections as inherently safe. The system does not allow the Agent to modify its own constraints, configuration, or identity at runtime. The system does not permit flat permission models that grant excessive access by default. The system does not expose plaintext credentials in logs, network captures, or filesystem. The system does not allow unaudited memory writes that could leak sensitive data. The system does not enable uncontrolled network egress from the Agent. The system does not invoke native package managers at runtime that could compromise supply chain integrity. The system does not materialize Agent identity documents as files within the Sandbox where they could be exfiltrated.
-
----
-
-## 7. Conceptual Diagrams
-
-### Diagram A: System Context (C4 Level 1)
-
-> **Note:** The Checkpointer provides internal storage for all state and observability data. The Owner can query this data directly or export it to external observability backends. The relationship to Observability Backend shown above represents the export path, not the primary storage.
-
+## 7. Conceptual Diagrams (Mermaid)
+### 7.1 System Context
 ```mermaid
 C4Context
-  title System Context Diagram for OpenKraken
+    title System Context
+    Person(owner, "Owner", "Single human who configures and supervises the runtime")
+    System(openkraken, "OpenKraken", "Owner-operated personal agent runtime")
+    System_Ext(model_services, "Model Services", "Provide language reasoning")
+    System_Ext(connected_services, "Connected Services", "Messaging, productivity, knowledge, and automation systems approved by the Owner")
+    System_Ext(host_services, "Host Services", "Scheduling, secret storage, and local platform capabilities")
 
-  Person_Ext(Owner, "Owner", "The single human who provisions, configures, and operates a OpenKraken instance")
-
-  System_Boundary(openkraken_boundary, "OpenKraken Runtime") {
-    System(orchestrator, "Orchestrator", "Orchestration layer that injects identity, enforces policies, manages state, and handles credential isolation")
-    System(sandbox, "Sandbox", "Isolation environment where the Agent executes with bounded capabilities")
-    System(agent, "Agent", "AI-driven managed subsystem with bounded filesystem awareness")
-    System(middleware, "Middleware", "Extension points for Agent lifecycle management")
-    System(checkpointer, "Checkpointer", "Persistent state store for session continuity and observability")
-    System(vault, "Credential Vault", "Platform-native secure credential storage")
- System(cli, "CLI", "Command-line interface for Owner interaction")
- System(web_ui, "Web UI", "Web-based interface for Owner interaction")
-    System(egress_gateway, "Egress Gateway", "Network intermediary enforcing domain allowlisting")
-  }
-
-  System_Ext(telegram, "Telegram", "First-class integration channel for Owner interaction")
-  System_Ext(integration_services, "Integration Services", "External services for Slack, Discord, email, calendar")
-  System_Ext(llm_provider, "LLM Provider", "External language model for Agent intelligence")
-  System_Ext(observability_backend, "Observability Backend", "External monitoring system for telemetry export (Owner-configured)")
-
-  Rel(Owner, cli, "Configures, debugs, automates via")
-  Rel(Owner, web_ui, "Interacts, monitors via")
-  Rel(Owner, telegram, "Interacts via")
-  Rel(Owner, observability_backend, "Connects as telemetry consumer via")
-
-  Rel(cli, orchestrator, "Sends commands to")
-  Rel(web_ui, orchestrator, "Sends commands to")
-  Rel(telegram, orchestrator, "Sends messages to")
-
-  Rel(orchestrator, vault, "Stores/retrieves credentials via")
-  Rel(orchestrator, egress_gateway, "Routes Agent network traffic through")
-  Rel(orchestrator, sandbox, "Invokes Agent execution in")
-  Rel(orchestrator, checkpointer, "Persists state and observability to")
-  Rel(orchestrator, middleware, "Chains extensions via")
-
-  Rel(sandbox, agent, "Hosts")
-  Rel(agent, llm_provider, "Calls for intelligence via")
-
-  Rel(orchestrator, integration_services, "Integrates via standard protocols")
-  Rel(checkpointer, observability_backend, "Exports telemetry to")
+    Rel(owner, openkraken, "Configures, supervises, converses with")
+    Rel(openkraken, model_services, "Requests reasoning from")
+    Rel(openkraken, connected_services, "Interacts with under Owner policy")
+    Rel(openkraken, host_services, "Uses for local operation and continuity")
 ```
-
-### Diagram B: Domain Model (Class Diagram)
-
+### 7.2 Domain Model
 ```mermaid
 classDiagram
-  direction BT
+    class Owner {
+      +definePolicy()
+      +approveAction()
+      +reviewAudit()
+      +manageCredentials()
+      +scheduleTask()
+    }
 
-  class Owner {
-    +id
-    +name
-    +configureCredential(service, credential)
-    +uploadSkill(skill)
-    +definePolicy(policy)
-    +auditSession(session)
-  }
+    class Agent {
+      +performTask()
+      +requestCapability()
+      +explainOutcome()
+    }
 
-  class Orchestrator {
-    +injectIdentity()
-    +enforcePolicy()
-    +routeToSandbox()
-    +persistState()
-    +emitTelemetry()
-  }
+    class Policy
+    class Skill
+    class Credential
+    class ConnectedService
+    class InteractionChannel
+    class Session
+    class MemoryRecord
+    class AuditRecord
+    class ScheduledTask
+    class ApprovalGate
 
-  class Agent {
-    +executeTask(task)
-    +invokeTool(tool)
-    +retrieveContext()
-    +Reason()
-  }
-
-  class Sandbox {
-    +constrainResources()
-    +enforceCapabilities()
-    +logOperations()
-  }
-
-  class CredentialVault {
-    +store(service, secret)
-    +retrieve(service)
-    +rotate(service)
-  }
-
-  class EgressGateway {
-    +allowlistDomain(domain)
-    +blockDestination(destination)
-    +logAccess(record)
-  }
-
-  class Checkpointer {
-    +saveSession(state)
-    +restoreSession(sessionId)
-    +logMemory(memory)
-    +retrieveMemories(query)
-    +storeObservability(event)
-    +queryObservability(filter)
-  }
-
-  class Middleware {
-    <<extension point>>
-    +interceptAgentCall(input, output)
-    +interceptToolExecution(input, output)
-    +interceptMemoryRetrieval(query, documents)
-    +interceptWorkflowExecution(input, output)
-  }
-
-  class Skill {
-    +id
-    +name
-    +execute(inputs)
-    +getCapabilities()
-  }
-
-  class Policy {
-    +fileAllowlist
-    +networkAllowlist
-    +capabilityBounds
-  }
-
-  class SOUL {
-    +identity
-    +values
-    +behavioralGuidelines
-  }
-
-  class ObservabilityBackend {
-    <<external system>>
-    +receiveTelemetry(data)
-    +storeMetrics(metrics)
-    +queryEvents(filter)
-  }
-
-  class Integration {
-    <<interface>>
-    +connect()
-    +sendMessage(message)
-    +receiveEvents()
-  }
-
-  Owner "1" --> "1" Orchestrator : configures
-  Owner "1" --> "1" CredentialVault : provisions credentials via
-  Owner "1" --> "*" Skill : uploads
-  Orchestrator "1" --> "1" Agent : invokes with context
-  Orchestrator "1" --> "*" Middleware : chains extensions for
-  Agent "1" --> "*" Middleware : executes through lifecycle
-  Orchestrator "1" --> "1" Checkpointer : persists state and observability to
-  Orchestrator "1" --> "1" EgressGateway : routes through
-  Orchestrator "1" --> "1" Sandbox : invokes
-  Agent "1" --> "*" Tool : invokes
-  Sandbox "1" --> "1" Agent : hosts
-  Checkpointer "1" --> "*" Middleware : stores events from
-  Checkpointer "1" --> "1" ObservabilityBackend : exports telemetry to
-  EgressGateway "1" --> "*" Integration : proxies to
-  Skill "*" --> "1" Orchestrator : registered with
-  Policy "1" --> "1" Orchestrator : enforces
-  SOUL "1" --> "1" Orchestrator : injected by
+    Owner "1" --> "*" Policy : defines
+    Owner "1" --> "*" Credential : provisions
+    Owner "1" --> "*" Skill : activates
+    Owner "1" --> "*" InteractionChannel : uses
+    Owner "1" --> "*" ScheduledTask : schedules
+    Agent --> "*" Policy : constrained by
+    Agent --> "*" Skill : uses
+    Agent --> "*" ConnectedService : interacts with
+    Agent --> "*" Session : works within
+    Session --> "*" MemoryRecord : yields
+    Session --> "*" AuditRecord : yields
+    ScheduledTask --> "*" AuditRecord : produces
+    ApprovalGate --> "*" AuditRecord : records
+    ConnectedService --> "*" Credential : authorized by
+    InteractionChannel --> Session : carries
 ```
 
----
-
-## Appendix: User Context
-
-The Owner has indicated interest in the following technologies for implementation. These preferences are noted for reference during architectural design but do not appear in the technology-agnostic requirements above.
-
-- **Orchestrator Runtime:** Bun (not Node.js)
-- **Agent Orchestration:** LangChain.js v1 with LangGraph.js
-- **Protocol Integration:** Model Context Protocol (MCP) via @langchain/mcp-adapters
-- **State Persistence:** SQLite with WAL mode
-- **Sandbox Isolation:** Platform-native isolation using OS-level mechanisms (specific implementation technologies are documented separately and are considered implementation details)
-- **Observability:** Custom OpenTelemetry implementation with OTLP and SQLite export options (LangSmith not supported)
-
-These technology choices represent the Owner's current preference based on investigation and evaluation. The architecture must remain flexible to accommodate alternative implementations where the Owner determines ecosystem maturity or compatibility warrants change.
+## Appendix: Operator Preferences
+- Continue the four-document planning pipeline and use the latest framework structure for all follow-on documentation.
+- Preserve the single-tenant, owner-operated product stance as a non-negotiable direction.
+- Existing project preferences to honor in later layers, without treating them as product requirements: Bun for the orchestration runtime, OS-native isolation, SQLite-based durable state, LangChain/LangGraph-style agent orchestration, OpenTelemetry-compatible observability, and Nix-based packaging/deployment.
+- Existing repo direction suggests the first owner-facing surfaces should remain a command-line interface and a browser-based interface, with additional external channels added under explicit owner control.
