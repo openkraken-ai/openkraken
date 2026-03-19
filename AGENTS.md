@@ -26,7 +26,7 @@ These commitments have been made after investigation and debate. They would requ
 | Commitment | Decision |
 |------------|----------|
 | Isolation | Anthropic Sandbox Runtime (bubblewrap on Linux, sandbox-exec on macOS) |
-| Orchestrator Runtime | Bun (not Node.js) |
+| Runtime Coordinator / Orchestrator Runtime | Bun (not Node.js) |
 | Agent Orchestration | LangChain.js v1 and LangGraph.js with MCP adapters |
 | Persistent State | SQLite with WAL mode |
 | Observability | Langfuse v4 (OpenTelemetry) |
@@ -72,7 +72,7 @@ For the complete list of 18 Core Philosophies, see **docs/Architecture.md Sectio
 
 **Platform Abstraction**
 
-The Orchestrator normalizes all paths to canonical format before sandbox configuration. If adding platform-specific behavior, consider whether it belongs in the Orchestrator (platform abstraction layer) or platform-specific configuration files.
+The Runtime Coordinator, implemented today in the `packages/orchestrator` package, normalizes all paths to canonical format before sandbox configuration. If adding platform-specific behavior, consider whether it belongs in the Runtime Coordinator / orchestrator layer (platform abstraction) or platform-specific configuration files.
 
 **CredentialVault**
 
@@ -92,7 +92,7 @@ The flake integrates devenv via `nix/shell.nix` to provide `nix develop` as an a
 | 0 | Host — The host system (Linux or macOS) |
 | 1 | Sandbox — Anthropic Sandbox Runtime (Agent runs inside) |
 | 2 | Middleware Stack — LangChain middleware extensions |
-| 3 | Orchestrator — Bun/TypeScript orchestration layer |
+| 3 | Runtime Coordinator / Orchestrator — Bun/TypeScript orchestration layer |
 
 ### Terminology Evolution: Gateway vs Orchestrator
 
@@ -100,10 +100,10 @@ Following v0.13.0, terminology was updated:
 
 | Historical Name | Current Name | Context |
 |-----------------|--------------|---------|
-| Gateway | Orchestrator | Bun/TypeScript runtime managing LangChain/LangGraph agents |
+| Gateway | Runtime Coordinator / Orchestrator | Bun/TypeScript runtime managing LangChain/LangGraph agents |
 | Gateway | Egress Gateway | Go binary enforcing domain allowlisting |
 
-**Migration Note:** Pre-v0.13.0 documentation may use "Gateway" ambiguously. Ask for clarification if unsure.
+**Migration Note:** Pre-v0.13.0 documentation may use "Gateway" ambiguously. Current architecture docs prefer `Runtime Coordinator` for the logical role, while the repo and package naming still use `orchestrator` for the concrete runtime package. Ask for clarification if unsure.
 
 ## Common Development Commands
 

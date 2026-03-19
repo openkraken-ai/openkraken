@@ -1,6 +1,7 @@
 # Product Requirements Document
 
 ## 0. Version History & Changelog
+- v2.2.2 - Clarified the distinct Telegram capability scopes so owner interaction and service-integration planning do not collapse into one ambiguous requirement.
 - v2.2.1 - Restored the hard release-quality success thresholds so QA and acceptance decisions keep the original OpenKraken-specific behavioral bars.
 - v2.2.0 - Re-expanded the PRD inside the framework structure so the old success criteria, persona posture, capability continuity, named integration scope, and anti-pattern commitments are preserved rather than merely summarized.
 - v2.1.0 - Restored the missing success criteria, value/constitution model, explicit capability IDs, named integration scope, and anti-pattern commitments within the current framework structure.
@@ -153,6 +154,8 @@ The following capability inventory preserves the legacy capability identifiers s
 - **Capability ID:** CAP-054
 - **Capability:** The System shall let the Owner review, rotate, revoke, and re-authorize service access over time.
 - **Rationale:** Long-lived personal systems need ongoing secret hygiene and reversible integration management.
+
+The Telegram capabilities are intentionally split. `CAP-053` covers Telegram as an owner interaction channel in the product experience. `CAP-052` covers Telegram as a credential-mediated external integration that must inherit the same authorization, audit, and lifecycle controls as other Connected Services.
 
 ### Epic: Durable Context and Continuity
 - **Priority:** P0

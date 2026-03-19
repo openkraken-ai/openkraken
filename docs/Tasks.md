@@ -1,6 +1,7 @@
 # Engineering Execution Plan
 
 ## 0. Version History & Changelog
+- v2.1.4 - Corrected the Mermaid dependency graph and executive-summary critical path so they match the ticket dependency definitions and PRD-driven approval flow.
 - v2.1.3 - Restored explicit deferred implementation targets for Vercel Agent Browser and LangChain's `MultiServerMCPClient` so adjacent integration units are not normalized away in planning.
 - v2.1.2 - Corrected the active critical-path summary so it reflects the actual ticket dependency graph instead of skipping required middleware and surface prerequisites.
 - v2.1.1 - Restored the exact constitution-prompt assembly contract and the skill-security analysis gate in the Epic 2 ticket acceptance criteria.
@@ -8,7 +9,7 @@
 
 ## 1. Executive Summary & Active Critical Path
 - **Total Active Story Points:** 69
-- **Critical Path:** `CORE-B001 -> {CORE-B002, CORE-B003, CORE-B004, CORE-B005} -> CORE-B006 -> CORE-B007 -> CORE-B008 -> CORE-B009 -> {CORE-B010, CORE-B011, CORE-B012} -> CORE-B013 -> CORE-B014 -> {CORE-B015, CORE-B016} -> CORE-B017`, with `CORE-B018` and `CORE-B019` as additional required predecessors for `CORE-B017`.
+- **Critical Path:** `CORE-B001 -> CORE-B005 -> CORE-B006 -> CORE-B007 -> CORE-B008 -> CORE-B009 -> CORE-B010 -> {CORE-B011, CORE-B012} -> CORE-B013 -> {CORE-B015, CORE-B016} -> CORE-B017`, with `CORE-B018` and `CORE-B019` as additional required predecessors for `CORE-B017`. `CORE-B014` remains required for the CLI and Web UI work, but it is not the binding path for Epic 2 completion.
 - **Planning Assumptions:** Epic 1 infrastructure remains completed brownfield baseline and is not replanned here. Legacy GitHub issue continuity is preserved through explicit `Legacy Issue ID` mapping for every open Epic 2 issue. Telegram remains the primary non-local interaction channel for Epic 2. User-confirmed upstream continuity retained in this plan is: RMM middleware as a real Epic 2 commitment, multi-provider readiness through LangChain connectors for Anthropic, OpenAI, and Google, and full deferred ticket preservation for `CORE-018` through `CORE-023`. Risk-heavy adjacent integrations remain sequenced as issue-backed tickets rather than adding non-issue placeholder spikes.
 
 ## 2. Project Phasing & Iteration Strategy
@@ -97,10 +98,10 @@ flowchart LR
     B003 --> B008
     B004 --> B008
     B005 --> B006
-    B005 --> B007
     B006 --> B007
     B007 --> B008
     B008 --> B009
+    B009 --> B010
     B008 --> B010
     B009 --> B011
     B009 --> B012
@@ -112,6 +113,8 @@ flowchart LR
     B010 --> B019
     B011 --> B013
     B012 --> B013
+    B013 --> B019
+    B004 --> B019
     B013 --> B015
     B013 --> B016
     B014 --> B015
@@ -422,6 +425,7 @@ And summarization behavior and token savings are observable for debugging and au
 - **Type:** Security
 - **Effort:** 5
 - **Dependencies:** `CORE-B010`, `CORE-B013`, `CORE-B004`
+- **PRD Capability Mapping:** `CAP-015`
 - **Description:** Implement the approval workflow that suspends execution for owner review, persists the interruption safely, and resumes or rejects based on the resulting decision.
 - **Acceptance Criteria (Gherkin):**
 ```gherkin
