@@ -1,6 +1,7 @@
 # Technical Specification
 
 ## 0. Version History & Changelog
+- v2.10.5 - Replaced the old macOS Seatbelt-based execution assumption with a host-managed Linux guest contract, restored canonical `/sandbox/*` execution paths, and clarified that host orchestration, credentials, SQLite, and egress control remain outside the guest.
 - v2.10.4 - Restored the named external toolsets and integration units that remain distinct technical commitments: Vercel Skills CLI, Vercel Agent Browser, Anthropic Sandbox Runtime, BunSqliteSaver, MultiServerMCPClient, substrate isolation names, and the Vertex AI Memory Bank reference lineage.
 - v2.10.3 - Clarified the runtime-to-gateway signing contract and normalized skill-tier vocabulary so the canonical names remain stable across product, technical, and planning layers.
 - v2.10.2 - Restored the missing physical-layer contracts for proxy and audit schema fidelity, Telegram webhook OpenAPI, granular HITL and alerting config, service hardening, browser daemon isolation, hard resource ceilings, and context-window token accounting.
@@ -8,10 +9,10 @@
 
 ## 1. Stack Specification (Bill of Materials)
 - **Primary Language / Runtime:** Bun `1.3.10` for the Runtime Coordinator and CLI; TypeScript `5.9.3`; Go `1.26.1` for the Egress Gateway. Brownfield note: the repo currently compiles the gateway with `go 1.25.6`, so the Go toolchain upgrade is a follow-up delta rather than already-landed reality.
-- **Primary Frameworks / Libraries:** `langchain@1.2.34`, `@langchain/core@1.1.34`, `@langchain/anthropic@1.3.25`, `@langchain/langgraph@1.2.3`, `@langchain/mcp-adapters@1.1.3`, `@anthropic-ai/sandbox-runtime@0.0.42`, `grammy@1.41.1`, `zod@4.3.6`, `age-encryption@0.3.0`, `@opentui/core@0.1.88`, `@sveltejs/kit@2.55.0`, `svelte@5.54.0`, `vite@8.0.0`.
+- **Primary Frameworks / Libraries:** `langchain@1.2.34`, `@langchain/core@1.1.34`, `@langchain/anthropic@1.3.25`, `@langchain/langgraph@1.2.3`, `@langchain/mcp-adapters@1.1.3`, `grammy@1.41.1`, `zod@4.3.6`, `age-encryption@0.3.0`, `@opentui/core@0.1.88`, `@sveltejs/kit@2.55.0`, `svelte@5.54.0`, `vite@8.0.0`.
 - **Adjunct Integration Packages:** `@skroyc/rmm-middleware@0.1.0` remains a required memory-middleware dependency for the current memory contract, but publication is pending and the current source of truth is the local package repository rather than the public registry. `@skroyc/bun-sqlite-checkpointer` remains the canonical Bun-native LangGraph checkpointer integration, with `BunSqliteSaver` as the named runtime entrypoint used by OpenKraken for SQLite-backed resumability. Secondary provider readiness also remains part of the canonical provider boundary through LangChain connector packages for OpenAI and Google-family model access; those connectors SHALL be exact-pinned when the dependency-alignment delta lands in repo manifests.
 - **State Stores / Persistence:** SQLite `3.x` through `bun:sqlite` with WAL enabled as the authoritative application store; filesystem-backed sandbox zones for staged inputs, work artifacts, outputs, backups, and active Skills; platform-native credential vaults with age-encrypted fallback for headless or dev-only scenarios.
-- **Infrastructure / Tooling:** Nix Flakes on `nixpkgs/nixos-25.11`, `devenv` for local orchestration, `just` for cross-language build coordination, CUE for configuration validation, and repo-local build outputs under `bin/`.
+- **Infrastructure / Tooling:** Nix Flakes on `nixpkgs/nixos-25.11`, `devenv` for local orchestration, `just` for cross-language build coordination, CUE for configuration validation, repo-local build outputs under `bin/`, `bubblewrap` as the canonical Linux execution primitive for the OpenKraken Agent runtime, and Apple's Virtualization framework as the macOS host-side facility for running the managed Linux guest that backs Agent execution. Anthropic Sandbox Runtime is no longer the canonical OpenKraken Agent-execution substrate, but it remains a relevant future option for host-local client or owner-launched workflows outside the canonical Agent runtime boundary.
 - **Testing / Quality Tooling:** `bun test`, `go test`, `tsc --noEmit`, `svelte-check`, `@biomejs/biome@2.4.8` as the target formatter/linter baseline, and OpenAPI contract validation as part of CI. Brownfield note: the repo currently pins Biome `2.3.13`.
 - **Version Pinning / Compatibility Policy:** Exact-pinned manifests and committed lockfiles are the contractual convergence target. Brownfield manifests that still use ranges or `latest` are transitional drift and SHALL converge during dependency-alignment work rather than being treated as the long-term policy. Bun and Go patch upgrades may land without ADR changes when interface compatibility is preserved; minor or major upgrades for agent, sandbox, UI, or gateway packages require decision-record review. The canonical Owner-facing runtime API SHALL remain at `/v1` until a breaking contract change is explicitly versioned and migrated.
 - **External Integration Units:** The following remain canonical integration targets even when their source repositories or publication lifecycle live outside this repo: the Open Responses compliance adapter, the AgentSkills.io-compatible skill intake/tooling line, the core filesystem tools bundle, and the RMM memory bank package. They SHALL be treated as explicit integration units rather than as undocumented future magic.
@@ -73,8 +74,8 @@
 ### ADR-004 Isolated Execution with Fail-Closed Outbound Control
 - **Status:** accepted
 - **Context:** The architecture separates the Capability Sandbox from the Egress Control Boundary and requires fail-closed behavior for execution, outbound access, and approval uncertainty. The repo already includes a sandbox wrapper and a distinct gateway package, but the implementations are still partial.
-- **Decision:** Use Anthropic Sandbox Runtime via `@anthropic-ai/sandbox-runtime@0.0.42` as the primary isolation runtime and keep a separately managed Egress Gateway for outbound allowlisting and network audit events. In the current implementation line, the sandbox runtime is the layer that physically materializes `bubblewrap` on Linux and `sandbox-exec` / Seatbelt on macOS. All isolated execution requests SHALL pass through policy evaluation before dispatch. Outbound failures SHALL deny the action rather than bypass the control boundary.
-- **Consequences:** The implementation preserves the approved defense-in-depth model and makes outbound activity independently observable. It also creates a hard dependency between local execution and gateway health, so runtime health checks, startup ordering, and recovery behavior must be explicit. The substrate names `bubblewrap`, `sandbox-exec`, and `Seatbelt` remain explicit because they are part of the current implementation reality and are expected to take on broader importance in future execution-boundary work.
+- **Decision:** Use a Linux execution substrate as the canonical isolated execution environment and keep a separately managed Egress Gateway for outbound allowlisting and network audit events. On Linux hosts, isolated execution SHALL use `bubblewrap` directly. On macOS hosts, isolated execution SHALL run inside a host-managed Linux guest, with `bubblewrap` enforcing the in-guest execution boundary and with host-managed directory sharing exposing only the canonical `/sandbox/*` paths required for approved work. The Runtime Coordinator, credential vault, SQLite state, and egress gateway remain host-resident on macOS. All isolated execution requests SHALL pass through policy evaluation before dispatch. Outbound failures SHALL deny the action rather than bypass the control boundary.
+- **Consequences:** The implementation converges the highest-risk execution semantics on one Linux substrate, allowing `/sandbox/*` paths and namespace behavior to remain consistent across Linux and macOS. The cost is added macOS platform complexity: guest provisioning, shared-directory lifecycle, guest health checks, and host/guest failure handling become first-class platform obligations.
 
 ### ADR-005 Nix-Managed Monorepo Delivery with Contract-First Development
 - **Status:** accepted
@@ -189,8 +190,8 @@ Historical decision-number continuity from the larger pre-framework TechSpec is 
 ### Policy-023 Native Service Management via NixOS and Darwin Modules
 - **Status:** accepted
 - **Context:** The brownfield repo already includes NixOS and Darwin service modules, and their platform-specific behavior is not interchangeable. The previous TechSpec captured more of this deployment shape than the current document, but for a project this large the production service-management contract is expensive to reverse and should remain explicit.
-- **Decision:** Production deployment SHALL use native Nix-managed service definitions: systemd units on Linux through the NixOS module and launchd agents on macOS through the Darwin module. `devenv`, `process-compose`, and package-local scripts remain development surfaces only. Service definitions SHALL provision required directories, environment variables, resource limits, restart policy, and companion gateway service wiring while preserving the canonical runtime lifecycle defined in Policy-016.
-- **Consequences:** Production behavior stays reproducible and platform-native without relying on a lowest-common-denominator service wrapper. The cost is dual platform maintenance and the need to document security and operability differences explicitly.
+- **Decision:** Production deployment SHALL use native Nix-managed service definitions: systemd units on Linux through the NixOS module and launchd agents on macOS through the Darwin module. On macOS, the Darwin-managed service layer SHALL also own the lifecycle of the managed Linux guest that backs Agent execution. `devenv`, `process-compose`, and package-local scripts remain development surfaces only. Service definitions SHALL provision required directories, environment variables, resource limits, restart policy, guest-image references where applicable, and companion gateway service wiring while preserving the canonical runtime lifecycle defined in Policy-016.
+- **Consequences:** Production behavior stays reproducible and platform-native without relying on a lowest-common-denominator service wrapper, while still allowing macOS to reuse the Linux execution substrate where execution semantics matter most. The cost is dual platform maintenance plus an explicit macOS host/guest lifecycle boundary that must be documented and monitored.
 
 ### Policy-024 Reflective Memory Management Middleware Integration
 - **Status:** accepted
@@ -201,7 +202,7 @@ Historical decision-number continuity from the larger pre-framework TechSpec is 
 ### Policy-025 Constitution Injection and Day-Bounded Session Model
 - **Status:** accepted
 - **Context:** The previous Architecture and TechSpec explicitly treated constitution injection and day-bounded sessions as first-class design constraints. Those commitments were weakened during the reduction pass, but they still govern how the runtime constructs identity, isolates working context, and recovers across restarts.
-- **Decision:** The Agent SHALL receive the constitutional inputs (`SOUL.md`, `SAFETY.md`, `CAPABILITIES.md`, and owner-authored directives) through runtime prompt assembly rather than as mutable sandbox files. The canonical assembly format is a strict, semantic, XML-tagged concatenation in this exact order: `<SOUL>...</SOUL>`, `<SAFETY>...</SAFETY>`, `<CAPABILITIES>...</CAPABILITIES>`, then `<DIRECTIVES>...</DIRECTIVES>`. Later sections SHALL NOT be reordered above earlier sections, because the ordering encodes the constitutional precedence model. Session identity SHALL remain day-bounded: one owner-local calendar day corresponds to one primary thread/session identifier formatted as `YYYY-MM-DD`, and workspace-reset behavior is keyed to that boundary. Previous sessions remain available for audit, recovery, and memory retrieval, but the new day starts with a clean working context.
+- **Decision:** The Agent SHALL receive the constitutional inputs (`SOUL.md`, `SAFETY.md`, `CAPABILITIES.md`, and owner-authored directives) through runtime prompt assembly rather than as mutable sandbox files. The canonical assembly format is a strict, semantic, XML-tagged concatenation in this exact order: `<SOUL>...</SOUL>`, `<SAFETY>...</SAFETY>`, `<CAPABILITIES>...</CAPABILITIES>`, then `<DIRECTIVES>...</DIRECTIVES>`. Later sections SHALL NOT be reordered above earlier sections, because the ordering encodes the constitutional precedence model. Session identity SHALL remain day-bounded: one owner-local calendar day corresponds to one primary thread/session identifier formatted as `YYYY-MM-DD`, and workspace-reset behavior is keyed to that boundary. At day rollover, the canonical execution reset clears the disposable `/sandbox/work` and `/sandbox/outputs` zones for the new session while preserving prior-session state in checkpoints, memory, and audit stores. Previous sessions remain available for audit, recovery, and memory retrieval, but the new day starts with a clean working context.
 - **Consequences:** Identity and safety instructions remain hard to exfiltrate through file access, and session lifecycle semantics stay predictable for memory, backup, and owner review. The cost is stricter thread/session modeling and the need to handle timezone-aware day rollover explicitly.
 
 ### Policy-026 Open Responses as the Primary Standards-Facing Interface Contract
@@ -519,10 +520,18 @@ This wrapper shape is part of the compatibility contract. Implementations may va
 
 ### 3.2 Filesystem Layout
 - **Purpose:** Provide deterministic local paths for configuration, runtime state, sandbox zones, backups, and active Skill material.
-- **Storage Shape:** Host-managed directories rooted under the platform-specific OpenKraken home, with explicit separation between mutable runtime state and read-mostly staged content.
-- **Constraints / Invariants:** Sandbox work directories are disposable and may be cleared after successful completion or session compaction. Backup directories are write-only for the runtime and read-only for the Agent. Skill source staging and active skill manifests are separated so review state cannot be bypassed by directly dropping files into the active path.
+- **Storage Shape:** Host-managed directories rooted under the platform-specific OpenKraken home, with explicit separation between mutable runtime state and read-mostly staged content. Agent-visible execution paths are presented separately as canonical guest-facing `/sandbox/*` paths that map onto approved host-managed directories.
+- **Constraints / Invariants:** Sandbox work directories are disposable and may be cleared after successful completion or session compaction. Day-bounded session rollover SHALL also clear the disposable `/sandbox/work` and `/sandbox/outputs` zones before the new session begins. Backup directories are write-only for the runtime and read-only for the Agent. Skill source staging and active skill manifests are separated so review state cannot be bypassed by directly dropping files into the active path. Host paths remain invisible to the Agent; all mapped execution zones SHALL appear under `/sandbox/*` regardless of host platform.
 - **Indexes / Access Paths:** Runtime resolves canonical directories through the platform abstraction layer; no interface layer hardcodes platform-specific absolute paths.
 - **Migration Notes:** Path migrations require a startup reconciliation step and MUST preserve database path, backup chain, and active skill manifests before switching.
+
+**Guest execution zone contract:**
+- `/sandbox/work` is the canonical writable workspace presented to the Agent.
+- `/sandbox/inputs` contains owner-supplied or system-staged files intended for Agent consumption.
+- `/sandbox/outputs` is the staging zone for artifacts intended to leave the execution boundary.
+- `/sandbox/skills` is the root skill exposure zone, with subdirectories segmented by trust tier and mounted with permissions appropriate to the tier and execution phase.
+- Canonical skill-tier subpaths under `/sandbox/skills` SHALL remain one-to-one with the trust model: `/sandbox/skills/system`, `/sandbox/skills/owner`, and `/sandbox/skills/community`.
+- Additional guest-internal runtime paths MAY exist for Linux operation, but they are not part of the canonical Agent-facing contract and SHALL NOT replace `/sandbox/*` in prompts, policy, or tool interfaces.
 
 ```mermaid
 erDiagram
@@ -1839,10 +1848,10 @@ sandbox:
   memoryLimitMb: 4096
   cpuLimitPercent: 100
   zones:
-    skills: "/var/lib/openkraken/skills"
-    inputs: "/var/lib/openkraken/inputs"
-    work: "/var/lib/openkraken/work"
-    outputs: "/var/lib/openkraken/outputs"
+    skills: "/sandbox/skills"
+    inputs: "/sandbox/inputs"
+    work: "/sandbox/work"
+    outputs: "/sandbox/outputs"
 
 egressGateway:
   http:
@@ -2097,7 +2106,7 @@ OpenKraken distinguishes between development orchestration and production servic
 | --- | --- | --- |
 | `devenv` and `process-compose` | Local development loops | Developer-only |
 | NixOS module | Linux production deployment | Canonical production path on Linux |
-| Darwin module | macOS owner-operated deployment | Canonical production path on macOS |
+| Darwin module + managed Linux guest | macOS owner-operated deployment | Canonical production path on macOS |
 
 **Startup sequence:**
 1. Resolve canonical paths from the platform abstraction layer.
@@ -2105,7 +2114,8 @@ OpenKraken distinguishes between development orchestration and production servic
 3. Open the SQLite database and run migrations.
 4. Initialize the credential vault and determine whether fallback mode is active.
 5. Verify sandbox and egress gateway dependencies.
-6. Bind the runtime API and begin serving owner traffic.
+6. On macOS, validate guest image metadata, shared-directory exposure, and guest health before treating execution as ready.
+7. Bind the runtime API and begin serving owner traffic.
 
 **Shutdown sequence:**
 1. Stop accepting new interactive requests.
@@ -2124,8 +2134,12 @@ OpenKraken distinguishes between development orchestration and production servic
 **macOS production contract:**
 - Launchd labels: `com.openkraken.orchestrator` and `com.openkraken.egress-gateway`
 - Environment variables mirror Linux at the logical layer even when paths differ
-- Directory provisioning and agent definitions are managed by the Darwin module in [openkraken.nix](../nix/darwin-modules/openkraken.nix#L17)
+- Directory provisioning, host-side service definitions, and managed-guest lifecycle are handled by the Darwin module in [openkraken.nix](../nix/darwin-modules/openkraken.nix#L17)
 - launchd resource limits replace Linux cgroup-style quotas where the platform lacks equivalent primitives
+- The Runtime Coordinator, credential vault access, SQLite state, and egress gateway remain host-resident
+- Model-provider traffic originates from the host Runtime Coordinator rather than from guest-side execution processes
+- Agent-visible execution occurs inside a managed Linux guest that stays up with the host service lifecycle rather than being created per command
+- Approved host directories are shared into the guest and re-presented there under canonical `/sandbox/*` paths; raw host paths are not part of the Agent-facing contract
 
 **Brownfield note:**
 The deployment modules are materially ahead of the orchestrator entry point in [main.ts](../packages/orchestrator/src/main.ts#L10). The service-management contract therefore remains canonical target state even though runtime bootstrap is still incomplete.
@@ -2136,9 +2150,11 @@ The deployment modules are materially ahead of the orchestrator entry point in [
 - Brownfield note: the current sandbox helper in [sandbox/index.ts](../packages/orchestrator/src/sandbox/index.ts#L37) still defaults the HTTP proxy port to `8080`; that is transition-state drift and SHALL converge to the canonical `3128` contract.
 
 **Current sandbox substrate names:**
-- Anthropic Sandbox Runtime is the current named isolation runtime for OpenKraken.
-- In the current implementation line it relies on `bubblewrap` on Linux and `sandbox-exec` / Seatbelt on macOS.
-- These substrate names remain canonical because they explain the present isolation behavior and are expected to take on a broader future role beyond the sandbox runtime wrapper itself.
+- `bubblewrap` is the canonical execution-boundary primitive wherever Agent-visible execution occurs.
+- On Linux, `bubblewrap` operates directly on the host execution substrate.
+- On macOS, a managed Linux guest provides the execution substrate and `bubblewrap` operates inside that guest.
+- Apple Virtualization framework is the current host-side facility for running the managed Linux guest on macOS.
+- Anthropic Sandbox Runtime remains relevant as a future host-local sandboxing option for owner-launched clients or non-canonical execution surfaces, but it is not the current OpenKraken Agent-execution substrate.
 
 **CI/CD and release contract:**
 - CI is Nix-first and multi-platform.
@@ -2182,6 +2198,7 @@ The credential and recovery model is part of the product's safety contract, not 
 2. Prefer platform-native storage.
 3. Fall back to age-encrypted file storage only in explicit headless or development scenarios.
 4. Expose credential references and backend state to the runtime, never raw values to the Agent.
+5. On macOS, guest execution SHALL receive only the minimum ephemeral auth material required for a specific approved action; canonical credential storage remains host-side.
 
 **Key hierarchy:**
 
@@ -2296,6 +2313,11 @@ Brownfield note: the fallback chain is already implemented in [vault.ts](../pack
 ### 5.8 Platform Path Resolution Contract
 The runtime owns all canonical path resolution. Owner interfaces, scripts, and adapters SHALL consume resolved paths instead of hardcoding platform-specific absolute locations.
 
+**Host versus guest path domains:**
+- Host path resolution governs configuration, runtime state, logs, backups, credential fallback files, and the host-side directories that back execution zones.
+- Guest execution path resolution governs the Agent-visible `/sandbox/*` namespace.
+- Tool contracts, prompts, policy evaluation, and audit evidence that refer to Agent-visible execution paths SHALL use `/sandbox/*` paths rather than leaking host-native absolute paths.
+
 **Resolution precedence:**
 1. Explicit resolver mode override supplied by trusted runtime code.
 2. `OPENKRAKEN_HOME`, which forces `custom` mode.
@@ -2314,6 +2336,15 @@ The runtime owns all canonical path resolution. Owner interfaces, scripts, and a
 | `xdg` | `$XDG_CONFIG_HOME/openkraken/config.yaml` or `~/.config/openkraken/config.yaml` | `$XDG_DATA_HOME/openkraken/data` or `~/.local/share/openkraken/data` | `$XDG_DATA_HOME/openkraken/logs` or `~/.local/share/openkraken/logs` | `$XDG_CACHE_HOME/openkraken/cache` or `~/.cache/openkraken/cache` |
 | `cocoa` | `~/Library/Application Support/OpenKraken/config.yaml` | `~/Library/Application Support/OpenKraken` | `~/Library/Logs/OpenKraken` | `~/Library/Caches/OpenKraken` |
 | `custom` | `<OPENKRAKEN_HOME>/config.yaml` | `<OPENKRAKEN_HOME>/data` | `<OPENKRAKEN_HOME>/logs` | `<OPENKRAKEN_HOME>/cache` |
+
+**Canonical guest execution roots:**
+
+| Zone | Guest Path | Contract |
+| --- | --- | --- |
+| Skills | `/sandbox/skills` | Read-mostly skill exposure root; canonical trust-tier subpaths are `/sandbox/skills/system`, `/sandbox/skills/owner`, and `/sandbox/skills/community` |
+| Inputs | `/sandbox/inputs` | Owner-supplied or system-staged inbound files |
+| Work | `/sandbox/work` | Primary writable workspace for execution |
+| Outputs | `/sandbox/outputs` | Staging area for artifacts leaving the execution boundary |
 
 **Override and validation rules:**
 - Partial XDG overrides are valid in Linux `fhs` mode; config, data, and cache may each independently honor explicitly exported XDG variables.

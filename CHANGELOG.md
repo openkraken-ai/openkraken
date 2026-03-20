@@ -4,6 +4,29 @@ This document records recent architectural evolution. For full historical change
 
 ---
 
+### v0.14.1 — 2026-03-19
+
+**macOS Execution Model Revision: Host-Managed Linux Guest**
+
+This revision changes the planning baseline for macOS execution. OpenKraken no longer treats macOS as a host-native execution substrate for Agent-visible sandbox work. Instead, macOS remains the host control plane while Agent-visible execution moves into a managed Linux guest. This keeps the canonical `/sandbox/*` namespace and bubblewrap-backed execution semantics aligned across Linux and macOS.
+
+**Execution Boundary Changes**
+* Runtime Coordinator, credential handling, SQLite state, and egress gateway remain host-resident on macOS.
+* Agent-visible tool execution, workspaces, and filesystem semantics move into a managed Linux guest.
+* `bubblewrap` becomes the canonical execution-boundary primitive wherever Agent-visible execution occurs.
+* Raw host paths are no longer part of the Agent-facing execution contract on macOS; shared host directories are re-presented inside the guest under `/sandbox/*`.
+
+**Planning and Documentation Consequences**
+* docs/Architecture.md now treats the macOS guest as part of the logical execution boundary rather than as a hidden implementation detail.
+* docs/TechSpec.md replaces the old macOS Seatbelt-based execution assumption with a host-managed Linux guest contract.
+* docs/TechSpec.md restores the canonical `/sandbox/work`, `/sandbox/inputs`, `/sandbox/outputs`, and `/sandbox/skills` execution zones.
+* docs/Tasks.md now treats macOS guest lifecycle and `/sandbox/*` reconvergence as active planning deltas rather than already-solved brownfield context.
+
+**Service Management Posture**
+* NixOS remains the native Linux deployment surface.
+* Darwin/launchd remains the native macOS host-side deployment surface.
+* On macOS, Darwin-managed services now also own the lifecycle of the managed Linux guest used for Agent execution.
+
 ### v0.14.0 — 2026-02-07
 
 **Skill Ingestion Pipeline and Vercel Skills Integration**

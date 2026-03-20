@@ -1,6 +1,7 @@
 # Engineering Execution Plan
 
 ## 0. Version History & Changelog
+- v2.1.6 - Rebased planning assumptions around the new macOS execution model: host orchestration remains on macOS, but Agent execution moves into a managed Linux guest so `/sandbox/*` path semantics and bubblewrap-backed execution stay consistent.
 - v2.1.5 - Restored the remaining `CORE-B001` prerequisite edges in the Mermaid build-order graph so dependency visualization fully matches the ticket definitions.
 - v2.1.4 - Corrected the Mermaid dependency graph and executive-summary critical path so they match the ticket dependency definitions and PRD-driven approval flow.
 - v2.1.3 - Restored explicit deferred implementation targets for Vercel Agent Browser and LangChain's `MultiServerMCPClient` so adjacent integration units are not normalized away in planning.
@@ -11,7 +12,7 @@
 ## 1. Executive Summary & Active Critical Path
 - **Total Active Story Points:** 69
 - **Critical Path:** `CORE-B001 -> CORE-B005 -> CORE-B006 -> CORE-B007 -> CORE-B008 -> CORE-B009 -> CORE-B010 -> {CORE-B011, CORE-B012} -> CORE-B013 -> {CORE-B015, CORE-B016} -> CORE-B017`, with `CORE-B018` and `CORE-B019` as additional required predecessors for `CORE-B017`. `CORE-B014` remains required for the CLI and Web UI work, but it is not the binding path for Epic 2 completion.
-- **Planning Assumptions:** Epic 1 infrastructure remains completed brownfield baseline and is not replanned here. Legacy GitHub issue continuity is preserved through explicit `Legacy Issue ID` mapping for every open Epic 2 issue. Telegram remains the primary non-local interaction channel for Epic 2. User-confirmed upstream continuity retained in this plan is: RMM middleware as a real Epic 2 commitment, multi-provider readiness through LangChain connectors for Anthropic, OpenAI, and Google, and full deferred ticket preservation for `CORE-018` through `CORE-023`. Risk-heavy adjacent integrations remain sequenced as issue-backed tickets rather than adding non-issue placeholder spikes.
+- **Planning Assumptions:** Epic 1 infrastructure remains completed brownfield baseline and is not replanned here. Legacy GitHub issue continuity is preserved through explicit `Legacy Issue ID` mapping for every open Epic 2 issue. Telegram remains the primary non-local interaction channel for Epic 2. User-confirmed upstream continuity retained in this plan is: RMM middleware as a real Epic 2 commitment, multi-provider readiness through LangChain connectors for Anthropic, OpenAI, and Google, and full deferred ticket preservation for `CORE-018` through `CORE-023`. Risk-heavy adjacent integrations remain sequenced as issue-backed tickets rather than adding non-issue placeholder spikes. The macOS execution posture is no longer “native host sandboxing with different semantics”; it is “host-managed Linux guest execution” so `/sandbox/*` and bubblewrap-backed behavior remain the canonical execution contract across platforms.
 
 ## 2. Project Phasing & Iteration Strategy
 ### Current Active Scope
@@ -39,11 +40,11 @@
 | --- | --- | --- | --- |
 | Configuration system | `packages/orchestrator/src/config/index.ts` | Partial, basic loading exists | Config/bootstrap tickets are integration and expansion work, not blank-slate design |
 | Credential vault | `packages/orchestrator/src/credentials/vault.ts` | Present with fallback-chain behavior | Auth and secret-management tickets build on an existing abstraction |
-| Sandbox integration | `packages/orchestrator/src/sandbox/index.ts` | Framework present, tool integration incomplete | Execution tickets are boundary wiring plus capability integration |
+| Sandbox integration | `packages/orchestrator/src/sandbox/index.ts` | Linux-side framework present, macOS execution model revised | Execution tickets now include guest-backed macOS convergence work in addition to boundary wiring |
 | Platform path resolver | `packages/orchestrator/src/platform/resolver.ts` | Cross-platform resolver exists | Path semantics are a baseline, not new Epic 2 scope |
 | Database schema lineage | `packages/orchestrator/migrations/*.sql` | Base tables and schema lineage exist | Checkpoint and state tickets extend brownfield state instead of inventing all persistence from scratch |
 | CUE schema | `nix/schema/config.cue` | Validation baseline exists | Runtime config enforcement integrates an existing schema source of truth |
-| Service modules | `nix/nixos-modules/openkraken.nix`, `nix/darwin-modules/openkraken.nix` | Platform service-management baseline exists | Lifecycle tickets integrate with existing deployment posture |
+| Service modules | `nix/nixos-modules/openkraken.nix`, `nix/darwin-modules/openkraken.nix` | Platform service-management baseline exists, but macOS lifecycle now includes managed guest execution | Lifecycle tickets integrate with existing deployment posture plus guest orchestration on macOS |
 | CLI shell | `apps/cli/src` | Initial shell exists | CLI tickets are surface completion, auth wiring, and feature fill-in |
 | Web UI shell | `apps/web-ui/src` | Initial shell exists | Web tickets are not-from-zero; they complete the owner surface over the canonical runtime contract |
 
@@ -52,6 +53,8 @@
 - Incomplete orchestrator bootstrap and runtime entry flow
 - Incomplete tool registry and middleware composition over the brownfield scaffolding
 - Placeholder or partial owner-surface auth and interaction flows
+- Revised macOS execution design requiring host-managed Linux guest lifecycle and readiness handling
+- Canonical `/sandbox/*` zone contract needing re-convergence between planning docs, config surface, and execution tooling
 
 ## 3. Build Order (Mermaid)
 ```mermaid

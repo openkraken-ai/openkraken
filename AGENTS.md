@@ -25,7 +25,7 @@ These commitments have been made after investigation and debate. They would requ
 
 | Commitment | Decision |
 |------------|----------|
-| Isolation | Anthropic Sandbox Runtime (bubblewrap on Linux, sandbox-exec on macOS) |
+| Isolation | Linux execution substrate with bubblewrap; on macOS, Agent-visible execution runs inside a managed Linux guest rather than through host-native Seatbelt semantics |
 | Runtime Coordinator / Orchestrator Runtime | Bun (not Node.js) |
 | Agent Orchestration | LangChain.js v1 and LangGraph.js with MCP adapters |
 | Persistent State | SQLite with WAL mode |
@@ -90,7 +90,7 @@ The flake integrates devenv via `nix/shell.nix` to provide `nix develop` as an a
 |-------|-----------|
 | -1 | Platform Manager — Nix-based provisioning and deployment |
 | 0 | Host — The host system (Linux or macOS) |
-| 1 | Sandbox — Anthropic Sandbox Runtime (Agent runs inside) |
+| 1 | Sandbox — Linux execution boundary; direct on Linux hosts, guest-backed on macOS |
 | 2 | Middleware Stack — LangChain middleware extensions |
 | 3 | Runtime Coordinator / Orchestrator — Bun/TypeScript orchestration layer |
 
@@ -187,7 +187,7 @@ docs/PRD.md remains technology-agnostic. It describes **what** the system does, 
 | Good (What-focused) | Bad (How-focused) |
 |---------------------|-------------------|
 | "The System shall provide integration adapters for external messaging services" | "The System shall provide MCP adapters via @langchain/mcp-adapters" |
-| "The System shall isolate Agent execution within an isolation environment" | "The System shall isolate Agent execution using bubblewrap on Linux and Seatbelt on macOS" |
+| "The System shall isolate Agent execution within an isolation environment" | "The System shall isolate Agent-visible execution through the Linux execution substrate and canonical `/sandbox/*` paths" |
 
 **Test:** Would this requirement still be valid if we changed the underlying technology?
 - Yes -> Belongs in PRD
@@ -204,7 +204,7 @@ docs/Architecture.md names technology **categories**, not **instances**.
 | Category (Architecture) | Instance (TechSpec) |
 |-------------------------|---------------------|
 | "JavaScript runtime" | "Bun 1.3.8" |
-| "Sandboxing runtime" | "Anthropic Sandbox Runtime 0.0.34" |
+| "Sandboxing runtime" | "bubblewrap for canonical Agent execution; Anthropic Sandbox Runtime only where future host-local client workflows justify it" |
 | "Relational database" | "SQLite 3.45.1 with WAL mode" |
 
 **Test:** Could I replace the technology with an equivalent alternative without changing the architecture's validity?

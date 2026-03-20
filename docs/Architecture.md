@@ -1,6 +1,7 @@
 # Solution Architecture
 
 ## 0. Version History & Changelog
+- v2.3.2 - Reframed macOS execution as a host-managed Linux guest so `/sandbox/*` remains the canonical Agent-visible namespace and execution semantics converge on bubblewrap-backed Linux behavior across supported hosts.
 - v2.3.1 - Restored the project-specific same-host gateway authentication pattern and the automated skill-security analysis gate that were too specific to recover from generic framework guidance.
 - v2.3.0 - Re-expanded the architecture inside the framework shape so the old rationale, layered model, middleware inventory, cross-cutting concerns, and trust-boundary language remain canonical instead of compressed summaries.
 - v2.2.0 - Restored the missing problem-context rationale, standards positioning, layered model, middleware inventory, named flows, and richer cross-cutting architecture content.
@@ -30,6 +31,7 @@
 - **Follow-on mediated channels:** Broader messaging and service channels may arrive through mediated adapter paths later, but they inherit the same audit, approval, and policy boundaries.
 - **Separate integration workstreams:** External standards, skill-ecosystem, filesystem-capability, and memory-system units remain valid architectural commitments even when their source repositories or package publication live outside this repo.
 - **Layer model:** The system still follows the five-layer conceptual model of Platform Manager, Host, Sandbox, Middleware Stack, and Runtime Coordinator; the container model below refines that layered view into explicit logical boundaries.
+- **Execution-substrate posture:** Linux remains the native execution substrate on Linux hosts. On macOS, the host remains the owner-facing control plane while Agent-visible execution is delegated into a managed Linux guest so canonical `/sandbox/*` path semantics and namespace behavior remain consistent.
 
 **Primary capabilities represented by this architecture:**
 - Conversational interaction through local and approved asynchronous channels
@@ -118,6 +120,12 @@
 - **Inputs:** Approved execution requests, bounded working context, permitted resource descriptors
 - **Outputs:** Execution results, artifacts, failure signals, outbound access attempts
 - **Depends on:** Egress Control Boundary, Audit & Telemetry Store
+
+**Execution boundary notes:**
+- The Runtime Coordinator remains host-resident on every supported platform.
+- On Linux hosts, the Capability Sandbox is realized directly through the Linux execution substrate.
+- On macOS hosts, the Capability Sandbox is realized inside a managed Linux guest controlled by the host Platform Manager and Runtime Coordinator.
+- Agent-visible filesystem paths inside the Capability Sandbox are canonical `/sandbox/*` paths rather than raw host paths.
 
 ### Egress Control Boundary
 - **Logical Type:** network policy boundary
@@ -351,6 +359,7 @@ sequenceDiagram
 
 ### 5.5 Service Lifecycle Management
 - **Service Lifecycle Management:** Startup order matters: configuration, state, credential boundary, sandbox/egress checks, then owner-facing bind. Shutdown likewise prioritizes quiescing ingress, settling work, persisting resumable state, and only then releasing dependencies.
+- **macOS host/guest split:** On macOS, service lifecycle management includes guest lifecycle as part of the execution boundary. The host service stack remains authoritative for configuration, credentials, runtime API, gateway coordination, and guest health; the Linux guest remains an adjunct execution substrate rather than a second orchestrator.
 - **Configuration Strategy:** Owner-managed configuration is separated logically into interaction settings, policy rules, service authorizations, skill trust metadata, and schedule definitions. Runtime state and audit evidence are not used as configuration stores. Secret material remains outside normal configuration and is accessed only through the credential-mediated boundary.
 - **Data Integrity / Consistency Notes:** Session state, memory state, schedule state, and approval continuation state are durable and authoritative for recovery. Audit storage is append-oriented to preserve reconstructability. Memory is derived from prior work but remains owner-reviewable and purgeable. Scheduled work and approval resumption must be safe to retry without duplicating the logical outcome.
 
@@ -371,7 +380,7 @@ sequenceDiagram
 
 - **Risk:** Equivalent semantics across supported host environments may drift over time.
 - **Why it matters:** The PRD promises consistent product behavior for the Owner, but isolated execution, outbound control, and host-service mediation are the most platform-sensitive parts of the system.
-- **Mitigation or follow-up:** The TechSpec should define semantic parity tests at the boundary level so cross-platform support is validated as behavior, not assumed from implementation intent.
+- **Mitigation or follow-up:** The TechSpec should define semantic parity tests at the boundary level so cross-platform support is validated as behavior, not assumed from implementation intent. The explicit Linux-guest execution posture on macOS exists to reduce this drift in the highest-risk execution and path-semantics areas.
 
 ### Technical Debt
 - **Risk:** The current architecture depends on several separate external workstreams landing cleanly.
